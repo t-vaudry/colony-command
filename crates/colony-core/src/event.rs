@@ -84,7 +84,13 @@ pub enum DomainEvent {
     SessionEnded,
     /// Colony started this session in a terminal it owns. `dir` is the
     /// folder it was started in, as the host sees it.
-    TerminalAttached { term_id: String, dir: String },
+    /// `pid`: the process in the terminal, which is this session's own copy.
+    TerminalAttached {
+        term_id: String,
+        dir: String,
+        #[serde(default)]
+        pid: Option<u32>,
+    },
     /// colonyd is holding a permission request from a session's approval hook
     /// until someone answers it on the map.
     PermissionAsked { request_id: String, agent_id: Option<String>, tool: String, target: Option<String> },

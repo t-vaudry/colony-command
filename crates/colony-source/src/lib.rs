@@ -30,6 +30,12 @@ pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// Colony's own folder: `COLONY_HOME` if set (tests use a separate one),
+/// otherwise `~/.colony`.
+pub fn colony_home() -> PathBuf {
+    std::env::var_os("COLONY_HOME").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".colony"))
+}
+
 /// `~` for the current user: `USERPROFILE` on Windows, `HOME` elsewhere.
 pub fn home_dir() -> PathBuf {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
@@ -80,7 +86,7 @@ impl DirSource {
     /// Defaults for the current user: `~/.claude` and `~/.colony`.
     pub fn for_current_user(host: HostId, replay_since_ms: u64) -> Self {
         let home = home_dir();
-        Self::new(host, &home.join(".claude"), &home.join(".colony"), replay_since_ms)
+        Self::new(host, &home.join(".claude"), &colony_home(), replay_since_ms)
     }
 
     pub fn poll(&mut self) -> Vec<Envelope> {

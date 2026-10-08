@@ -8,8 +8,6 @@
 
 mod api;
 mod approvals;
-#[cfg(windows)]
-mod conpty;
 mod pty;
 #[cfg(windows)]
 mod wsl;
@@ -18,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use colony_core::{Colony, Envelope, HostId};
-use colony_source::{home_dir, now_ms, DirSource};
+use colony_source::{now_ms, DirSource};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc, Notify, RwLock};
 
@@ -164,7 +162,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let info_path = home_dir().join(".colony").join("daemon.json");
+    let info_path = colony_source::colony_home().join("daemon.json");
     let info = json!({ "port": port, "token": token, "pid": std::process::id() });
     if let Err(e) = std::fs::create_dir_all(info_path.parent().unwrap())
         .and_then(|_| std::fs::write(&info_path, serde_json::to_vec_pretty(&info).unwrap()))

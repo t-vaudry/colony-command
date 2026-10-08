@@ -9,6 +9,7 @@ pub mod event;
 pub mod hook;
 pub mod names;
 pub mod paths;
+pub mod ptyproto;
 pub mod registry;
 pub mod state;
 

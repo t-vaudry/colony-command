@@ -14,6 +14,7 @@ Design spec: [`docs/design-spec.html`](docs/design-spec.html)
 | `crates/colony-source` | Watches the session registry and hook captures, emits events |
 | `crates/colony-probe` | Runs in each WSL distro, streams its events to colonyd over stdio |
 | `crates/colonyd` | Daemon: reducer + local WebSocket API on 127.0.0.1:7878 |
+| `crates/colony-ptyd` | Terminal host: owns Colony's terminals so sessions survive daemon restarts |
 | `app` | The map: PixiJS world + HUD, connects to colonyd |
 | `app/src-tauri` | Desktop app: the map in a window; starts colonyd if it isn't running |
 | `hooks/colony-approve.sh` | Approval hook: hands permission requests to colonyd for Allow/Deny on the map |
@@ -38,8 +39,21 @@ Or inside Ubuntu:
     target/release/colony-command.exe
 
 The app starts `colonyd` (next to it) when no daemon is answering, and
-leaves it running when you close the window, so sessions it hosts keep
-going. Daemon log: `~/.colony/colonyd.log`.
+leaves it running when you close the window. Sessions Colony starts live in
+`colony-ptyd`, which colonyd starts and reconnects to, so they keep running
+through daemon restarts and updates. Logs: `~/.colony/colonyd.log`,
+`~/.colony/ptyd.log`.
+
+To pick up code changes without ending sessions:
+
+    powershell -File scripts/update.ps1
+
+It stops the window and colonyd, rebuilds, and relaunches; colony-ptyd and the
+sessions in it keep running. `-IncludeTerminalHost` also rebuilds colony-ptyd,
+which ends its sessions.
+
+Set `COLONY_HOME` (and `COLONY_PORT` / `COLONY_PTYD_PORT`) to run an isolated
+second Colony, e.g. for tests.
 
 ## Run the daemon by hand
 

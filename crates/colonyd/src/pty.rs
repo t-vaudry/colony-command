@@ -1,26 +1,30 @@
-//! Terminals Colony owns. Each runs one `claude` session in a pseudo-console
-//! (ConPTY on Windows): on Windows directly, or in a WSL distro through
-//! `wsl.exe`. Output is kept in a bounded scrollback for maps that attach
-//! later and broadcast live to maps that are attached now.
+//! Terminals Colony owns, through colony-ptyd.
+//!
+//! The terminals themselves live in colony-ptyd, a separate process, so the
+//! sessions in them keep running when colonyd restarts or is updated. This
+//! module is colonyd's client: it starts ptyd when needed, keeps a mirror of
+//! each terminal's scrollback for maps that attach, rebroadcasts live output,
+//! and turns ptyd's notices into TerminalAttached / TerminalExited events. On
+//! reconnecting it relinks every live terminal to its bot.
 //!
 //! The session id is chosen here (`--session-id`) or reused (`--resume`), so
 //! the terminal and the session's hook events are linked without guessing.
 
-use std::collections::{HashMap, VecDeque};
-use std::fs::File;
-use std::io::{Read, Write};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
+use base64::Engine;
 use colony_core::paths::to_wsl_path;
+use colony_core::ptyproto::{FromPtyd, TermInfo, ToPtyd};
 use colony_core::{DomainEvent, Envelope, HostId};
-use colony_source::now_ms;
+use colony_source::{colony_home, now_ms};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
-#[cfg(windows)]
-use crate::conpty::Pty;
 use crate::log;
 
 const SCROLLBACK_BYTES: usize = 512 * 1024;
@@ -30,6 +34,7 @@ const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "auto"];
 /// newlines included, instead of each line being submitted.
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
+const NOT_CONNECTED: &str = "Colony's terminal host isn't running; try again in a moment";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SpawnRequest {
@@ -73,17 +78,6 @@ pub struct HostOption {
     pub note: Option<String>,
 }
 
-struct Term {
-    session_id: String,
-    host: HostId,
-    /// Set by `kill`, so the exit is reported as ended rather than crashed.
-    kill_requested: AtomicBool,
-    writer: Mutex<File>,
-    #[cfg(windows)]
-    pty: Arc<Pty>,
-    scrollback: Mutex<VecDeque<u8>>,
-}
-
 /// A chunk of terminal output for maps attached to that terminal.
 #[derive(Clone)]
 pub struct Output {
@@ -94,19 +88,39 @@ pub struct Output {
 /// Processes Colony started in its terminals, by pid, with their terminal id.
 pub type Owned = Arc<Mutex<HashMap<u32, String>>>;
 
+/// colonyd's copy of one terminal in ptyd.
+struct Mirror {
+    info: TermInfo,
+    scrollback: VecDeque<u8>,
+    /// Set by `kill`, so the exit is reported as ended rather than crashed.
+    kill_requested: bool,
+}
+
+type SpawnReply = oneshot::Sender<Result<u32, String>>;
+
 pub struct PtyHost {
-    terms: Mutex<HashMap<String, Arc<Term>>>,
+    terms: Mutex<HashMap<String, Mirror>>,
     /// So registry entries from these processes are recognized as Colony's
     /// own sessions, and never offered for termination as "other copies".
     pub owned: Owned,
     pub output: broadcast::Sender<Output>,
     events: mpsc::Sender<Envelope>,
     windows_claude: Option<PathBuf>,
+    /// Write half of the connection to ptyd.
+    conn: Mutex<Option<TcpStream>>,
+    /// Spawns waiting for ptyd's answer, with the terminal they'll become.
+    pending: Mutex<HashMap<String, (TermInfo, SpawnReply)>>,
+    /// Terminals not yet confirmed by ptyd after reconnecting.
+    unconfirmed: Mutex<HashSet<String>>,
 }
 
 pub struct Spawned {
     pub term_id: String,
     pub session_id: String,
+}
+
+fn b64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 impl PtyHost {
@@ -117,7 +131,19 @@ impl PtyHost {
             None => log("Claude Code CLI not found on Windows; Colony can start sessions in WSL only"),
         }
         let (output, _) = broadcast::channel(1024);
-        Arc::new(PtyHost { terms: Mutex::default(), owned: Owned::default(), output, events, windows_claude })
+        let host = Arc::new(PtyHost {
+            terms: Mutex::default(),
+            owned: Owned::default(),
+            output,
+            events,
+            windows_claude,
+            conn: Mutex::default(),
+            pending: Mutex::default(),
+            unconfirmed: Mutex::default(),
+        });
+        let runner = host.clone();
+        std::thread::spawn(move || runner.run());
+        host
     }
 
     pub fn hosts(&self, distros: &[String]) -> Vec<HostOption> {
@@ -136,7 +162,7 @@ impl PtyHost {
         out
     }
 
-    pub fn spawn(self: &Arc<Self>, req: SpawnRequest) -> Result<Spawned, String> {
+    pub async fn spawn(&self, req: SpawnRequest) -> Result<Spawned, String> {
         let session_id = req.resume.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut claude_args: Vec<String> = match &req.resume {
             Some(id) => vec!["--resume".into(), id.clone()],
@@ -161,10 +187,10 @@ impl PtyHost {
             claude_args.push(p.clone());
         }
 
-        let (program, args, cwd): (String, Vec<String>, Option<&str>) = match &req.host {
+        let (program, args, cwd): (String, Vec<String>, Option<String>) = match &req.host {
             HostId::Windows => {
                 let exe = self.windows_claude.as_ref().ok_or("Claude Code CLI isn't installed on Windows")?;
-                (exe.display().to_string(), claude_args, Some(req.dir.as_str()))
+                (exe.display().to_string(), claude_args, Some(req.dir.clone()))
             }
             HostId::Wsl(distro) => {
                 // A login shell puts ~/.local/bin on PATH; "$@" passes the
@@ -177,6 +203,7 @@ impl PtyHost {
                 ("wsl.exe".into(), a, None)
             }
         };
+
         let term_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         // Mark the session as Colony's: Windows recognizes it by process id;
         // inside WSL the probe reads this variable (WSLENV carries it across).
@@ -191,96 +218,60 @@ impl PtyHost {
             };
             env.push(("WSLENV".into(), joined));
         }
-        let (pty, reader, writer) = spawn_pty(&program, &args, cwd, &env, req.cols.max(40), req.rows.max(10))?;
-        #[cfg(windows)]
-        self.owned.lock().unwrap().insert(pty.pid, term_id.clone());
-        let term = Arc::new(Term {
-            session_id: session_id.clone(),
-            host: req.host.clone(),
-            kill_requested: AtomicBool::new(false),
-            writer: Mutex::new(writer),
-            #[cfg(windows)]
-            pty: pty.clone(),
-            scrollback: Mutex::default(),
-        });
-        self.terms.lock().unwrap().insert(term_id.clone(), term.clone());
-        let _ = self.events.try_send(Envelope {
-            ts: now_ms(),
-            host: req.host.clone(),
-            session_id: session_id.clone(),
-            cwd: None,
-            event: DomainEvent::TerminalAttached { term_id: term_id.clone(), dir: req.dir.clone() },
-        });
-        #[cfg(windows)]
-        log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {})", req.host, req.dir, pty.pid));
-        #[cfg(not(windows))]
-        log(format!("started session {session_id} in terminal {term_id} ({}, {})", req.host, req.dir));
 
-        // Reader: scrollback + live broadcast until the terminal closes.
-        let host = self.clone();
-        let tid = term_id.clone();
-        std::thread::spawn(move || host.pump(tid, term, reader));
-        // Reaper: when the process exits, close the console so the reader
-        // reaches end of file and the terminal is torn down.
-        #[cfg(windows)]
-        {
-            let tid = term_id.clone();
-            std::thread::spawn(move || {
-                let status = pty.wait();
-                log(format!("terminal {tid} exited: {status:?}"));
-                pty.close();
-            });
+        // Right after colonyd starts, ptyd may still be starting up.
+        for _ in 0..100 {
+            if self.conn.lock().unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        let info = TermInfo { term: term_id.clone(), session_id: session_id.clone(), host: req.host.clone(), dir: req.dir.clone(), pid: 0, started_at: now_ms() };
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(term_id.clone(), (info.clone(), tx));
+        let sent = self.send(&ToPtyd::Spawn { info, program, args, cwd, env, cols: req.cols.max(40), rows: req.rows.max(10) });
+        if let Err(e) = sent {
+            self.pending.lock().unwrap().remove(&term_id);
+            return Err(e);
+        }
+        let pid = match tokio::time::timeout(Duration::from_secs(20), rx).await {
+            Ok(Ok(r)) => r?,
+            _ => {
+                self.pending.lock().unwrap().remove(&term_id);
+                return Err("the terminal host didn't answer".into());
+            }
+        };
+        log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
         Ok(Spawned { term_id, session_id })
     }
 
-    fn pump(self: Arc<Self>, term_id: String, term: Arc<Term>, mut reader: File) {
-        let mut buf = [0u8; 16 * 1024];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let chunk = buf[..n].to_vec();
-                    {
-                        let mut sb = term.scrollback.lock().unwrap();
-                        sb.extend(&chunk);
-                        let excess = sb.len().saturating_sub(SCROLLBACK_BYTES);
-                        sb.drain(..excess);
-                    }
-                    let _ = self.output.send(Output { term_id: term_id.clone(), bytes: Arc::new(chunk) });
-                }
-            }
+    fn send(&self, msg: &ToPtyd) -> Result<(), String> {
+        let line = serde_json::to_string(msg).expect("commands serialize");
+        let mut conn = self.conn.lock().unwrap();
+        let c = conn.as_mut().ok_or(NOT_CONNECTED)?;
+        if writeln!(c, "{line}").and_then(|_| c.flush()).is_err() {
+            *conn = None;
+            return Err(NOT_CONNECTED.into());
         }
-        self.terms.lock().unwrap().remove(&term_id);
-        self.owned.lock().unwrap().retain(|_, t| t != &term_id);
-        let _ = self.events.blocking_send(Envelope {
-            ts: now_ms(),
-            host: term.host.clone(),
-            session_id: term.session_id.clone(),
-            cwd: None,
-            event: DomainEvent::TerminalExited {
-                term_id: term_id.clone(),
-                requested: term.kill_requested.load(Ordering::SeqCst),
-            },
-        });
-        let _ = self.output.send(Output { term_id, bytes: Arc::new(b"\r\n\x1b[2m[session ended]\x1b[0m\r\n".to_vec()) });
+        Ok(())
     }
 
-    fn term(&self, id: &str) -> Result<Arc<Term>, String> {
-        self.terms.lock().unwrap().get(id).cloned().ok_or_else(|| "that terminal has closed".into())
+    fn require(&self, id: &str) -> Result<(), String> {
+        if self.terms.lock().unwrap().contains_key(id) {
+            Ok(())
+        } else {
+            Err("that terminal has closed".into())
+        }
     }
 
     pub fn scrollback(&self, id: &str) -> Option<Vec<u8>> {
-        let t = self.term(id).ok()?;
-        let sb = t.scrollback.lock().unwrap();
-        Some(sb.iter().copied().collect())
+        self.terms.lock().unwrap().get(id).map(|m| m.scrollback.iter().copied().collect())
     }
 
     /// Raw keystrokes from the map's terminal pane.
     pub fn input(&self, id: &str, bytes: &[u8]) -> Result<(), String> {
-        let t = self.term(id)?;
-        let mut w = t.writer.lock().unwrap();
-        w.write_all(bytes).and_then(|_| w.flush()).map_err(|e| e.to_string())
+        self.require(id)?;
+        self.send(&ToPtyd::Input { term: id.into(), data: b64(bytes) })
     }
 
     /// A message from the reply box, pasted as one block. The caller sends
@@ -293,49 +284,191 @@ impl PtyHost {
     }
 
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let t = self.term(id)?;
-        #[cfg(windows)]
-        return t.pty.resize(cols.max(20), rows.max(5)).map_err(|e| e.to_string());
-        #[cfg(not(windows))]
-        {
-            let _ = (t, cols, rows);
-            Err(UNSUPPORTED.into())
-        }
+        self.require(id)?;
+        self.send(&ToPtyd::Resize { term: id.into(), cols, rows })
     }
 
     pub fn kill(&self, id: &str) -> Result<(), String> {
-        let t = self.term(id)?;
-        t.kill_requested.store(true, Ordering::SeqCst);
-        #[cfg(windows)]
-        return t.pty.kill().map_err(|e| e.to_string());
-        #[cfg(not(windows))]
-        {
-            let _ = t;
-            Err(UNSUPPORTED.into())
+        match self.terms.lock().unwrap().get_mut(id) {
+            Some(m) => m.kill_requested = true,
+            None => return Err("that terminal has closed".into()),
         }
+        self.send(&ToPtyd::Kill { term: id.into() })
+    }
+
+    // ---- connection to ptyd -----------------------------------------------
+
+    fn run(self: Arc<Self>) {
+        let mut warned = false;
+        loop {
+            match connect() {
+                Ok(stream) => {
+                    warned = false;
+                    self.serve(stream);
+                    log("lost the terminal host; reconnecting");
+                }
+                Err(e) if !warned => {
+                    log(format!("terminal host unavailable: {e}"));
+                    warned = true;
+                }
+                Err(_) => {}
+            }
+            *self.conn.lock().unwrap() = None;
+            for (_, (_, tx)) in self.pending.lock().unwrap().drain() {
+                let _ = tx.send(Err(NOT_CONNECTED.into()));
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    }
+
+    fn serve(&self, stream: TcpStream) {
+        let Ok(reader) = stream.try_clone() else { return };
+        *self.conn.lock().unwrap() = Some(stream);
+        for line in BufReader::new(reader).lines() {
+            let Ok(line) = line else { break };
+            match serde_json::from_str::<FromPtyd>(&line) {
+                Ok(msg) => self.handle(msg),
+                Err(e) => log(format!("terminal host sent a bad line ({e})")),
+            }
+        }
+    }
+
+    fn handle(&self, msg: FromPtyd) {
+        match msg {
+            FromPtyd::Ready { version } => {
+                log(format!("connected to colony-ptyd {version}"));
+                let known: HashSet<String> = self.terms.lock().unwrap().keys().cloned().collect();
+                *self.unconfirmed.lock().unwrap() = known;
+            }
+            FromPtyd::Term { info, scrollback } => {
+                self.unconfirmed.lock().unwrap().remove(&info.term);
+                let sb = base64::engine::general_purpose::STANDARD.decode(scrollback).unwrap_or_default();
+                self.adopt(info, sb.into());
+            }
+            FromPtyd::Synced => {
+                // Terminals ptyd no longer has (it restarted): they're gone.
+                let gone: Vec<String> = self.unconfirmed.lock().unwrap().drain().collect();
+                for term in gone {
+                    self.exited(&term, false);
+                }
+                let n = self.terms.lock().unwrap().len();
+                if n > 0 {
+                    log(format!("relinked {n} live terminal(s)"));
+                }
+            }
+            FromPtyd::Spawned { term, pid } => {
+                if let Some((mut info, tx)) = self.pending.lock().unwrap().remove(&term) {
+                    info.pid = pid;
+                    self.adopt(info, VecDeque::new());
+                    let _ = tx.send(Ok(pid));
+                }
+            }
+            FromPtyd::SpawnFailed { term, error } => {
+                if let Some((_, tx)) = self.pending.lock().unwrap().remove(&term) {
+                    let _ = tx.send(Err(error));
+                }
+            }
+            FromPtyd::Output { term, data } => {
+                let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else { return };
+                if let Some(m) = self.terms.lock().unwrap().get_mut(&term) {
+                    m.scrollback.extend(&bytes);
+                    let excess = m.scrollback.len().saturating_sub(SCROLLBACK_BYTES);
+                    m.scrollback.drain(..excess);
+                }
+                let _ = self.output.send(Output { term_id: term, bytes: Arc::new(bytes) });
+            }
+            FromPtyd::Exited { term, requested } => self.exited(&term, requested),
+        }
+    }
+
+    /// Track a terminal and link it to its bot.
+    fn adopt(&self, info: TermInfo, scrollback: VecDeque<u8>) {
+        self.owned.lock().unwrap().insert(info.pid, info.term.clone());
+        let _ = self.events.blocking_send(Envelope {
+            ts: now_ms(),
+            host: info.host.clone(),
+            session_id: info.session_id.clone(),
+            cwd: None,
+            event: DomainEvent::TerminalAttached { term_id: info.term.clone(), dir: info.dir.clone(), pid: Some(info.pid) },
+        });
+        let mut terms = self.terms.lock().unwrap();
+        let kill_requested = terms.get(&info.term).is_some_and(|m| m.kill_requested);
+        terms.insert(info.term.clone(), Mirror { info, scrollback, kill_requested });
+    }
+
+    fn exited(&self, term: &str, requested: bool) {
+        let Some(m) = self.terms.lock().unwrap().remove(term) else { return };
+        self.owned.lock().unwrap().retain(|_, t| t != term);
+        let _ = self.events.blocking_send(Envelope {
+            ts: now_ms(),
+            host: m.info.host.clone(),
+            session_id: m.info.session_id.clone(),
+            cwd: None,
+            event: DomainEvent::TerminalExited { term_id: term.into(), requested: requested || m.kill_requested },
+        });
+        let _ = self.output.send(Output { term_id: term.into(), bytes: Arc::new(b"\r\n\x1b[2m[session ended]\x1b[0m\r\n".to_vec()) });
     }
 }
 
-#[cfg(not(windows))]
-const UNSUPPORTED: &str = "Colony only hosts terminals on Windows";
-
-#[cfg(windows)]
-#[allow(clippy::type_complexity)]
-fn spawn_pty(
-    program: &str,
-    args: &[String],
-    cwd: Option<&str>,
-    env: &[(String, String)],
-    cols: u16,
-    rows: u16,
-) -> Result<(Arc<Pty>, File, File), String> {
-    let (pty, reader, writer) = Pty::spawn(program, args, cwd, env, cols, rows).map_err(|e| format!("could not start {program}: {e}"))?;
-    Ok((Arc::new(pty), reader, writer))
+/// Connect to colony-ptyd, starting it if it isn't running.
+fn connect() -> Result<TcpStream, String> {
+    if let Ok(s) = try_connect() {
+        return Ok(s);
+    }
+    start_ptyd()?;
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        if let Ok(s) = try_connect() {
+            return Ok(s);
+        }
+    }
+    Err("colony-ptyd didn't start; see ptyd.log in Colony's folder".into())
 }
 
-#[cfg(not(windows))]
-fn spawn_pty(_: &str, _: &[String], _: Option<&str>, _: &[(String, String)], _: u16, _: u16) -> Result<((), File, File), String> {
-    Err(UNSUPPORTED.into())
+fn try_connect() -> Result<TcpStream, String> {
+    let text = std::fs::read_to_string(colony_home().join("ptyd.json")).map_err(|e| e.to_string())?;
+    let info: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let port = info["port"].as_u64().ok_or("no port")? as u16;
+    let token = info["token"].as_str().ok_or("no token")?.to_string();
+    let mut s = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(500)).map_err(|e| e.to_string())?;
+    let _ = s.set_nodelay(true);
+    let hello = serde_json::to_string(&ToPtyd::Hello { token }).expect("serializes");
+    writeln!(s, "{hello}").map_err(|e| e.to_string())?;
+    Ok(s)
+}
+
+/// colony-ptyd ships next to colonyd. It's started detached, outside any job
+/// colonyd is in where possible, so it outlives colonyd.
+fn start_ptyd() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let path = exe.with_file_name(if cfg!(windows) { "colony-ptyd.exe" } else { "colony-ptyd" });
+    if !path.is_file() {
+        return Err(format!("{} is missing", path.display()));
+    }
+    std::fs::create_dir_all(colony_home()).map_err(|e| e.to_string())?;
+    let spawn = |flags: u32| {
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(colony_home().join("ptyd.log")).map_err(|e| e.to_string())?;
+        let mut cmd = std::process::Command::new(&path);
+        cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(log);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(flags);
+        }
+        #[cfg(not(windows))]
+        let _ = flags;
+        cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+    };
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    // Breaking away fails when colonyd's job forbids it; then start it plainly.
+    spawn(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+        .or_else(|_| spawn(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP))
+        .map_err(|e| format!("couldn't start {}: {e}", path.display()))?;
+    log(format!("started {}", path.display()));
+    Ok(())
 }
 
 /// Variables a running Claude Code session sets for its children. If the

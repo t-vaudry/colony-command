@@ -469,9 +469,16 @@ impl Colony {
                     }
                 }
             }
-            DomainEvent::TerminalAttached { term_id, dir } => {
+            DomainEvent::TerminalAttached { term_id, dir, pid } => {
+                // Re-attaching the same terminal (colonyd restarted) keeps
+                // what's known about it; a new terminal starts fresh.
+                if main.terminal.as_deref() != Some(term_id.as_str()) {
+                    main.terminal_pid = None;
+                }
                 main.terminal = Some(term_id.clone());
-                main.terminal_pid = None;
+                if pid.is_some() {
+                    main.terminal_pid = *pid;
+                }
                 if main.project_dir.is_none() {
                     main.set_project_dir(dir);
                     main.cwd = Some(dir.clone());

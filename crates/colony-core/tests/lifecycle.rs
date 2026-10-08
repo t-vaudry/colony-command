@@ -237,7 +237,7 @@ fn term(r: &mut Run, event: colony_core::DomainEvent) {
 fn colony_started_session_links_its_terminal() {
     use colony_core::DomainEvent::{TerminalAttached, TerminalExited};
     let mut r = Run::new(HostId::Wsl("Ubuntu".into()));
-    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\Users\thoma\code\colony-command".into() });
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\Users\thoma\code\colony-command".into(), pid: None });
     let a = &r.colony.agents[SID];
     assert_eq!(a.terminal.as_deref(), Some("t1"));
     assert_eq!(a.state, AgentState::Spawning);
@@ -257,7 +257,7 @@ fn colony_started_session_links_its_terminal() {
     assert_eq!(r.state(SID), AgentState::Crashed);
 
     // Resuming it in a new terminal brings the same bot back.
-    term(&mut r, TerminalAttached { term_id: "t2".into(), dir: r"C:\Users\thoma\code\colony-command".into() });
+    term(&mut r, TerminalAttached { term_id: "t2".into(), dir: r"C:\Users\thoma\code\colony-command".into(), pid: None });
     assert_eq!(r.state(SID), AgentState::Spawning);
     assert_eq!(r.colony.agents[SID].terminal.as_deref(), Some("t2"));
 }
@@ -267,7 +267,7 @@ fn colony_session_waiting_at_startup_needs_you() {
     use colony_core::state::STARTUP_WAIT_MS;
     use colony_core::DomainEvent::TerminalAttached;
     let mut r = Run::new(HostId::Windows);
-    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into() });
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into(), pid: None });
     r.colony.tick(r.t + STARTUP_WAIT_MS + 1);
     assert_eq!(r.state(SID), AgentState::NeedsInput);
     assert_eq!(r.colony.porch().len(), 1);
@@ -281,7 +281,7 @@ fn colony_session_waiting_at_startup_needs_you() {
 fn ending_a_session_from_colony_is_not_a_crash() {
     use colony_core::DomainEvent::{TerminalAttached, TerminalExited};
     let mut r = Run::new(HostId::Windows);
-    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into() });
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into(), pid: None });
     r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
     term(&mut r, TerminalExited { term_id: "t1".into(), requested: true });
     r.colony.tick(r.t + CRASH_GRACE_MS + 1);
@@ -301,7 +301,7 @@ fn a_conversation_open_in_two_places_keeps_both_processes() {
     let mut r = Run::new(HostId::Windows);
     // Open in the desktop app, then also resumed in a Colony terminal.
     seen(&mut r, 100);
-    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into() });
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into(), pid: None });
     assert_eq!(r.colony.agents[SID].pids, vec![100]);
 
     // Ending the Colony copy leaves the desktop copy known and running, so
@@ -364,7 +364,7 @@ fn subagent_permission_requests_land_on_the_subagent() {
 fn a_colony_sessions_own_registration_is_not_another_copy() {
     use colony_core::DomainEvent::TerminalAttached;
     let mut r = Run::new(HostId::Windows);
-    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: "C:/code/x".into() });
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: "C:/code/x".into(), pid: None });
     // The claude that Colony started registers itself; colonyd tags it.
     r.t += 1000;
     let rec = SessionRecord::parse(&format!(r#"{{"pid":35824,"sessionId":"{SID}","entrypoint":"cli","colonyTerm":"t1"}}"#)).unwrap();
@@ -381,4 +381,20 @@ fn a_colony_sessions_own_registration_is_not_another_copy() {
 fn unknown_hook_events_are_ignored() {
     let mut r = Run::new(HostId::Windows);
     assert!(r.hook(json!({"hook_event_name": "SomethingFromTheFuture", "weird": [1, 2]})).is_empty());
+}
+
+#[test]
+fn reattaching_after_a_daemon_restart_keeps_the_session() {
+    use colony_core::DomainEvent::TerminalAttached;
+    let mut r = Run::new(HostId::Windows);
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: "C:/x".into(), pid: Some(8748) });
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "build it"}));
+    seen(&mut r, 8748);
+    assert!(r.colony.agents[SID].other_pids().is_empty());
+    // colonyd restarts; the terminal host reports the same terminal again.
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: "C:/x".into(), pid: Some(8748) });
+    let a = &r.colony.agents[SID];
+    assert_eq!(a.state, AgentState::Working);
+    assert_eq!(a.terminal_pid, Some(8748));
+    assert!(a.other_pids().is_empty());
 }

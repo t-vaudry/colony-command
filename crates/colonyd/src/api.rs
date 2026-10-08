@@ -169,7 +169,7 @@ async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<
         }
         Command::Spawn(req) => {
             let wsl = matches!(req.host, colony_core::HostId::Wsl(_));
-            match pty.spawn(req) {
+            match pty.spawn(req).await {
                 Ok(s) => {
                     if wsl {
                         shared.wsl_wake.notify_one();
