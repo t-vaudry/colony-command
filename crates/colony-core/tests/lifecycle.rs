@@ -189,6 +189,30 @@ fn spawn_goes_idle_without_a_prompt() {
 }
 
 #[test]
+fn cd_into_a_subfolder_keeps_the_project() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup", "cwd": r"C:\code\colony-command"}));
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": r"C:\code\colony-command\app"}));
+    let a = &r.colony.agents[SID];
+    assert_eq!(a.project_name.as_deref(), Some("colony-command"));
+    assert_eq!(a.cwd.as_deref(), Some(r"C:\code\colony-command\app"));
+}
+
+#[test]
+fn registry_folder_overrides_a_hook_cwd() {
+    let mut r = Run::new(HostId::Windows);
+    // Hooks seen first from a subfolder (session started before Colony was running).
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": r"C:\code\colony-command\app"}));
+    assert_eq!(r.colony.agents[SID].project_name.as_deref(), Some("app"));
+    let rec = SessionRecord::parse(&format!(r#"{{"pid":7,"sessionId":"{SID}","cwd":"C:\\code\\colony-command","status":"busy"}}"#)).unwrap();
+    r.t += 1000;
+    r.colony.apply(&Envelope::from_record(HostId::Windows, r.t, rec));
+    let a = &r.colony.agents[SID];
+    assert_eq!(a.project_name.as_deref(), Some("colony-command"));
+    assert_eq!(a.cwd.as_deref(), Some(r"C:\code\colony-command\app"), "shell cwd is kept");
+}
+
+#[test]
 fn unknown_hook_events_are_ignored() {
     let mut r = Run::new(HostId::Windows);
     assert!(r.hook(json!({"hook_event_name": "SomethingFromTheFuture", "weird": [1, 2]})).is_empty());

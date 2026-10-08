@@ -88,7 +88,11 @@ pub struct Agent {
     pub kind: AgentKind,
     pub name: String,
     pub host: HostId,
+    /// Current working directory; moves when the session `cd`s.
     pub cwd: Option<String>,
+    /// The folder the session was started in. Decides the project, so a
+    /// session that `cd`s into a subfolder stays in its district.
+    pub project_dir: Option<String>,
     pub project_key: Option<String>,
     pub project_name: Option<String>,
     /// Session title from the registry.
@@ -127,6 +131,7 @@ impl Agent {
             name: names::main_name(&e.session_id),
             host: e.host.clone(),
             cwd: None,
+            project_dir: None,
             project_key: None,
             project_name: None,
             title: None,
@@ -160,10 +165,22 @@ impl Agent {
 
     fn set_cwd(&mut self, cwd: &str) {
         if self.cwd.as_deref() != Some(cwd) {
-            self.project_key = Some(paths::project_key(&self.host, cwd));
-            self.project_name = Some(paths::project_name(cwd));
             self.cwd = Some(cwd.to_string());
         }
+        if self.project_dir.is_none() {
+            self.set_project(cwd);
+        }
+    }
+
+    /// Pin the project to the folder the session started in.
+    fn set_project_dir(&mut self, dir: &str) {
+        self.project_dir = Some(dir.to_string());
+        self.set_project(dir);
+    }
+
+    fn set_project(&mut self, dir: &str) {
+        self.project_key = Some(paths::project_key(&self.host, dir));
+        self.project_name = Some(paths::project_name(dir));
     }
 
     pub fn is_finished(&self) -> bool {
@@ -191,8 +208,17 @@ impl Colony {
         let mut changed = Vec::new();
         let sid = e.session_id.clone();
         let main = self.agents.entry(sid.clone()).or_insert_with(|| Agent::new_main(e));
-        if let Some(cwd) = &e.cwd {
-            main.set_cwd(cwd);
+        match (&e.event, &e.cwd) {
+            // Registry cwd is handled below as the project folder.
+            (DomainEvent::SessionSeen { .. }, _) | (_, None) => {}
+            // Where a session starts is its project, whatever it cds into later.
+            (DomainEvent::SessionStarted { source }, Some(cwd))
+                if main.project_dir.is_none() && source.as_deref() != Some("compact") =>
+            {
+                main.set_project_dir(cwd);
+                main.set_cwd(cwd);
+            }
+            (_, Some(cwd)) => main.set_cwd(cwd),
         }
         if !matches!(e.event, DomainEvent::SessionSeen { .. } | DomainEvent::SessionGone { .. }) {
             main.hooks_seen = true;
@@ -203,6 +229,13 @@ impl Colony {
 
         match &e.event {
             DomainEvent::SessionSeen { record } => {
+                // The registry keeps the folder the session started in.
+                if let Some(dir) = &record.cwd {
+                    main.set_project_dir(dir);
+                    if main.cwd.is_none() {
+                        main.cwd = Some(dir.clone());
+                    }
+                }
                 main.pid = Some(record.pid);
                 main.title = record.name.clone().or(main.title.take());
                 main.entrypoint = record.entrypoint.clone().or(main.entrypoint.take());
@@ -231,11 +264,13 @@ impl Colony {
                     }
                 }
             },
-            DomainEvent::PromptSubmitted { preview } => {
-                if main.objective.is_none() && !preview.is_empty() {
-                    main.objective = Some(preview.clone());
+            DomainEvent::PromptSubmitted { preview, synthetic } => {
+                if !synthetic && !preview.is_empty() {
+                    if main.objective.is_none() {
+                        main.objective = Some(preview.clone());
+                    }
+                    main.last_prompt = Some(preview.clone());
                 }
-                main.last_prompt = Some(preview.clone());
                 main.consecutive_failures = 0;
                 main.set_state(AgentState::Working, None, e.ts);
             }

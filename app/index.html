@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Colony Command</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Atkinson+Hyperlegible:wght@400;700&family=JetBrains+Mono:wght@400;600&display=swap"
+    />
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">Colony Command</div>
+      <div class="counts" id="counts"></div>
+      <div class="conn connecting" id="conn">connecting…</div>
+    </header>
+    <main class="stage">
+      <div id="map"></div>
+      <aside id="inspector" aria-live="polite"></aside>
+    </main>
+    <footer id="porch-strip"></footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
