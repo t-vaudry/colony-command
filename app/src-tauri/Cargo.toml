@@ -1,0 +1,22 @@
+[package]
+name = "colony-app"
+description = "Colony Command desktop app: the map in a window, with the daemon started on demand."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "colony-command"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+# Embed the built frontend instead of loading the Vite dev server.
+custom-protocol = ["tauri/custom-protocol"]

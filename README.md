@@ -15,11 +15,11 @@ Design spec: [`docs/design-spec.html`](docs/design-spec.html)
 | `crates/colony-probe` | Runs in each WSL distro, streams its events to colonyd over stdio |
 | `crates/colonyd` | Daemon: reducer + local WebSocket API on 127.0.0.1:7878 |
 | `app` | The map: PixiJS world + HUD, connects to colonyd |
+| `app/src-tauri` | Desktop app: the map in a window; starts colonyd if it isn't running |
 | `spikes/capture` | Hook that records raw Claude Code hook payloads, for schema checks |
 | `docs/` | Design spec |
 
-Planned: `crates/colony-hook` (replaces the capture spike, adds approvals),
-and a Tauri desktop shell around `app/`.
+Planned: `crates/colony-hook` (replaces the capture spike, adds approvals).
 
 ## Test
 
@@ -31,7 +31,16 @@ Or inside Ubuntu:
 
     wsl -d Ubuntu -- bash scripts/test-wsl.sh
 
-## Run the daemon
+## Run the app
+
+    powershell -File scripts/build-app.ps1
+    targeteleasecolony-command.exe
+
+The app starts `colonyd` (next to it) when no daemon is answering, and
+leaves it running when you close the window, so sessions it hosts keep
+going. Daemon log: `~/.colony/colonyd.log`.
+
+## Run the daemon by hand
 
     wsl -d Ubuntu -- bash scripts/install-probe.sh   # once per distro
     cargo run -p colonyd

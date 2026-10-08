@@ -209,6 +209,8 @@ async fn ws(
     if !authorized(&shared, &params, &headers) {
         return unauthorized();
     }
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("no origin").to_string();
+    log(format!("map connected ({origin})"));
     upgrade.on_upgrade(move |socket| stream(shared, socket))
 }
 
