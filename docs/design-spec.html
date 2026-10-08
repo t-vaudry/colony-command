@@ -1,0 +1,1166 @@
+<title>Colony Command</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: sticky table of contents on the left, a live colony map as the opener, then a long-form spec column. */
+:root{
+  --bg:#EDF0EA; --surface:#F8FAF5; --ink:#1C2520; --muted:#56655C; --line:#C9D3CA; --accent:#A85A26;
+  --ground:#DCE4D5; --plot:#E9EEE3; --plot-edge:#BFCBBB; --porch:#F3E6D3; --porch-edge:#D9BE98;
+  --crit:#CF3F36; --input:#C99212; --ok:#2F8F4A; --done:#2B6CC0; --idle:#87918B;
+  --p1:#7856BE; --p2:#B04B88; --p3:#3F6B8F; --p4:#94642F;
+  --code-bg:#E3E9DF;
+  --f-display:"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --f-body:"Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --f-mono:"JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#121815; --surface:#1A221E; --ink:#E2EAE4; --muted:#93A39A; --line:#2D3A33; --accent:#E38A4E;
+    --ground:#18211C; --plot:#1F2a24; --plot-edge:#33443A; --porch:#2A241B; --porch-edge:#5A4A33;
+    --crit:#F0675E; --input:#F0BF45; --ok:#5CC27A; --done:#6AA5F0; --idle:#7D8983;
+    --p1:#9B7CE0; --p2:#D46FAA; --p3:#6F9BC2; --p4:#C48D52;
+    --code-bg:#202A25; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#121815; --surface:#1A221E; --ink:#E2EAE4; --muted:#93A39A; --line:#2D3A33; --accent:#E38A4E;
+  --ground:#18211C; --plot:#1F2a24; --plot-edge:#33443A; --porch:#2A241B; --porch-edge:#5A4A33;
+  --crit:#F0675E; --input:#F0BF45; --ok:#5CC27A; --done:#6AA5F0; --idle:#7D8983;
+  --p1:#9B7CE0; --p2:#D46FAA; --p3:#6F9BC2; --p4:#C48D52;
+  --code-bg:#202A25; color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg); color:var(--ink); font-family:var(--f-body); font-size:16px; line-height:1.6}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible,canvas:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.shell{display:grid; grid-template-columns:220px minmax(0,1fr); gap:40px; max-width:1240px; margin:0 auto; padding-inline:24px; padding-block:32px 80px}
+nav.toc{position:sticky; top:calc(env(safe-area-inset-top,0px) + 24px); align-self:start; max-height:calc(100vh - 48px); overflow:auto; font-size:13px}
+nav.toc .brand{font-family:var(--f-display); font-weight:800; font-size:18px; letter-spacing:-.01em; margin-bottom:12px}
+nav.toc ol{list-style:none; margin:0; padding:0; display:grid; gap:2px; counter-reset:t}
+nav.toc li{counter-increment:t}
+nav.toc a{display:flex; gap:8px; color:var(--muted); text-decoration:none; padding:3px 6px; border-radius:4px}
+nav.toc a::before{content:counter(t,decimal-leading-zero); font-family:var(--f-mono); font-size:11px; color:var(--line); padding-top:2px}
+nav.toc a:hover{color:var(--ink); background:var(--surface)}
+main{min-width:0}
+header.hero h1{font-family:var(--f-display); font-weight:800; font-size:clamp(36px,5vw,60px); line-height:1; letter-spacing:-.025em; margin:0 0 12px; text-wrap:balance}
+header.hero p.lede{font-size:19px; max-width:62ch; color:var(--muted); margin:0 0 24px}
+.eyebrow{font-family:var(--f-mono); font-size:11.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin-bottom:10px}
+/* Colony demo */
+.colony{background:var(--surface); border:1px solid var(--line); border-radius:10px; overflow:hidden}
+.hud{display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding:10px 14px; border-bottom:1px solid var(--line); font-family:var(--f-mono); font-size:12px}
+.hud .title{font-weight:600; margin-right:auto}
+.chip{display:inline-flex; align-items:center; gap:6px; font-variant-numeric:tabular-nums}
+.dot{width:9px; height:9px; border-radius:50%; display:inline-block}
+.dot.crit{background:var(--crit)} .dot.input{background:var(--input)} .dot.ok{background:var(--ok)} .dot.done{background:var(--done)} .dot.idle{background:var(--idle)}
+.stage{display:grid; grid-template-columns:minmax(0,1fr) 250px}
+.canvas-wrap{position:relative; min-width:0; background:var(--ground)}
+canvas#world{display:block; width:100%; height:auto; cursor:pointer}
+.inspector{border-left:1px solid var(--line); padding:14px; font-size:13px; display:flex; flex-direction:column; gap:10px; min-width:0}
+.inspector h3{font-family:var(--f-display); font-size:18px; margin:0}
+.inspector .k{font-family:var(--f-mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
+.inspector .row{display:grid; gap:2px}
+.bar{height:6px; background:var(--line); border-radius:3px; overflow:hidden}
+.bar > span{display:block; height:100%; background:var(--ok)}
+.pill{display:inline-block; font-family:var(--f-mono); font-size:11px; padding:2px 8px; border-radius:99px; color:var(--surface); font-weight:600}
+.inspector .actions{display:flex; flex-wrap:wrap; gap:6px; margin-top:auto}
+.inspector button{font:inherit; font-size:12px; padding:5px 10px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--ink); cursor:pointer}
+.inspector button:hover{border-color:var(--accent)}
+.demo-note{font-size:12px; color:var(--muted); padding:8px 14px; border-top:1px solid var(--line)}
+/* Long-form */
+section.spec{padding-top:56px; scroll-margin-top:16px}
+section.spec > h2{font-family:var(--f-display); font-weight:700; font-size:30px; letter-spacing:-.015em; line-height:1.15; margin:0 0 6px; text-wrap:balance; display:flex; gap:14px; align-items:baseline}
+section.spec > h2 .n{font-family:var(--f-mono); font-size:14px; font-weight:600; color:var(--accent)}
+section.spec > .sub{color:var(--muted); margin:0 0 20px; max-width:65ch}
+h3{font-family:var(--f-display); font-weight:700; font-size:19px; margin:28px 0 8px}
+h4{font-size:15px; margin:18px 0 4px}
+p,li{max-width:70ch}
+ul,ol{padding-left:22px}
+code{font-family:var(--f-mono); font-size:.86em; background:var(--code-bg); padding:1px 5px; border-radius:4px}
+pre{font-family:var(--f-mono); font-size:12.5px; line-height:1.5; background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:14px 16px; overflow-x:auto; margin:12px 0}
+pre code{background:none; padding:0; font-size:inherit}
+pre.wire{font-size:11.5px; line-height:1.35}
+pre.mermaid{background:var(--surface); text-align:center}
+.tbl{overflow-x:auto; margin:12px 0; border:1px solid var(--line); border-radius:8px}
+table{border-collapse:collapse; width:100%; font-size:14px; background:var(--surface)}
+th,td{text-align:left; vertical-align:top; padding:8px 12px; border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:none}
+th{font-family:var(--f-mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600; background:var(--bg)}
+td code{white-space:nowrap}
+.sev{display:inline-flex; align-items:center; gap:6px; font-weight:700}
+.principles{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; margin:16px 0}
+.principles div{padding:14px 16px; border-top:3px solid var(--accent); background:var(--surface); border-radius:0 0 6px 6px}
+.principles b{display:block; font-family:var(--f-display); font-size:16px; margin-bottom:4px}
+.principles p{margin:0; font-size:14.5px; color:var(--muted)}
+.callout{border-left:3px solid var(--input); background:var(--surface); padding:10px 16px; margin:16px 0; font-size:15px}
+.callout.crit{border-color:var(--crit)}
+.two{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:20px}
+.two > div{min-width:0}
+.yes{color:var(--ok); font-weight:700} .no{color:var(--crit); font-weight:700} .part{color:var(--input); font-weight:700}
+@media (max-width:900px){
+  .shell{grid-template-columns:minmax(0,1fr); padding-inline:16px; gap:20px}
+  nav.toc{position:static; max-height:none}
+  nav.toc ol{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+  .stage{grid-template-columns:minmax(0,1fr)}
+  .inspector{border-left:none; border-top:1px solid var(--line)}
+}
+@media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto} }
+</style>
+
+<div class="shell">
+<nav class="toc" aria-label="Contents">
+  <div class="brand">Colony Command</div>
+  <ol>
+    <li><a href="#vision">Product vision</a></li>
+    <li><a href="#flows">User flows</a></li>
+    <li><a href="#mechanics">Core mechanics</a></li>
+    <li><a href="#behavior">Behavioral model</a></li>
+    <li><a href="#states">State machines</a></li>
+    <li><a href="#arch">System architecture</a></li>
+    <li><a href="#ui">UI architecture</a></li>
+    <li><a href="#data">Data model</a></li>
+    <li><a href="#events">Event model</a></li>
+    <li><a href="#anim">Animation system</a></li>
+    <li><a href="#stack">Tech stack</a></li>
+    <li><a href="#mvp">MVP</a></li>
+    <li><a href="#v2">V2 roadmap</a></li>
+    <li><a href="#risks">Technical risks</a></li>
+    <li><a href="#layouts">Screen layouts</a></li>
+    <li><a href="#lifecycles">Agent life cycles</a></li>
+    <li><a href="#plan">Implementation plan</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">Design spec · v0.1 · Windows + WSL</div>
+  <h1>Colony Command</h1>
+  <p class="lede">Every Claude Code session becomes a small worker on a shared map. Projects are districts, directories are buildings, and the front porch is where agents come to find you. The map stays quiet while things are fine and gets loud only where your attention is needed.</p>
+</header>
+
+<div class="colony" aria-label="Interactive colony prototype">
+  <div class="hud">
+    <span class="title">COLONY · 4 districts · <span id="c-total">0</span> agents</span>
+    <span class="chip"><span class="dot crit"></span>blocked <b id="c-crit">0</b></span>
+    <span class="chip"><span class="dot input"></span>needs input <b id="c-input">0</b></span>
+    <span class="chip"><span class="dot ok"></span>working <b id="c-ok">0</b></span>
+    <span class="chip"><span class="dot done"></span>ready to review <b id="c-done">0</b></span>
+    <span class="chip"><span class="dot idle"></span>idle <b id="c-idle">0</b></span>
+  </div>
+  <div class="stage">
+    <div class="canvas-wrap"><canvas id="world" width="960" height="440" tabindex="0" aria-label="Colony map. Click a bot to inspect it."></canvas></div>
+    <aside class="inspector" id="insp" aria-live="polite">
+      <div class="k">Inspector</div>
+      <h3>Click a bot</h3>
+      <p style="margin:0;color:var(--muted)">Bots on the porch need you. Red ones are stuck, yellow ones have a question. Packages on the review dock are finished work. Click the dock to mark them reviewed.</p>
+    </aside>
+  </div>
+  <div class="demo-note">Working prototype of the map behavior with simulated sessions. Names, objectives, and token counts are example data.</div>
+</div>
+
+<!-- 1 -->
+<section class="spec" id="vision">
+  <h2><span class="n">01</span>Product vision</h2>
+  <p class="sub">An operations console that looks like a colony sim, built so a two-second glance answers "does anything need me?"</p>
+  <p>Running ten to a hundred Claude Code sessions is an attention-routing problem. The agents are fast; the bottleneck is the human noticing that one of them stopped to ask a question forty minutes ago. Terminal tabs hide that. A dashboard table shows it but nobody keeps a table open all day.</p>
+  <p>Colony Command treats your sessions as a population living on one surface. Their state is shown through where they stand and how they move, so you read the whole fleet the way you read a room. The playful layer is there to make the tool pleasant to keep open, and every bit of it must carry real information.</p>
+  <div class="principles">
+    <div><b>Visuals never lie</b><p>Every animation maps to a real signal. A state change shows on the bot's badge within one second, even if the bot is still walking to its new spot.</p></div>
+    <div><b>Calm until it isn't</b><p>Healthy work moves slowly and quietly. Motion, color saturation, and sound are reserved for things that need you. This is the attention budget.</p></div>
+    <div><b>Space carries meaning</b><p>Districts are projects, buildings are directories, the porch is you. Bots keep stable home spots so your spatial memory does half the work.</p></div>
+    <div><b>Act where you look</b><p>Approve a permission, answer a question, interrupt, or kill from the map. Opening a terminal is the fallback, not the main path.</p></div>
+    <div><b>Three to three hundred</b><p>Level of detail collapses bots into dots and districts into heat at scale, while the porch always shows every agent that needs you.</p></div>
+  </div>
+  <h3>Success metrics</h3>
+  <div class="tbl"><table>
+    <tr><th>Metric</th><th>Definition</th><th>Target</th></tr>
+    <tr><td>Human latency</td><td>Median time from an agent asking (permission, question, error) to a human response</td><td>Cut by 50% against terminal-tab baseline</td></tr>
+    <tr><td>Glance accuracy</td><td>User correctly names blocked or waiting agents after a 3 s look at the map</td><td>&ge; 90%</td></tr>
+    <tr><td>Agent idle ratio</td><td>Share of session wall-clock spent waiting on a human</td><td>Visible on the map as a colony stat; drive it down</td></tr>
+    <tr><td>Concurrent span</td><td>Sessions a user runs at once without losing track</td><td>From ~5 to 30+</td></tr>
+    <tr><td>Keep-open rate</td><td>Days the app stays open for more than 4 hours</td><td>The "do people like living with it" check</td></tr>
+  </table></div>
+</section>
+
+<!-- 2 -->
+<section class="spec" id="flows">
+  <h2><span class="n">02</span>User experience flows</h2>
+  <p class="sub">The eight flows that matter, in the order a typical day hits them.</p>
+  <h3>A. Morning open</h3>
+  <ol>
+    <li>App launches with Windows; the daemon was already running and has been recording overnight.</li>
+    <li>The camera opens on the full colony. A small "while you were away" scroll on the porch lists what changed: 3 finished, 1 crashed, 2 waiting since 02:14.</li>
+    <li>Press <code>R</code> to play a 20-second time-lapse of the night, or <code>Esc</code> to dismiss.</li>
+  </ol>
+  <h3>B. Glance and triage</h3>
+  <ol>
+    <li>Look at the porch. Red bots stand at the front, yellow behind them, ordered by severity then wait time.</li>
+    <li>Press <code>Space</code> to jump to the first one. The camera eases to it and the inspector opens on the question or error.</li>
+    <li>Resolve it (approve, answer, or dismiss); the bot visibly walks back to its district and starts working. <code>Space</code> again for the next.</li>
+  </ol>
+  <h3>C. Approve a permission from the map</h3>
+  <ol>
+    <li>A bot hits a permission prompt for <code>Bash(npm run migrate)</code>. Its hook holds the request and tells the daemon.</li>
+    <li>The bot walks to the porch holding a yellow card showing the command. Hover shows the full command and cwd.</li>
+    <li>Click <b>Allow once</b>, <b>Allow always for this project</b>, or <b>Deny with note</b>. The hook returns the decision; Claude continues.</li>
+  </ol>
+  <h3>D. Answer a question</h3>
+  <ol>
+    <li>Agent ends its turn with a question. The daemon classifies the last message as a question (heuristics, optional Haiku classifier).</li>
+    <li>Bot holds up a "?" card and periodically raises its hand. Inspector shows the question, the last three assistant messages, and a reply box.</li>
+    <li>Type a reply. It is sent into the session's PTY (for sessions Colony launched) or copied with a "focus terminal" button (for adopted external sessions).</li>
+  </ol>
+  <h3>E. Review finished work</h3>
+  <ol>
+    <li>A bot finishes a turn with no question pending. It celebrates, raises a blue flag, and carries a package to the review dock.</li>
+    <li>Click the package: summary of the final message, files changed (git diff stat), tests run, tokens spent.</li>
+    <li>Mark reviewed (bot goes idle), send follow-up (bot goes back to work), or open the diff in your editor.</li>
+  </ol>
+  <h3>F. Spawn a new bot</h3>
+  <ol>
+    <li>Drag from the "hatchery" button onto a district, or press <code>N</code> and pick a project.</li>
+    <li>Choose host (Windows or a WSL distro), model, permission mode, and type the objective.</li>
+    <li>Colony launches <code>claude</code> in a PTY it owns; a bot hatches in the district and walks to its first building.</li>
+  </ol>
+  <h3>G. Dive into a workspace</h3>
+  <ol>
+    <li>Double-click a bot. The camera zooms into its district; buildings expand into the directories it has touched, lit by recency.</li>
+    <li>Subagents are visible at their own buildings with tethers back to the parent. A terminal pane slides up with the live session.</li>
+  </ol>
+  <h3>H. Handle a crash</h3>
+  <ol>
+    <li>Process exits without a <code>SessionEnd</code> event. The bot keels over in place, a red marker appears, and it is added to the porch as a ghost.</li>
+    <li>Inspector offers <b>Resume</b> (runs <code>claude --resume &lt;id&gt;</code> in a new Colony PTY), <b>View last output</b>, or <b>Archive</b>.</li>
+  </ol>
+</section>
+
+<!-- 3 -->
+<section class="spec" id="mechanics">
+  <h2><span class="n">03</span>Core game mechanics</h2>
+  <p class="sub">Each mechanic is a productivity feature first. The "game" column is how it looks; the "job" column is why it exists.</p>
+  <div class="tbl"><table>
+    <tr><th>Mechanic</th><th>Game</th><th>Job</th></tr>
+    <tr><td><b>Districts</b></td><td>Each project is a fenced plot of land. Plot size grows with recent activity; quiet projects shrink toward the map edge.</td><td>Shows where activity and spend are concentrated. Same repo from Windows and WSL maps to one district.</td></tr>
+    <tr><td><b>Buildings</b></td><td>Directories an agent has touched rise as buildings inside the district. Recently edited ones are lit.</td><td>Shows where agents are working inside a codebase, and when two agents are editing the same area (collision warning: both bots bump into each other at the same door).</td></tr>
+    <tr><td><b>The front porch</b></td><td>A strip at the bottom center of the map, closest to "you". Agents that need a human walk there and queue.</td><td>A physical attention queue. Ordering is severity, then wait time. Nothing that needs you can be off-screen.</td></tr>
+    <tr><td><b>Review dock</b></td><td>Finished bots deliver packages to the dock. Packages pile up until you open them.</td><td>An inbox for completed work. The pile height is your review backlog.</td></tr>
+    <tr><td><b>Patience</b></td><td>A waiting bot has a patience meter. As it drains, its emotes escalate: calm hand-raise, then bouncing, then waving at the camera.</td><td>Escalation without constant noise. At configurable thresholds, an OS toast, then a phone push.</td></tr>
+    <tr><td><b>Weather</b></td><td>Storm cloud over a district with failing tests or repeated tool errors; fog when the API is rate-limiting; sun after a green test run.</td><td>District-level health you can read from across the room.</td></tr>
+    <tr><td><b>Fuel</b></td><td>Each bot carries a small fuel gauge (context window used). Each district has a coin counter (spend today).</td><td>Context pressure is a real failure mode. A bot near full context looks heavy and slow, a hint that compaction is coming.</td></tr>
+    <tr><td><b>Work orders</b></td><td>Drag text, a GitHub issue URL, or a file onto a bot to hand it a task. Drag onto a district to hatch a new bot with that task.</td><td>Fast delegation without opening a terminal.</td></tr>
+    <tr><td><b>Squads</b></td><td>Box-select bots, press <code>Ctrl+1</code> to bind a squad, like an RTS control group.</td><td>Broadcast one instruction ("rebase on main and rerun tests") to many sessions.</td></tr>
+    <tr><td><b>Day cycle</b></td><td>Lighting follows local time; the end of the day shows a summary scroll.</td><td>Daily digest: what shipped, what is stuck, what it cost.</td></tr>
+  </table></div>
+  <div class="callout">Deliberately left out: XP, levels, or rewards for agents. Those would push users to keep agents busy rather than productive. Colony stats measure human latency and finished work, nothing else.</div>
+</section>
+
+<!-- 4 -->
+<section class="spec" id="behavior">
+  <h2><span class="n">04</span>Agent behavioral model</h2>
+  <p class="sub">Five layers. Only the top one is real. Everything below it is presentation, and every layer must agree with the one above it.</p>
+  <div class="tbl"><table>
+    <tr><th>Layer</th><th>Owns</th><th>Updated</th><th>Example</th></tr>
+    <tr><td>1. Truth</td><td>Lifecycle state, current tool, pending question, todos, tokens</td><td>On each domain event (daemon)</td><td><code>state=needs_input, reason=permission, tool=Bash</code></td></tr>
+    <tr><td>2. Mood</td><td>Urgency (0–1) and valence (−1…1), derived from state and time-in-state</td><td>1 Hz</td><td>Waiting 12 min of a 15 min patience budget: urgency 0.8</td></tr>
+    <tr><td>3. Intent</td><td>Where the bot wants to be and which activity to play</td><td>On state or tool change</td><td>Go to porch slot 2, hold card</td></tr>
+    <tr><td>4. Locomotion</td><td>Path on the tile grid, steering, crowd separation</td><td>20 Hz sim tick</td><td>A* to porch, avoid other bots</td></tr>
+    <tr><td>5. Animation</td><td>Body pose, eyes, props, emotes, particles</td><td>60 fps render</td><td>Raise hand every 2.5 s, faster as urgency rises</td></tr>
+  </table></div>
+  <h3>State to behavior</h3>
+  <div class="tbl"><table>
+    <tr><th>State</th><th>Place</th><th>Motion</th><th>Overhead</th><th>Motion budget</th></tr>
+    <tr><td><span class="sev"><span class="dot ok"></span>Working</span></td><td>Building for the file or dir being touched</td><td>Purposeful walk, then tool activity at the building</td><td>Tool glyph, small sparks</td><td>Low: steady, never flashing</td></tr>
+    <tr><td><span class="sev"><span class="dot input"></span>Needs input</span></td><td>Porch, second row</td><td>Faces camera, holds card, raises hand periodically</td><td>"?" card or permission card</td><td>Medium, rising with urgency</td></tr>
+    <tr><td><span class="sev"><span class="dot crit"></span>Blocked</span></td><td>Porch, front row</td><td>Paces, waves both arms</td><td>Flashing "!"</td><td>High</td></tr>
+    <tr><td><span class="sev"><span class="dot done"></span>Ready to review</span></td><td>Walks to review dock</td><td>Jump, then carries package</td><td>Blue flag</td><td>One burst, then calm</td></tr>
+    <tr><td><span class="sev"><span class="dot idle"></span>Idle</span></td><td>Home spot in district</td><td>Sits; occasional slow wander</td><td>"z" after 10 min</td><td>Near zero, desaturated</td></tr>
+    <tr><td>Spawning subagents</td><td>Stays at its building</td><td>Opens hatch; workers pop out and leave on tethers</td><td>Count badge "×3"</td><td>One burst</td></tr>
+    <tr><td>Crashed</td><td>Where it fell</td><td>Lies on side, greyed</td><td>Red cross; ghost entry on porch</td><td>Static, high contrast</td></tr>
+  </table></div>
+  <h3>Tool to activity</h3>
+  <p>The current tool call sets which building a working bot goes to and what it does there. Building is the directory of the file in <code>tool_input</code>; if there is none, the district's central plaza.</p>
+  <div class="tbl"><table>
+    <tr><th>Tool</th><th>Activity</th><th>Prop</th></tr>
+    <tr><td><code>Read</code>, <code>Grep</code>, <code>Glob</code></td><td>Studying</td><td>Open book, magnifier</td></tr>
+    <tr><td><code>Edit</code>, <code>Write</code>, <code>NotebookEdit</code></td><td>Building</td><td>Hammer, bricks added to building</td></tr>
+    <tr><td><code>Bash</code></td><td>Running a machine; test commands get a test bench</td><td>Lever, gears; smoke on non-zero exit</td></tr>
+    <tr><td><code>WebFetch</code>, <code>WebSearch</code></td><td>Scouting</td><td>Telescope at district edge</td></tr>
+    <tr><td><code>Task</code> / <code>Agent</code></td><td>Delegating</td><td>Hatch, whistle</td></tr>
+    <tr><td><code>TodoWrite</code></td><td>Planning</td><td>Clipboard; progress pips update</td></tr>
+    <tr><td><code>mcp__*</code></td><td>Using a radio</td><td>Antenna with server name</td></tr>
+    <tr><td>Thinking (no tool, streaming text)</td><td>Pondering</td><td>Thought bubble</td></tr>
+  </table></div>
+  <h3>Rules that keep it honest</h3>
+  <ul>
+    <li><b>Truth latency under one second.</b> The status ring and overhead icon switch immediately. Walking to the new place can take a few seconds; the badge does not wait for the walk.</li>
+    <li><b>Stable homes.</b> Each bot gets a home tile seeded from its session id. Same bot, same place, every day.</li>
+    <li><b>No idle fidgeting that resembles distress.</b> Idle animations never use arm-waving or fast motion, so they cannot be mistaken for a blocked bot.</li>
+    <li><b>Color is never the only channel.</b> Each state also has a distinct silhouette, icon, and motion pattern, so it works for color-blind users and at small sizes.</li>
+  </ul>
+</section>
+
+<!-- 5 -->
+<section class="spec" id="states">
+  <h2><span class="n">05</span>State machine diagrams</h2>
+  <p class="sub">Three machines: the agent lifecycle, the subagent lifecycle, and the attention item that lives on the porch.</p>
+  <h3>Agent lifecycle (truth layer)</h3>
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> Spawning: SessionStart / process seen
+  Spawning --> Working: UserPromptSubmit
+  Spawning --> Idle: no prompt in 60s
+  Working --> Working: PreToolUse / PostToolUse
+  Working --> NeedsInput: Notification(permission) or PreToolUse held
+  Working --> Blocked: N tool errors in a row, API error, stall > T
+  Working --> Delegating: PreToolUse(Task/Agent)
+  Delegating --> Working: all SubagentStop
+  Working --> AwaitingReply: Stop + last msg is question
+  Working --> ReadyToReview: Stop + no question
+  NeedsInput --> Working: decision returned / prompt answered
+  Blocked --> Working: activity resumes
+  AwaitingReply --> Working: UserPromptSubmit
+  ReadyToReview --> Working: UserPromptSubmit
+  ReadyToReview --> Idle: marked reviewed / 30 min
+  Idle --> Working: UserPromptSubmit
+  Working --> Crashed: process gone, no SessionEnd
+  Idle --> Ended: SessionEnd
+  ReadyToReview --> Ended: SessionEnd
+  Crashed --> Spawning: resume
+  Ended --> [*]
+</pre>
+  <p><code>NeedsInput</code> and <code>AwaitingReply</code> both render yellow. They stay separate in the truth layer because the actions differ: one takes a decision, the other a message.</p>
+  <h3>Subagent lifecycle</h3>
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> Hatching: PreToolUse(Task/Agent) on parent
+  Hatching --> Outbound: emerges, tether attached
+  Outbound --> Working: reaches first building
+  Working --> Working: tool events attributed to subagent
+  Working --> Blocked: errors / permission held
+  Blocked --> Working: resolved
+  Working --> Returning: SubagentStop
+  Returning --> Merged: reaches parent, hands result
+  Working --> Orphaned: parent crashed / ended
+  Merged --> [*]
+  Orphaned --> [*]
+</pre>
+  <h3>Attention item (porch)</h3>
+<pre class="mermaid">
+stateDiagram-v2
+  [*] --> Open: agent enters NeedsInput, AwaitingReply, Blocked, or Crashed
+  Open --> Escalated: wait > patience budget
+  Escalated --> Notified: OS toast / push sent
+  Open --> Resolved: human acts in Colony
+  Escalated --> Resolved: human acts
+  Notified --> Resolved: human acts
+  Open --> SelfResolved: agent resumes without Colony (answered in terminal)
+  Resolved --> [*]
+  SelfResolved --> [*]
+</pre>
+  <h3>Transition triggers and confidence</h3>
+  <div class="tbl"><table>
+    <tr><th>Transition</th><th>Primary signal</th><th>Fallback signal</th></tr>
+    <tr><td>→ Working</td><td>Hook <code>UserPromptSubmit</code>, <code>PreToolUse</code></td><td>New assistant lines in transcript JSONL</td></tr>
+    <tr><td>→ NeedsInput</td><td>Hook <code>Notification</code> with a permission message; or Colony's own <code>PreToolUse</code> gate holding the call</td><td>PTY output matches the permission prompt pattern</td></tr>
+    <tr><td>→ AwaitingReply / ReadyToReview</td><td>Hook <code>Stop</code> + question classifier on the last assistant message</td><td>Transcript quiet &gt; 20 s after an assistant message</td></tr>
+    <tr><td>→ Blocked</td><td>3+ consecutive failed <code>PostToolUse</code>, API error lines, or Working with no events for 5 min while the process uses no CPU</td><td>Same, from transcript</td></tr>
+    <tr><td>→ Crashed</td><td>Process exit seen by process watcher without <code>SessionEnd</code></td><td>PID missing on next scan</td></tr>
+  </table></div>
+</section>
+
+<!-- 6 -->
+<section class="spec" id="arch">
+  <h2><span class="n">06</span>System architecture</h2>
+  <p class="sub">A long-running daemon on Windows does all the observing and controlling. A small probe runs inside each WSL distro. The UI is a client and can be closed without losing anything.</p>
+<pre class="mermaid">
+flowchart LR
+  subgraph WIN["Windows host"]
+    CCW["claude sessions&lt;br/&gt;Windows Terminal, VS Code"]
+    HKW["colony-hook.exe"]
+    CCW -- hook stdin JSON --> HKW
+    HKW -- named pipe --> D
+    subgraph D["colonyd daemon"]
+      ING["Ingest&lt;br/&gt;hooks · transcripts · procs · PTY"]
+      NORM["Normalizer&lt;br/&gt;source events to domain events"]
+      STORE[("SQLite&lt;br/&gt;event log + projections")]
+      DER["State deriver&lt;br/&gt;lifecycle · attention · classifier"]
+      PTY["PTY host&lt;br/&gt;ConPTY sessions"]
+      CTRL["Control plane&lt;br/&gt;approve · send · interrupt · kill"]
+      API["Local API&lt;br/&gt;WebSocket + HTTP, 127.0.0.1, token"]
+      ING --> NORM --> STORE --> DER --> API
+      CTRL --> PTY
+      API --> CTRL
+    end
+    FSW["ReadDirectoryChangesW&lt;br/&gt;~/.claude/projects"] --> ING
+    PSW["Process watcher&lt;br/&gt;Toolhelp32 / WMI"] --> ING
+    UI["Colony UI&lt;br/&gt;Tauri webview&lt;br/&gt;PixiJS world + React HUD"]
+    UI <-- WS --> API
+  end
+  subgraph WSL["WSL distro, one per distro"]
+    CCL["claude sessions&lt;br/&gt;bash / tmux"]
+    HKL["colony-hook"]
+    CCL -- hook stdin JSON --> HKL
+    HKL -- unix socket --> PR
+    PR["colony-probe&lt;br/&gt;inotify tail · /proc scan · PTY host"]
+  end
+  D -- "wsl.exe -d distro -- colony-probe --stdio" --> PR
+  PR -- framed JSON over stdio --> ING
+</pre>
+  <h3>Components</h3>
+  <h4>colony-hook (per platform, static binary)</h4>
+  <p>Registered for every Claude Code hook event in user-level <code>settings.json</code>. Reads the hook JSON from stdin, adds its parent process chain (so the daemon can map <code>session_id</code> to a PID), and forwards it. It must return in under 50 ms for observe-only events. If the daemon is down it appends to a spool file and exits 0, so Claude Code is never slowed or broken by Colony. For <code>PreToolUse</code> it can optionally wait for a decision (see Control below).</p>
+<pre><code>// ~/.claude/settings.json (user level), installed by Colony with a diff preview
+{
+  "hooks": {
+    "SessionStart":     [{ "hooks": [{ "type": "command", "command": "colony-hook" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "colony-hook" }] }],
+    "PreToolUse":       [{ "matcher": "*", "hooks": [{ "type": "command", "command": "colony-hook --gate", "timeout": 600 }] }],
+    "PostToolUse":      [{ "matcher": "*", "hooks": [{ "type": "command", "command": "colony-hook" }] }],
+    "Notification":     [{ "hooks": [{ "type": "command", "command": "colony-hook" }] }],
+    "Stop":             [{ "hooks": [{ "type": "command", "command": "colony-hook" }] }],
+    "SubagentStop":     [{ "hooks": [{ "type": "command", "command": "colony-hook" }] }],
+    "PreCompact":       [{ "hooks": [{ "type": "command", "command": "colony-hook" }] }],
+    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "colony-hook" }] }]
+  }
+}</code></pre>
+  <h4>colony-probe (inside each WSL distro)</h4>
+  <p>The daemon starts it with <code>wsl.exe -d &lt;distro&gt; -- ~/.colony/bin/colony-probe --stdio</code> and talks to it over stdin/stdout. That avoids WSL networking entirely: NAT versus mirrored mode, firewall rules, and changing host IPs stop mattering. The probe:</p>
+  <ul>
+    <li>listens on <code>~/.colony/hook.sock</code> for colony-hook events from Linux sessions;</li>
+    <li>tails <code>~/.claude/projects/**/*.jsonl</code> with inotify (watching <code>\\wsl$</code> from Windows is unreliable and slow);</li>
+    <li>scans <code>/proc</code> every 2 s for <code>claude</code> processes, their cwd, parent tree, and CPU time;</li>
+    <li>hosts PTYs for sessions Colony launches inside WSL.</li>
+  </ul>
+  <h4>colonyd (Windows daemon)</h4>
+  <p>Runs at login as a per-user background process (not a Windows service; it needs the user's profile and console). Owns the event log, all derived state, the PTY host for Windows sessions, and the local API. Keeps working with the UI closed, so OS notifications still fire and history is never lost.</p>
+  <h3>Control capabilities by session origin</h3>
+  <p>What Colony can do depends on who started the session. This is the most important constraint in the design, so the UI shows a small origin marker on every bot.</p>
+  <div class="tbl"><table>
+    <tr><th>Capability</th><th>Adopted (you started it in a terminal)</th><th>Launched by Colony (PTY)</th><th>Headless (Agent SDK / stream-json)</th></tr>
+    <tr><td>Observe state, tools, tokens</td><td class="yes">Yes, via hooks + transcript</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+    <tr><td>Show terminal output</td><td class="part">Transcript view only</td><td class="yes">Live, via xterm.js</td><td class="yes">Rendered event stream</td></tr>
+    <tr><td>Approve or deny tool use</td><td class="yes">Yes, if the gate hook is on</td><td class="yes">Yes</td><td class="yes">Yes (permission callback)</td></tr>
+    <tr><td>Send a message</td><td class="no">No; copy + focus window</td><td class="yes">Write to PTY</td><td class="yes">Send user message</td></tr>
+    <tr><td>Interrupt current turn</td><td class="no">No</td><td class="yes">Send Esc</td><td class="yes">interrupt()</td></tr>
+    <tr><td>Pause</td><td class="yes">Gate holds next tool call</td><td class="yes">Same</td><td class="yes">Same</td></tr>
+    <tr><td>Terminate</td><td class="yes">Kill process tree (confirm)</td><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+    <tr><td>Duplicate</td><td class="yes">New PTY: <code>claude --resume &lt;id&gt; --fork-session</code></td><td class="yes">Same</td><td class="yes">Fork via SDK</td></tr>
+    <tr><td>Take over</td><td class="part">Close the terminal and resume in Colony</td><td>n/a</td><td>n/a</td></tr>
+  </table></div>
+  <div class="callout"><b>Pause, defined honestly.</b> You cannot freeze a model mid-response. Colony's pause means "finish the current tool call, then hold before the next one". The gate hook simply does not return until you resume. It works for every session that has the hook installed, including ones you started yourself.</div>
+  <div class="callout crit"><b>The gate hook delays every tool call slightly.</b> By default it only blocks for tools the session would have prompted for anyway, plus any session that is paused. Everything else returns immediately with no decision, leaving Claude Code's own permission rules in charge. Check the hook input and output fields against the Claude Code version you have installed; the hook schema has changed between releases.</div>
+</section>
+
+<!-- 7 -->
+<section class="spec" id="ui">
+  <h2><span class="n">07</span>UI architecture</h2>
+  <p class="sub">A canvas world with a thin DOM layer on top. The canvas draws the colony; the DOM handles text, forms, and terminals.</p>
+<pre class="mermaid">
+flowchart TB
+  WS["WebSocket client&lt;br/&gt;snapshot + deltas"] --> ST["State store&lt;br/&gt;zustand, normalized by id"]
+  ST --> SIM["Sim controller&lt;br/&gt;20 Hz: intent, paths, crowding"]
+  SIM --> REN["PixiJS renderer&lt;br/&gt;60 fps: sprites, particles, tethers"]
+  ST --> HUD["React HUD&lt;br/&gt;top bar, porch strip, inspector, palette"]
+  HUD --> TERM["Terminal pane&lt;br/&gt;xterm.js bound to PTY stream"]
+  REN -- picks, hovers --> HUD
+  HUD -- commands --> WS
+</pre>
+  <h3>Layers, back to front</h3>
+  <ol>
+    <li><b>Terrain:</b> tile map, district plots, buildings, weather. Redrawn only on layout change, cached to a texture.</li>
+    <li><b>Actors:</b> bots, subagents, packages, tethers, particles. Sorted by y.</li>
+    <li><b>World labels:</b> district names, building names on zoom, bot nameplates on hover. Rendered as bitmap text for speed.</li>
+    <li><b>HUD (DOM):</b> top bar with state counts, porch strip mirror (a clickable list of the porch queue, always visible even when zoomed into a district), minimap, command palette (<code>Ctrl+K</code>).</li>
+    <li><b>Panels (DOM):</b> inspector drawer on the right, terminal pane at the bottom, family-tree overlay.</li>
+  </ol>
+  <h3>Interaction map</h3>
+  <div class="tbl"><table>
+    <tr><th>Input</th><th>Result</th></tr>
+    <tr><td>Click bot</td><td>Select, open inspector: objective, todos, tokens and context, current tool, recent messages, subagents, reply box</td></tr>
+    <tr><td>Double-click bot</td><td>Zoom into its workspace, open terminal pane</td></tr>
+    <tr><td>Right-click bot</td><td>Radial menu: pause/resume, interrupt, send, duplicate, reassign, create subagent, terminate</td></tr>
+    <tr><td>Box-drag</td><td>Multi-select; <code>Ctrl+1..9</code> binds a squad</td></tr>
+    <tr><td><code>Space</code></td><td>Jump to the next porch item</td></tr>
+    <tr><td><code>T</code></td><td>Toggle family-tree view for the selection</td></tr>
+    <tr><td><code>H</code></td><td>Toggle heat overlay (tokens/min per district)</td></tr>
+    <tr><td><code>F</code></td><td>Focus mode: dim everything that does not need you</td></tr>
+    <tr><td>Scroll / pinch</td><td>Zoom with LOD transitions</td></tr>
+  </table></div>
+  <h3>Family-tree view</h3>
+  <p>Press <code>T</code> on a bot and the world fades back while its lineage lays out as a tidy tree: parent at top, subagents below with state rings, returned ones dimmed with a check, blocked ones pulsing. Click a node to fly the camera to that worker. It is the same data as the tethers, laid out for reading instead of for place.</p>
+</section>
+
+<!-- 8 -->
+<section class="spec" id="data">
+  <h2><span class="n">08</span>Data model</h2>
+  <p class="sub">Event-sourced. The log is the source of truth; everything else is a projection that can be rebuilt.</p>
+<pre><code>type HostId = `win` | `wsl:${string}`;           // "wsl:Ubuntu-24.04"
+
+interface Project {
+  id: string;              // hash of canonical root (git toplevel, Windows-normalized)
+  name: string;            // repo folder name
+  roots: { host: HostId; path: string }[];  // C:\code\api and /mnt/c/code/api are the same project
+  gitRemote?: string;
+  color: string;           // stable, assigned from a palette with no status hues
+  layout: { x: number; y: number; w: number; h: number };  // district plot
+}
+
+interface Session {
+  id: string;              // Claude Code session_id
+  host: HostId;
+  projectId: string;
+  cwd: string;
+  pid?: number;
+  origin: 'adopted' | 'pty' | 'headless';
+  model?: string;
+  transcriptPath: string;
+  startedAt: number; endedAt?: number;
+  resumedFrom?: string;
+}
+
+interface Agent {           // one per session main thread, plus one per subagent
+  id: string;              // session id, or `${sessionId}/${toolUseId}` for subagents
+  sessionId: string;
+  parentId?: string;
+  kind: 'main' | 'subagent';
+  name: string;            // generated, stable per id ("Moss", "Pip")
+  subagentType?: string;   // e.g. "Explore"
+  objective?: string;      // first prompt, or Task description
+  state: AgentState;
+  stateSince: number;
+  currentTool?: { name: string; target?: string; startedAt: number };
+  todos?: { text: string; status: 'pending' | 'in_progress' | 'completed' }[];
+  tokens: { input: number; output: number; cacheRead: number; contextPct: number };
+  costUsd: number;
+  homeTile: [number, number];
+}
+
+type AgentState = 'spawning' | 'working' | 'delegating' | 'needs_input'
+  | 'awaiting_reply' | 'blocked' | 'ready_to_review' | 'idle' | 'crashed' | 'ended';
+
+interface AttentionItem {
+  id: string; agentId: string;
+  kind: 'permission' | 'question' | 'error' | 'stall' | 'crash' | 'review';
+  severity: 'critical' | 'input' | 'review';
+  summary: string;         // "Bash: npm run migrate", "Which DB should I target?"
+  payload: unknown;        // full tool_input, message text, error
+  openedAt: number; escalatedAt?: number; resolvedAt?: number;
+  resolution?: 'allowed' | 'denied' | 'answered' | 'dismissed' | 'self';
+}
+
+interface Deliverable {     // a package on the dock
+  id: string; agentId: string; turnId: string;
+  summary: string; filesChanged: string[]; diffStat?: string;
+  reviewedAt?: number;
+}</code></pre>
+  <h3>Storage</h3>
+<pre><code>events(seq INTEGER PK, ts, host, source, session_id, kind, body JSON, dedupe_key UNIQUE)
+sessions(...), agents(...), attention(...), deliverables(...), projects(...)   -- projections
+snapshots(at_seq, blob)                       -- every 5k events, for fast startup and replay</code></pre>
+  <p>Raw transcripts stay where Claude Code writes them; Colony stores offsets and extracted fields, not copies. Retention default: 30 days of events.</p>
+</section>
+
+<!-- 9 -->
+<section class="spec" id="events">
+  <h2><span class="n">09</span>Event model</h2>
+  <p class="sub">Four kinds of raw source feed one normalizer, which emits a small vocabulary of domain events. The UI only ever sees domain events.</p>
+<pre class="mermaid">
+flowchart LR
+  H["Hook events"] --> N
+  T["Transcript lines"] --> N
+  P["Process snapshots"] --> N
+  Y["PTY output"] --> N
+  N["Normalizer&lt;br/&gt;dedupe, order, attribute"] --> E[("Event log")]
+  E --> R["Reducers&lt;br/&gt;lifecycle, attention, layout"]
+  R --> B["Broadcast&lt;br/&gt;snapshot + deltas over WS"]
+</pre>
+  <h3>Envelope</h3>
+<pre><code>{
+  "seq": 48211,
+  "ts": 1791460512.214,
+  "host": "wsl:Ubuntu",
+  "source": "hook",                         // hook | transcript | proc | pty | user
+  "sessionId": "8f1c...",
+  "agentId": "8f1c.../toolu_01Ab...",       // set when attributable to a subagent
+  "type": "ToolStarted",
+  "data": { "tool": "Edit", "target": "src/auth/session.ts" },
+  "dedupeKey": "hook:PreToolUse:toolu_01Xy"
+}</code></pre>
+  <h3>Domain events</h3>
+  <div class="tbl"><table>
+    <tr><th>Event</th><th>From</th><th>Effect on map</th></tr>
+    <tr><td><code>SessionDiscovered</code></td><td>SessionStart hook, new transcript file, or new process</td><td>Bot hatches in district</td></tr>
+    <tr><td><code>PromptSubmitted</code></td><td>UserPromptSubmit</td><td>Bot leaves porch or home, starts working</td></tr>
+    <tr><td><code>ToolStarted</code> / <code>ToolFinished</code></td><td>Pre/PostToolUse, transcript tool_use/tool_result</td><td>Walk to building, play activity; smoke on failure</td></tr>
+    <tr><td><code>PermissionRequested</code></td><td>Notification hook or gate hook</td><td>Walk to porch with permission card</td></tr>
+    <tr><td><code>PermissionResolved</code></td><td>Colony decision, or tool started anyway</td><td>Card dropped, back to work</td></tr>
+    <tr><td><code>TodosUpdated</code></td><td>TodoWrite tool input</td><td>Progress pips on bot and inspector</td></tr>
+    <tr><td><code>SubagentSpawned</code></td><td>PreToolUse Task/Agent</td><td>Worker hatches, tether drawn</td></tr>
+    <tr><td><code>SubagentReturned</code></td><td>SubagentStop, matching tool_result</td><td>Worker walks back, merges</td></tr>
+    <tr><td><code>TurnEnded</code></td><td>Stop hook</td><td>Classifier picks AwaitingReply or ReadyToReview</td></tr>
+    <tr><td><code>UsageReported</code></td><td>Transcript message usage fields</td><td>Fuel gauge, district coin counter</td></tr>
+    <tr><td><code>ContextCompacting</code></td><td>PreCompact</td><td>Bot sits and sorts papers</td></tr>
+    <tr><td><code>ProcessExited</code></td><td>Process watcher</td><td>Crash if no SessionEnd within 5 s</td></tr>
+    <tr><td><code>Stalled</code></td><td>Deriver timer</td><td>Blocked, reason "no activity 5 min"</td></tr>
+  </table></div>
+  <h3>Rules</h3>
+  <ul>
+    <li><b>Hooks and transcripts overlap on purpose.</b> Hooks are fast and structured; transcripts survive when hooks are not installed and fill in token usage. Dedupe on <code>tool_use_id</code> and transcript <code>uuid</code>.</li>
+    <li><b>Ordering</b> is per-session by source timestamp; cross-session ordering does not matter.</li>
+    <li><b>Subagent attribution:</b> prefer subagent transcript files where Claude Code writes them; otherwise attribute tool events to the most recent open Task on that session. Mark heuristic attributions so the UI can show a dashed tether.</li>
+    <li><b>Snapshot plus deltas</b> to the UI: on connect, a full snapshot at <code>seq</code>; after that, reducer outputs only. Reconnect sends <code>since=seq</code>.</li>
+  </ul>
+</section>
+
+<!-- 10 -->
+<section class="spec" id="anim">
+  <h2><span class="n">10</span>Animation system</h2>
+  <p class="sub">Procedural rigs rather than hand-drawn frames, so a handful of parts can express many states and scale to hundreds of bots.</p>
+  <h3>Bot rig</h3>
+  <ul>
+    <li><b>Body:</b> a soft blob in the project color with squash-and-stretch driven by velocity and landing.</li>
+    <li><b>Eyes:</b> the main emotion channel. Pupil direction follows the target; "looks at you" means pupils down toward the camera. Lids lower when idle, widen when blocked.</li>
+    <li><b>Arms:</b> two-segment lines with IK to hand targets (prop, raised, waving).</li>
+    <li><b>Prop slot:</b> book, hammer, card, flag, package, telescope.</li>
+    <li><b>Status ring:</b> ground ellipse in the state color. The single most reliable state signal at every zoom.</li>
+    <li><b>Overhead slot:</b> one icon at a time, chosen by priority (crash &gt; blocked &gt; permission &gt; question &gt; flag &gt; tool glyph).</li>
+  </ul>
+  <h3>Animation graph</h3>
+  <p>Each state maps to a clip set: <code>enter</code>, <code>loop</code>, and <code>exit</code>. Loops have parameters fed from the mood layer: urgency raises hand-raise frequency, pace speed, and icon pulse rate; valence tilts posture. Transitions cross-fade over 150 ms; a state change always plays the exit and enter beats, even if short, so changes catch the eye once.</p>
+  <h3>Tethers</h3>
+  <p>Verlet ropes with 8 segments between parent and subagent, slack when close, taut when far. Color is the project color; dashed when attribution is heuristic; red when the subagent is blocked. When a worker returns, the rope reels in.</p>
+  <h3>Level of detail</h3>
+  <div class="tbl"><table>
+    <tr><th>Zoom</th><th>Bots</th><th>Districts</th><th>Porch</th></tr>
+    <tr><td>Close (workspace)</td><td>Full rig, props, particles, nameplates</td><td>Buildings with names</td><td>Strip in HUD</td></tr>
+    <tr><td>Normal</td><td>Full rig, no nameplates</td><td>Buildings, weather</td><td>On map</td></tr>
+    <tr><td>Far (50+ bots)</td><td>Dot + status ring + overhead icon only for attention states</td><td>Plot with heat tint and counts</td><td>On map, always full detail</td></tr>
+    <tr><td>Satellite (200+)</td><td>Healthy bots merge into a density cloud per district</td><td>Bars of counts by state</td><td>On map, always full detail</td></tr>
+  </table></div>
+  <h3>Budgets</h3>
+  <ul>
+    <li>500 bots at 60 fps on integrated graphics: one sprite batch for bodies, one for rings, particle pool capped at 2k.</li>
+    <li>Sim tick at 20 Hz with render interpolation. Pathfinding on a coarse grid, cached per district.</li>
+    <li>When the window is unfocused, render drops to 10 fps; when minimized, render stops and the daemon carries on.</li>
+    <li><code>prefers-reduced-motion</code>: no particles, no bounces; states shown with rings and icons, and moves become fades.</li>
+  </ul>
+  <h3>Sound (off by default)</h3>
+  <p>One soft chime when a bot reaches the porch, a lower tone for red. Nothing for healthy work. Volume follows urgency.</p>
+</section>
+
+<!-- 11 -->
+<section class="spec" id="stack">
+  <h2><span class="n">11</span>Technology stack</h2>
+  <div class="tbl"><table>
+    <tr><th>Part</th><th>Choice</th><th>Why</th><th>Alternative</th></tr>
+    <tr><td>Desktop shell</td><td>Tauri 2</td><td>Small footprint for an always-open app; Rust backend shares code with the daemon</td><td>Electron, if you would rather stay all-TypeScript with node-pty</td></tr>
+    <tr><td>Daemon</td><td>Rust (tokio)</td><td>Low idle CPU and memory; good Windows APIs; one static binary</td><td>Node/TS daemon; faster to start, heavier at rest</td></tr>
+    <tr><td>WSL probe and hook</td><td>Rust, static musl binary</td><td>No runtime dependency inside distros; fast hook startup</td><td>Go</td></tr>
+    <tr><td>PTY</td><td><code>portable-pty</code> (ConPTY on Windows, openpty in WSL)</td><td>Proven in WezTerm</td><td>node-pty</td></tr>
+    <tr><td>File watching</td><td><code>notify</code> crate</td><td>ReadDirectoryChangesW and inotify behind one API</td><td>—</td></tr>
+    <tr><td>Processes</td><td><code>sysinfo</code> + Toolhelp32 / <code>/proc</code></td><td>Parent trees and cmdlines on both sides</td><td>WMI (slower)</td></tr>
+    <tr><td>Storage</td><td>SQLite (WAL) via <code>rusqlite</code></td><td>Event log plus projections in one file</td><td>—</td></tr>
+    <tr><td>Local API</td><td>axum: WebSocket + HTTP on 127.0.0.1, bearer token in a user-only file</td><td>UI, CLI, and future phone companion share it</td><td>Tauri IPC only (locks out other clients)</td></tr>
+    <tr><td>World rendering</td><td>PixiJS v8</td><td>WebGL/WebGPU batching for hundreds of sprites; mature</td><td>Phaser (more game, less control)</td></tr>
+    <tr><td>HUD</td><td>React + zustand</td><td>Panels, forms, and inspector are ordinary UI</td><td>Solid, Svelte</td></tr>
+    <tr><td>Terminal</td><td>xterm.js with WebGL addon</td><td>Standard, fast</td><td>—</td></tr>
+    <tr><td>Question classifier</td><td>Rules first; optional Claude Haiku call</td><td>Rules handle most cases; the model call is opt-in and summarizes objectives too</td><td>—</td></tr>
+    <tr><td>Headless fleets (V2)</td><td>Claude Agent SDK</td><td>Full programmatic control of sessions Colony owns</td><td><code>claude -p --output-format stream-json</code></td></tr>
+  </table></div>
+</section>
+
+<!-- 12 -->
+<section class="spec" id="mvp">
+  <h2><span class="n">12</span>MVP definition</h2>
+  <p class="sub">The smallest version that already cuts human latency: see every session on Windows and WSL, know which ones need you, and act on the common cases.</p>
+  <div class="two">
+    <div>
+      <h3>In</h3>
+      <ul>
+        <li>colonyd + colony-hook (Windows), colony-probe + colony-hook (WSL)</li>
+        <li>One-click hook install with diff preview and uninstall</li>
+        <li>Session discovery from hooks, transcripts, and processes</li>
+        <li>States: working, needs input, awaiting reply, blocked, ready to review, idle, crashed</li>
+        <li>Subagent spawn and return, with tethers</li>
+        <li>Map with districts, porch, dock; normal and far LOD</li>
+        <li>Inspector: objective, todos, tokens, current tool, last messages</li>
+        <li>Launch new sessions in Colony PTYs; send, interrupt, kill for those</li>
+        <li>Kill for any session; "focus terminal" for adopted ones</li>
+        <li>OS notification when an item has waited past its patience budget</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Out (for now)</h3>
+      <ul>
+        <li>Gate hook approvals and pause (V1.1, needs careful testing)</li>
+        <li>Buildings per directory (districts only in MVP)</li>
+        <li>Weather, day cycle, sound</li>
+        <li>Time-lapse replay</li>
+        <li>Squads and broadcast</li>
+        <li>Headless SDK fleets</li>
+        <li>Phone companion</li>
+        <li>Haiku classifier (rules only)</li>
+      </ul>
+    </div>
+  </div>
+  <h3>Acceptance criteria</h3>
+  <ul>
+    <li>A session started in any Windows terminal or WSL shell appears on the map within 2 s of its first prompt.</li>
+    <li>A permission prompt shows the bot on the porch within 1 s.</li>
+    <li>A killed terminal shows as crashed within 5 s.</li>
+    <li>With the daemon stopped, Claude Code runs with no visible delay and no errors.</li>
+    <li>50 simulated sessions render at 60 fps; daemon idles under 1% CPU and 80 MB RAM.</li>
+  </ul>
+</section>
+
+<!-- 13 -->
+<section class="spec" id="v2">
+  <h2><span class="n">13</span>V2 roadmap</h2>
+  <div class="tbl"><table>
+    <tr><th>Release</th><th>Theme</th><th>Contents</th></tr>
+    <tr><td>1.1</td><td>Act from the map</td><td>Gate hook approvals with "allow always for project" rules; pause and resume; reply box for awaiting-reply bots launched by Colony; policy editor</td></tr>
+    <tr><td>1.2</td><td>Know where they work</td><td>Buildings per directory; edit-collision warnings when two agents touch the same files; git diff stat on dock packages</td></tr>
+    <tr><td>1.3</td><td>Look back</td><td>Time-lapse replay from the event log; end-of-day summary; per-project cost and human-latency charts</td></tr>
+    <tr><td>2.0</td><td>Command a fleet</td><td>Headless sessions via Agent SDK; work orders from GitHub issues; squads and broadcast; templates ("spawn 4 reviewers on this PR")</td></tr>
+    <tr><td>2.1</td><td>Away from desk</td><td>Phone companion showing the porch only, with approve and reply; push escalation</td></tr>
+    <tr><td>2.2</td><td>Rules</td><td>Automation: "if blocked on rate limit, wait and resume", "if tests fail 3 times, page me", "when ready to review, run reviewer subagent"</td></tr>
+    <tr><td>2.3</td><td>More hosts</td><td>Remote machines and dev containers via the same probe over SSH; cloud sessions where an API exists</td></tr>
+  </table></div>
+</section>
+
+<!-- 14 -->
+<section class="spec" id="risks">
+  <h2><span class="n">14</span>Technical risks</h2>
+  <div class="tbl"><table>
+    <tr><th>Risk</th><th>Likelihood</th><th>Impact</th><th>Mitigation</th></tr>
+    <tr><td>Hook schemas or transcript format change between Claude Code releases</td><td>High</td><td>Medium</td><td>Versioned parsers with lenient decoding; record Claude Code version per session; contract tests against fixtures from each release; transcript fallback when hooks miss</td></tr>
+    <tr><td>Gate hook slows or breaks sessions</td><td>Medium</td><td>High</td><td>Fail open on any daemon error; return in &lt;50 ms when not gating; hard timeout; per-project opt-in; kill switch in tray menu</td></tr>
+    <tr><td>Cannot type into adopted sessions in external terminals</td><td>Certain</td><td>Medium</td><td>Be explicit in the UI (origin marker); make "resume in Colony" one click; default new sessions to Colony PTYs</td></tr>
+    <tr><td>State misclassification (question vs done, stall vs long tool)</td><td>Medium</td><td>High</td><td>Conservative rules; show reason text in inspector; one-click "wrong state" feedback that tunes thresholds; long-running Bash commands are not stalls while CPU is active</td></tr>
+    <tr><td>WSL quirks: distro not running, probe missing, path mapping</td><td>Medium</td><td>Medium</td><td>Daemon installs and updates probe; restarts it with backoff; canonical project ids via git toplevel</td></tr>
+    <tr><td>Mapping session ids to PIDs on Windows (shell wrappers between claude and hook)</td><td>Medium</td><td>Low</td><td>Walk parent chain to the first node/claude process; confirm with cwd</td></tr>
+    <tr><td>Local API becomes a remote-code path (it can type into shells)</td><td>Low</td><td>Critical</td><td>Bind 127.0.0.1 only; random bearer token in a user-only file; reject browser Origin headers; no command execution endpoints beyond PTY input to Colony-owned sessions</td></tr>
+    <tr><td>Transcript privacy</td><td>Low</td><td>High</td><td>All local; no telemetry by default; classifier calls opt-in and send only the last message</td></tr>
+    <tr><td>The app becomes a distraction</td><td>Medium</td><td>High</td><td>Attention budget enforced in code: healthy states have a motion ceiling; focus mode; sound off by default</td></tr>
+    <tr><td>Render performance at hundreds of agents</td><td>Low</td><td>Medium</td><td>LOD tiers, batching, stress harness with synthetic events from day one</td></tr>
+  </table></div>
+</section>
+
+<!-- 15 -->
+<section class="spec" id="layouts">
+  <h2><span class="n">15</span>Example screen layouts</h2>
+  <h3>Main colony view</h3>
+<pre class="wire">┌─ COLONY ─────────────────────────────────────────────────────────────────────────────┐
+│ ● 2 blocked  ● 3 needs input  ● 11 working  ● 4 to review  ● 6 idle   $14.20 today ⌕ │
+├──────────────────────────────────────────────────────────────────────────┬───────────┤
+│  ┌ bingosync (WSL) ──────┐  ┌ api-gateway ──────────┐  ┌ web-app ─────┐  │ INSPECTOR │
+│  │  ▣src   ▣tests  ☁     │  │  ▣routes ▣db          │  │ ▣ui  ▣hooks  │  │ Moss      │
+│  │   ●Atlas──○──○        │  │   ●Rook   ●Moss→porch │  │  ●Vale  ●Kite│  │ blocked   │
+│  │      ╲ ○              │  │                       │  │      zz      │  │ 3× failed │
+│  └───────────────────────┘  └───────────────────────┘  └──────────────┘  │ npm test  │
+│                                                                          │ ───────── │
+│  ┌ infra ───────┐            ┌──── FRONT PORCH ────┐   ┌─ REVIEW DOCK ┐ │ todos 4/7 │
+│  │  ●Ember      │            │ (!)Moss  (!)Quill   │   │ ▦ ▦ ▦ ▦      │ │ ctx  62%  │
+│  └──────────────┘            │ (?)Pip (?)Juno (?)Ash│   └──────────────┘ │ [Open]    │
+│                              └─────────────────────┘                     │ [Retry]   │
+│  minimap ▢                                                               │ [Kill]    │
+└──────────────────────────────────────────────────────────────────────────┴───────────┘</pre>
+  <h3>Inspector, expanded</h3>
+<pre class="wire">┌─ Pip · bingosync · WSL:Ubuntu · pty ──────────── ● awaiting reply · 6m ┐
+│ Objective   Add room expiry to the board API                             │
+│ Progress    ▰▰▰▰▱▱  4 of 6 todos      Context ▰▰▰▱▱ 58%   $0.84          │
+│ Now         asked a question                                             │
+│ ┌──────────────────────────────────────────────────────────────────────┐ │
+│ │ Should expired rooms be deleted or archived? Archiving keeps history │ │
+│ │ for the stats page but needs a migration.                            │ │
+│ └──────────────────────────────────────────────────────────────────────┘ │
+│ Subagents   ○ Explore "find room model usages"  ✓ returned               │
+│ Reply  [ archive them, add the migration                        ] [Send] │
+│ [Open terminal] [Pause] [Duplicate] [Terminate]                          │
+└──────────────────────────────────────────────────────────────────────────┘</pre>
+  <h3>Workspace zoom with terminal</h3>
+<pre class="wire">┌─ bingosync ▸ Atlas ──────────────────────────────────────────────────────────┐
+│   ▣ src/board   ▣ src/rooms*   ▣ tests      ▣ migrations                     │
+│        ○ w1 ─────────●Atlas─────────── ○ w2                                  │
+│      (reading)        (delegating ×3)   (editing)       ○ w3 (!) blocked     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ $ claude                                                                     │
+│ ● Agent(Explore) find board serializers ... running                          │
+│ ● Agent(general) write migration ... running                                 │
+│ ● Agent(general) update tests ... waiting for permission: Bash(pytest -x)    │
+└──────────────────────────────────────────────────────────────────────────────┘</pre>
+  <h3>Satellite view at 200 agents</h3>
+<pre class="wire">┌──────────────────────────────────────────────────────────────────────────┐
+│ ░░░ api ░░░ 31▮   ▒▒ web ▒▒ 18▮   ░ infra ░ 9▮   ▓▓▓ ml ▓▓▓ 44▮  ⛈      │
+│ ░░ docs ░ 6▮      ▒ mobile ▒ 22▮  ░ cli 7▮       ▒ data ▒ 15▮            │
+│                                                                          │
+│             FRONT PORCH: (!)(!)(!)(?)(?)(?)(?)(?)(?)  +4                  │
+│ shading = tokens/min · bars = agents by state · porch always full detail │
+└──────────────────────────────────────────────────────────────────────────┘</pre>
+</section>
+
+<!-- 16 -->
+<section class="spec" id="lifecycles">
+  <h2><span class="n">16</span>Example agent life cycles</h2>
+  <h3>A. A small bug fix, adopted session on Windows</h3>
+  <div class="tbl"><table>
+    <tr><th>Time</th><th>Real event</th><th>On the map</th></tr>
+    <tr><td>09:02:10</td><td><code>SessionStart</code> in <code>C:\code\api-gateway</code></td><td>Bot "Rook" hatches in api-gateway, grey ring</td></tr>
+    <tr><td>09:02:31</td><td><code>UserPromptSubmit</code> "fix the 500 on /health"</td><td>Ring turns green, walks to plaza</td></tr>
+    <tr><td>09:02:40</td><td><code>Grep</code>, <code>Read</code> on routes/health.ts</td><td>Walks to "routes", reads a book</td></tr>
+    <tr><td>09:03:55</td><td><code>Edit</code> routes/health.ts</td><td>Hammers at "routes"</td></tr>
+    <tr><td>09:04:10</td><td><code>Notification</code>: permission for Bash(npm test)</td><td>Yellow ring, walks to porch with card</td></tr>
+    <tr><td>09:06:02</td><td>User approves in terminal; <code>PreToolUse</code> Bash</td><td>Attention item self-resolves; back to "tests" bench</td></tr>
+    <tr><td>09:06:40</td><td><code>Stop</code>, final message has no question</td><td>Blue flag, jumps, carries package to dock</td></tr>
+    <tr><td>09:20</td><td>User opens the package and marks reviewed</td><td>Rook walks home, sits</td></tr>
+  </table></div>
+  <h3>B. Parent with four subagents, one gets stuck (WSL, Colony PTY)</h3>
+  <div class="tbl"><table>
+    <tr><th>Time</th><th>Real event</th><th>On the map</th></tr>
+    <tr><td>14:00</td><td>User drags issue #212 onto bingosync; Colony launches claude in WSL PTY</td><td>"Atlas" hatches with a work order</td></tr>
+    <tr><td>14:01</td><td><code>TodoWrite</code> with 6 items</td><td>Clipboard; 0/6 pips</td></tr>
+    <tr><td>14:02</td><td>4× <code>PreToolUse(Agent)</code></td><td>Hatch opens; four workers leave on tethers to src, tests, migrations, docs</td></tr>
+    <tr><td>14:05</td><td>Worker w3 hits permission for <code>Bash(pytest -x)</code></td><td>w3 stays at "tests" waving yellow; its tether turns yellow; a porch entry appears under Atlas's name</td></tr>
+    <tr><td>14:06</td><td>w1, w2 <code>SubagentStop</code></td><td>Two workers reel back and merge with small bursts</td></tr>
+    <tr><td>14:07</td><td>User presses Space, clicks Allow once</td><td>w3 runs the bench; smoke: 2 tests fail</td></tr>
+    <tr><td>14:09</td><td>w3 and w4 return</td><td>All tethers gone; Atlas resumes, 4/6 pips</td></tr>
+    <tr><td>14:15</td><td><code>Stop</code> with "Should I also update the API docs?"</td><td>Atlas walks to porch with "?"; patience meter starts</td></tr>
+    <tr><td>14:31</td><td>Patience budget (15 min) passes</td><td>Waves at camera; OS toast fires</td></tr>
+  </table></div>
+  <h3>C. Crash and resume</h3>
+  <div class="tbl"><table>
+    <tr><th>Time</th><th>Real event</th><th>On the map</th></tr>
+    <tr><td>16:40</td><td>"Ember" running a long Terraform plan in infra</td><td>Working at the machine, gears turning</td></tr>
+    <tr><td>16:52</td><td>WSL distro shut down by Windows update; process gone, no <code>SessionEnd</code></td><td>Probe disconnects; after 5 s Ember falls over, red cross; ghost on porch</td></tr>
+    <tr><td>17:10</td><td>User clicks ghost, chooses Resume</td><td>Daemon restarts the probe, runs <code>claude --resume</code> in a new PTY; Ember stands up</td></tr>
+  </table></div>
+</section>
+
+<!-- 17 -->
+<section class="spec" id="plan">
+  <h2><span class="n">17</span>Detailed implementation plan</h2>
+  <p class="sub">About ten weeks for one experienced engineer to reach MVP, with the riskiest parts first.</p>
+  <h3>Repository layout</h3>
+<pre><code>colony/
+  crates/
+    colony-core/      domain types, event envelope, reducers (shared, no I/O)
+    colony-hook/      tiny hook binary (win + linux-musl)
+    colony-probe/     WSL probe: inotify, /proc, PTY, stdio protocol
+    colonyd/          daemon: ingest, store, deriver, PTY host, API
+  app/
+    src-tauri/        shell, tray, autostart, daemon supervision
+    web/              React HUD + PixiJS world + xterm.js
+  tools/
+    replay/           feed recorded event logs into the daemon
+    synth/            synthetic fleet generator for load and visual tests
+  fixtures/           real hook payloads and transcripts per Claude Code version</code></pre>
+  <div class="tbl"><table>
+    <tr><th>Phase</th><th>Weeks</th><th>Work</th><th>Done when</th></tr>
+    <tr><td>0. Spikes</td><td>1</td><td>Capture real hook JSON and transcripts for every event on Windows and WSL; confirm hook PPID chain; test <code>wsl.exe ... --stdio</code> transport; test ConPTY with claude</td><td>Fixtures committed; a one-page note on any schema surprises</td></tr>
+    <tr><td>1. Ingest</td><td>2</td><td>colony-hook with spool fallback; probe with inotify and /proc; daemon ingest, normalizer, SQLite log; CLI <code>colonyctl tail</code></td><td>Every session on both hosts streams domain events to the terminal</td></tr>
+    <tr><td>2. Truth</td><td>1.5</td><td>Lifecycle and attention reducers; question rules; stall and crash detection; subagent attribution; WS API with snapshot + deltas</td><td>Replay of fixtures gives the expected state sequence in tests</td></tr>
+    <tr><td>3. World</td><td>2.5</td><td>Tauri app; PixiJS terrain, districts, porch, dock; bot rig and state clips; tethers; LOD normal and far; synth fleet generator</td><td>50 synthetic agents at 60 fps; glance test with 3 people</td></tr>
+    <tr><td>4. HUD and control</td><td>2</td><td>Top bar, inspector, porch strip, palette; PTY host on both sides; launch, send, interrupt, kill; xterm pane; focus-terminal for adopted sessions; hook installer</td><td>Full flows B, E, F, G, H work end to end</td></tr>
+    <tr><td>5. Polish and dogfood</td><td>1</td><td>Notifications and patience; autostart; tray; reduced motion; perf pass; two weeks of daily use by you</td><td>MVP acceptance criteria pass</td></tr>
+  </table></div>
+  <h3>First tasks, in order</h3>
+  <ol>
+    <li>Write a throwaway hook script that appends raw stdin to a file, install it for every event, and run real sessions on both hosts. This answers most open questions about the schema.</li>
+    <li>Define <code>colony-core</code> types and the reducer for the lifecycle machine; test it against those captured logs.</li>
+    <li>Build the synth generator early. It drives the renderer before the real pipeline is finished, and it stays the load test.</li>
+    <li>Build the porch before the districts. It is the feature that pays for the whole app.</li>
+  </ol>
+</section>
+</main>
+</div>
+
+<script>
+(() => {
+  const cv = document.getElementById('world');
+  const ctx = cv.getContext('2d');
+  const W = 960, H = 440;
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let C = {};
+  function readTokens(){
+    const s = getComputedStyle(document.documentElement);
+    for (const k of ['ground','plot','plot-edge','porch','porch-edge','ink','muted','line','surface','crit','input','ok','done','idle','p1','p2','p3','p4','accent'])
+      C[k] = s.getPropertyValue('--'+k).trim();
+  }
+  readTokens();
+  setInterval(readTokens, 1000);
+
+  const D = [
+    {id:'bingosync', host:'WSL · Ubuntu', x:16,  y:16, w:220, h:270, c:'p1'},
+    {id:'api-gateway', host:'Windows', x:252, y:16, w:220, h:270, c:'p2'},
+    {id:'web-app', host:'Windows', x:488, y:16, w:220, h:270, c:'p3'},
+    {id:'infra', host:'WSL · Ubuntu', x:724, y:16, w:220, h:270, c:'p4'},
+  ];
+  const PORCH = {x:300, y:318, w:360, h:110};
+  const DOCK = {x:780, y:318, w:164, h:110, packages:2};
+  const OBJ = {
+    Atlas:'Add room expiry to the board API', Pip:'Fix flaky websocket reconnect test', Moss:'Upgrade auth middleware to v5',
+    Rook:'Fix the 500 on /health', Juno:'Dark mode for settings page', Kite:'Audit bundle size', Vale:'Migrate forms to new validation lib',
+    Ember:'Terraform plan for staging VPC', Quill:'Write API changelog', Ash:'Rotate CI secrets runbook'
+  };
+  const Q = {
+    Pip:'Should the retry backoff cap at 30s or 60s?', Juno:'Use the system theme by default, or keep light?', Moss:'3 tool calls failed: npm test exits 1',
+    Atlas:'Should expired rooms be deleted or archived?', Rook:'Permission: Bash(npm run migrate)', Vale:'Permission: Bash(pnpm add zod)',
+    Kite:'Which routes count as critical?', Ember:'Permission: Bash(terraform apply)', Quill:'Tag v2.3 or v2.4?', Ash:'API rate limit hit 4 times'
+  };
+  const TOOLS = ['Read','Grep','Edit','Bash','Edit','WebFetch','TodoWrite'];
+  const rnd = (a,b)=>a+Math.random()*(b-a);
+  const pick = a=>a[Math.floor(Math.random()*a.length)];
+  const inPlot = d => ({x: rnd(d.x+24, d.x+d.w-24), y: rnd(d.y+44, d.y+d.h-20)});
+
+  const bots = [];
+  let selected = null;
+  const parts = [];
+  let t = 0;
+
+  function mk(name, di, state, extra={}){
+    const d = D[di], p = inPlot(d);
+    const b = Object.assign({name, d, x:p.x, y:p.y, tx:p.x, ty:p.y, state, since:0, dwell:0, phase:Math.random()*6,
+      sub:false, kids:[], tool:pick(TOOLS), next:rnd(6,14), tokens:Math.floor(rnd(20,180))*1000, todos:[Math.floor(rnd(0,3)), Math.floor(rnd(4,8))],
+      home:inPlot(d), face:0, celebrate:0}, extra);
+    bots.push(b); return b;
+  }
+  mk('Atlas',0,'working'); mk('Pip',0,'input');
+  mk('Moss',1,'crit'); mk('Rook',1,'working'); mk('Quill',1,'idle');
+  mk('Juno',2,'done'); mk('Kite',2,'idle'); mk('Vale',2,'working');
+  mk('Ember',3,'working'); mk('Ash',3,'input');
+  bots.forEach(b=>{ if(b.state==='crit'||b.state==='input'){ const s=slotFor(b); b.x=s.x+rnd(-30,30); b.y=s.y-40; } });
+
+  function porchQueue(){
+    return bots.filter(b=>!b.sub && (b.state==='crit'||b.state==='input')).sort((a,b)=>(a.state==='crit'?0:1)-(b.state==='crit'?0:1) || a.since-b.since);
+  }
+  function slotFor(b){
+    const q = porchQueue(); const crit = q.filter(x=>x.state==='crit'), inp = q.filter(x=>x.state==='input');
+    if (b.state==='crit'){ const i = crit.indexOf(b); return {x: PORCH.x+40+i*46, y: PORCH.y+84}; }
+    const i = inp.indexOf(b); return {x: PORCH.x+40+i*46, y: PORCH.y+52};
+  }
+  function setState(b, s){
+    if (b.state===s) return;
+    b.state = s; b.since = t; b.dwell = 0;
+    if (s==='done'){ b.celebrate = 1.6; burst(b.x,b.y-10,C.done,10); }
+    if (s==='working'){ const p=inPlot(b.d); b.tx=p.x; b.ty=p.y; b.tool=pick(TOOLS); }
+    if (s==='idle'){ b.tx=b.home.x; b.ty=b.home.y; }
+    if (selected===b) renderInspector();
+  }
+  function spawnKids(b){
+    const n = Math.floor(rnd(2,4.99));
+    for (let i=0;i<n;i++){
+      const p = inPlot(b.d);
+      const k = {name:b.name.toLowerCase()+'·w'+(i+1), d:b.d, x:b.x, y:b.y, tx:p.x, ty:p.y, state:'working', since:t, dwell:0, phase:Math.random()*6,
+        sub:true, parent:b, kids:[], tool:pick(TOOLS), life:rnd(5,10), returning:false, blocked: Math.random()<0.25 ? rnd(1.5,3.5) : 0, celebrate:0, face:0};
+      b.kids.push(k); bots.push(k);
+    }
+    burst(b.x,b.y-8,C[b.d.c],8);
+  }
+  function burst(x,y,col,n){
+    if (reduced) return;
+    for (let i=0;i<n;i++){ const a=Math.random()*Math.PI*2, s=rnd(20,60); parts.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-20,life:rnd(.5,1),max:1,col}); }
+  }
+  function decide(b){
+    // scripted transitions that follow the agent lifecycle machine
+    const r = Math.random();
+    switch(b.state){
+      case 'working':
+        if (b.kids.length===0 && r<0.25) { spawnKids(b); b.next = rnd(10,16); return; }
+        if (b.kids.length) { b.next = 2; return; }
+        if (r<0.5) { b.todos[0]=Math.min(b.todos[1], b.todos[0]+1); setState(b, pick(['input','input','crit','done','done'])); }
+        b.next = rnd(6,12); return;
+      case 'input': setState(b,'working'); b.next=rnd(8,14); return;
+      case 'crit': setState(b,'working'); b.next=rnd(8,14); return;
+      case 'idle': if (r<0.6) setState(b,'working'); b.next=rnd(8,16); return;
+      default: b.next = rnd(4,8);
+    }
+  }
+  function step(dt){
+    t += dt;
+    for (const b of bots.slice()){
+      b.phase += dt;
+      if (b.sub){
+        const p = b.parent;
+        if (b.blocked>0 && b.state==='working' && t-b.since>b.blocked){ b.state='crit'; b.since=t; }
+        else if (b.state==='crit' && t-b.since>4){ b.state='working'; b.since=t; b.blocked=0; }
+        if (b.state==='working'){ b.life -= dt; if (b.life<=0 && !b.returning){ b.returning=true; } }
+        if (b.returning){ b.tx=p.x; b.ty=p.y; if (Math.hypot(b.x-p.x,b.y-p.y)<8){ bots.splice(bots.indexOf(b),1); p.kids.splice(p.kids.indexOf(b),1); burst(p.x,p.y-8,C.ok,6); p.tokens += Math.floor(rnd(8,30))*1000; continue; } }
+        else if (b.state==='working' && near(b)) { b.dwell -= dt; if (b.dwell<=0){ const q=inPlot(b.d); b.tx=q.x; b.ty=q.y; b.dwell=rnd(1.5,3); b.tool=pick(TOOLS);} }
+        move(b, dt, b.returning?70:50);
+        continue;
+      }
+      b.next -= dt;
+      if (b.next<=0) decide(b);
+      if (b.state==='working'){
+        b.tokens += Math.floor(dt*400);
+        if (near(b)){ b.dwell -= dt; if (!reduced && Math.random()<dt*4) parts.push({x:b.x+rnd(-6,6),y:b.y-14,vx:rnd(-10,10),vy:rnd(-30,-15),life:.6,max:.6,col:C.ok});
+          if (b.dwell<=0 && b.kids.length===0){ const p=inPlot(b.d); b.tx=p.x; b.ty=p.y; b.dwell=rnd(1.5,3.5); b.tool=pick(TOOLS);} }
+        move(b, dt, 45);
+      } else if (b.state==='input' || b.state==='crit'){
+        const s = slotFor(b);
+        if (b.state==='crit' && near(b,6)) { b.tx = s.x + Math.sin(t*2.2+b.phase)*12; b.ty = s.y; }
+        else { b.tx=s.x; b.ty=s.y; }
+        move(b, dt, b.state==='crit'?70:55);
+      } else if (b.state==='done'){
+        if (b.celebrate>0){ b.celebrate -= dt; }
+        else { b.tx = DOCK.x+30+(bots.indexOf(b)%4)*30; b.ty = DOCK.y+70; move(b,dt,55);
+          if (near(b,4)){ DOCK.packages++; setState(b,'idle'); b.next=rnd(10,18); } }
+      } else if (b.state==='idle'){
+        if (near(b,3)){ b.dwell -= dt; if (b.dwell<=0){ const p={x:b.home.x+rnd(-20,20), y:b.home.y+rnd(-12,12)}; b.tx=p.x; b.ty=p.y; b.dwell=rnd(4,9);} }
+        move(b, dt, 12);
+      }
+    }
+    for (let i=parts.length-1;i>=0;i--){ const p=parts[i]; p.life-=dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=60*dt; if(p.life<=0) parts.splice(i,1); }
+  }
+  function near(b,r=3){ return Math.hypot(b.tx-b.x,b.ty-b.y) < r; }
+  function move(b, dt, sp){
+    const dx=b.tx-b.x, dy=b.ty-b.y, d=Math.hypot(dx,dy);
+    if (d>0.5){ const s=Math.min(d, sp*dt); b.x+=dx/d*s; b.y+=dy/d*s; b.face=dx/d; b.moving=true; } else b.moving=false;
+  }
+
+  // ---- drawing ----
+  function rr(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+  const stateCol = s => ({crit:C.crit, input:C.input, working:C.ok, done:C.done, idle:C.idle})[s];
+  function drawWorld(){
+    ctx.fillStyle = C.ground; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = C.line;
+    for (let x=12;x<W;x+=24) for (let y=12;y<H;y+=24) ctx.fillRect(x,y,1.2,1.2);
+    for (const d of D){
+      const n = bots.filter(b=>b.d===d && !b.sub && b.state==='working').length;
+      rr(d.x,d.y,d.w,d.h,10); ctx.fillStyle=C.plot; ctx.fill(); ctx.lineWidth=1.5; ctx.strokeStyle=C['plot-edge']; ctx.stroke();
+      ctx.fillStyle=C[d.c]; ctx.fillRect(d.x+12,d.y+14,8,8);
+      ctx.fillStyle=C.ink; ctx.font='600 13px "JetBrains Mono", monospace'; ctx.fillText(d.id, d.x+26, d.y+22);
+      ctx.fillStyle=C.muted; ctx.font='11px "JetBrains Mono", monospace'; ctx.fillText(d.host+' · '+n+' working', d.x+12, d.y+38);
+      // buildings
+      ctx.globalAlpha=.55;
+      for (let i=0;i<3;i++){ const bx=d.x+30+i*62, by=d.y+d.h-58; rr(bx,by,40,30,4); ctx.fillStyle=C['plot-edge']; ctx.fill(); }
+      ctx.globalAlpha=1;
+    }
+    rr(PORCH.x,PORCH.y,PORCH.w,PORCH.h,10); ctx.fillStyle=C.porch; ctx.fill(); ctx.strokeStyle=C['porch-edge']; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.fillStyle=C.ink; ctx.font='600 12px "JetBrains Mono", monospace'; ctx.fillText('FRONT PORCH · needs you', PORCH.x+12, PORCH.y+18);
+    rr(DOCK.x,DOCK.y,DOCK.w,DOCK.h,10); ctx.fillStyle=C.plot; ctx.fill(); ctx.strokeStyle=C['plot-edge']; ctx.stroke();
+    ctx.fillStyle=C.ink; ctx.fillText('REVIEW DOCK', DOCK.x+12, DOCK.y+18);
+    for (let i=0;i<Math.min(DOCK.packages,10);i++){ const px=DOCK.x+14+(i%5)*28, py=DOCK.y+30+Math.floor(i/5)*22; rr(px,py,18,15,2); ctx.fillStyle=C.done; ctx.fill(); ctx.fillStyle=C.surface; ctx.fillRect(px+8,py,2,15); }
+    if (DOCK.packages>10){ ctx.fillStyle=C.muted; ctx.fillText('+'+(DOCK.packages-10), DOCK.x+120, DOCK.y+96); }
+    ctx.fillStyle=C.muted; ctx.font='11px "JetBrains Mono", monospace'; ctx.fillText(DOCK.packages+' to review · click to clear', DOCK.x+12, DOCK.y+100);
+  }
+  function drawTethers(){
+    for (const b of bots) if (b.sub && b.parent){
+      const p=b.parent, mx=(b.x+p.x)/2, my=(b.y+p.y)/2 + Math.min(30, Math.hypot(b.x-p.x,b.y-p.y)*.15);
+      ctx.beginPath(); ctx.moveTo(p.x,p.y-4); ctx.quadraticCurveTo(mx,my,b.x,b.y-3);
+      ctx.strokeStyle = b.state==='crit' ? C.crit : C[b.d.c]; ctx.lineWidth=1.4; ctx.setLineDash([4,3]); ctx.globalAlpha=.8; ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha=1;
+    }
+  }
+  function drawBot(b){
+    const r = b.sub ? 5.5 : 9;
+    let bob = reduced ? 0 : (b.moving ? Math.abs(Math.sin(b.phase*10))*2 : Math.sin(b.phase*2)*.6);
+    if (b.state==='done' && b.celebrate>0 && !reduced) bob = Math.abs(Math.sin(b.phase*8))*8;
+    const x=b.x, y=b.y-bob;
+    const sc = stateCol(b.state);
+    // ring
+    let pulse = b.state==='crit' && !reduced ? 1+Math.sin(t*8)*.15 : 1;
+    ctx.beginPath(); ctx.ellipse(b.x, b.y+r*.7, r*1.5*pulse, r*.55*pulse, 0, 0, Math.PI*2);
+    ctx.fillStyle=sc; ctx.globalAlpha = b.state==='idle'? .35 : .55; ctx.fill(); ctx.globalAlpha=1;
+    // arms
+    ctx.strokeStyle=C.ink; ctx.lineWidth = b.sub?1.2:1.8; ctx.lineCap='round';
+    const arm = (side, ang) => { ctx.beginPath(); ctx.moveTo(x+side*r*.8, y-r*.1); ctx.lineTo(x+side*r*.8+Math.cos(ang)*r*.9*side, y-r*.1+Math.sin(ang)*r*.9); ctx.stroke(); };
+    if (b.state==='crit'){ const w=reduced?0:Math.sin(t*12)*.6; arm(-1,-1.9+w); arm(1,-1.9-w); }
+    else if (b.state==='input'){ const up = Math.sin(t*2.4+b.phase)>.3; arm(-1,.9); arm(1, up?-1.6:.9); }
+    else if (b.state==='done' && b.celebrate>0){ arm(-1,-1.4); arm(1,-1.4); }
+    else if (b.state==='working'){ const w=reduced?0:Math.sin(t*9+b.phase)*.5; arm(-1,.6); arm(1,.2+w); }
+    else { arm(-1,1.1); arm(1,1.1); }
+    // body
+    ctx.beginPath(); ctx.ellipse(x,y-r*.2,r,r*(b.state==='idle'&&!b.moving?.85:1),0,0,Math.PI*2);
+    ctx.fillStyle=C[b.d.c]; ctx.globalAlpha = b.state==='idle'?.6:1; ctx.fill(); ctx.globalAlpha=1;
+    ctx.lineWidth=1.2; ctx.strokeStyle=C.ink; ctx.stroke();
+    // eyes
+    const lookY = (b.state==='input'||b.state==='crit') ? 1.2 : 0, lookX = (b.state==='input'||b.state==='crit') ? 0 : (b.face||0)*1.2;
+    const er = b.sub? 1.6 : 2.6;
+    for (const s of [-1,1]){
+      ctx.beginPath(); ctx.arc(x+s*r*.38, y-r*.35, er, 0, Math.PI*2); ctx.fillStyle='#fff'; ctx.fill();
+      if (b.state==='idle'){ ctx.fillStyle=C[b.d.c]; ctx.fillRect(x+s*r*.38-er, y-r*.35-er, er*2, er*1.1); }
+      ctx.beginPath(); ctx.arc(x+s*r*.38+lookX*er*.35, y-r*.35+lookY*er*.35, er*.5, 0, Math.PI*2); ctx.fillStyle='#111'; ctx.fill();
+    }
+    // overhead
+    const oy = y - r - 12;
+    if (b.state==='crit'){
+      if (reduced || Math.sin(t*7)>-.3){ ctx.beginPath(); ctx.arc(x, oy, b.sub?5:7, 0, Math.PI*2); ctx.fillStyle=C.crit; ctx.fill();
+        ctx.fillStyle='#fff'; ctx.font=`700 ${b.sub?8:11}px "JetBrains Mono", monospace`; ctx.textAlign='center'; ctx.fillText('!', x, oy+(b.sub?3:4)); ctx.textAlign='left'; }
+    } else if (b.state==='input'){
+      rr(x+r*.6, oy-8, 12, 14, 2); ctx.fillStyle=C.input; ctx.fill(); ctx.fillStyle=C.ink; ctx.font='700 10px "JetBrains Mono", monospace'; ctx.fillText('?', x+r*.6+3, oy+3);
+    } else if (b.state==='done'){
+      ctx.strokeStyle=C.ink; ctx.lineWidth=1.2; ctx.beginPath(); ctx.moveTo(x+r, y-r); ctx.lineTo(x+r, oy-8); ctx.stroke();
+      ctx.fillStyle=C.done; ctx.beginPath(); ctx.moveTo(x+r, oy-8); ctx.lineTo(x+r+11, oy-4); ctx.lineTo(x+r, oy); ctx.fill();
+      if (b.celebrate<=0){ rr(x-6, y+1, 12, 9, 2); ctx.fillStyle=C.done; ctx.fill(); }
+    } else if (b.state==='working' && !b.sub && b.kids.length){
+      ctx.fillStyle=C.ink; ctx.font='600 10px "JetBrains Mono", monospace'; ctx.textAlign='center'; ctx.fillText('×'+b.kids.length, x, oy+2); ctx.textAlign='left';
+    } else if (b.state==='idle' && !b.moving && !reduced){
+      ctx.fillStyle=C.muted; ctx.font='10px "JetBrains Mono", monospace'; ctx.globalAlpha=.5+.5*Math.sin(t*1.5+b.phase); ctx.fillText('z', x+r, oy+2); ctx.globalAlpha=1;
+    }
+    if (!b.sub){
+      ctx.fillStyle = C.muted; ctx.font='10px "JetBrains Mono", monospace'; ctx.textAlign='center'; ctx.fillText(b.name, b.x, b.y+r+12); ctx.textAlign='left';
+    }
+    if (selected===b){ ctx.beginPath(); ctx.arc(b.x, b.y-r*.2, r+6, 0, Math.PI*2); ctx.strokeStyle=C.accent; ctx.lineWidth=2; ctx.stroke(); }
+  }
+  function draw(){
+    ctx.setTransform(1,0,0,1,0,0);
+    drawWorld(); drawTethers();
+    const order = bots.slice().sort((a,b)=>a.y-b.y);
+    for (const b of order) drawBot(b);
+    for (const p of parts){ ctx.globalAlpha=Math.max(0,p.life/p.max); ctx.fillStyle=p.col; ctx.fillRect(p.x-1.5,p.y-1.5,3,3); }
+    ctx.globalAlpha=1;
+  }
+  let last = performance.now();
+  function frame(now){
+    const dt = Math.min(.05, (now-last)/1000); last = now;
+    step(dt); draw();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // ---- HUD + inspector ----
+  const $ = id => document.getElementById(id);
+  setInterval(()=>{
+    const main = bots.filter(b=>!b.sub);
+    const c = s => bots.filter(b=>b.state===s).length;
+    $('c-total').textContent = bots.length;
+    $('c-crit').textContent = c('crit'); $('c-input').textContent = c('input');
+    $('c-ok').textContent = c('working'); $('c-done').textContent = DOCK.packages; $('c-idle').textContent = c('idle');
+    if (selected) renderInspector();
+  }, 500);
+  const LABEL = {crit:'blocked', input:'needs input', working:'working', done:'ready to review', idle:'idle'};
+  function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
+  function renderInspector(){
+    const b = selected; if (!b) return;
+    const el = $('insp');
+    if (b.sub){
+      el.innerHTML = `<div class="k">Subagent of ${esc(b.parent.name)}</div><h3>${esc(b.name)}</h3>
+        <div><span class="pill" style="background:${stateCol(b.state)}">${LABEL[b.state]}</span></div>
+        <div class="row"><span class="k">Now</span>${b.returning?'returning with results':esc(b.tool)+' in '+esc(b.d.id)}</div>
+        <div class="row"><span class="k">Tether</span>${esc(b.parent.name)} · ${esc(b.d.id)}</div>`;
+      return;
+    }
+    const mins = Math.max(0, Math.floor((t-b.since)/6));
+    const showQ = b.state==='crit'||b.state==='input';
+    const pct = Math.round(100*b.todos[0]/b.todos[1]);
+    el.innerHTML = `<div class="k">${esc(b.d.id)} · ${esc(b.d.host)}</div><h3>${esc(b.name)}</h3>
+      <div><span class="pill" style="background:${stateCol(b.state)}">${LABEL[b.state]}</span> <span style="color:var(--muted);font-size:12px">for ${mins}m (sim)</span></div>
+      <div class="row"><span class="k">Objective</span>${esc(OBJ[b.name]||'')}</div>
+      ${showQ?`<div class="row"><span class="k">${b.state==='crit'?'Problem':'Asks'}</span>${esc(Q[b.name]||'')}</div>`:''}
+      <div class="row"><span class="k">Now</span>${b.state==='working'?(b.kids.length?'delegating to '+b.kids.length+' workers':esc(b.tool)):(b.state==='done'?'delivering package':(b.state==='idle'?'resting':'waiting on you'))}</div>
+      <div class="row"><span class="k">Todos ${b.todos[0]}/${b.todos[1]}</span><div class="bar"><span style="width:${pct}%"></span></div></div>
+      <div class="row"><span class="k">Tokens</span><span style="font-family:var(--f-mono);font-variant-numeric:tabular-nums">${(b.tokens/1000).toFixed(1)}k</span></div>
+      <div class="actions">${showQ?`<button type="button" id="act-resolve">${b.state==='crit'?'Retry':'Answer'}</button>`:''}<button type="button" id="act-sub">Create subagent</button></div>`;
+    const r = $('act-resolve'); if (r) r.onclick = ()=>{ setState(b,'working'); b.next=rnd(8,14); renderInspector(); };
+    const s = $('act-sub'); if (s) s.onclick = ()=>{ if (b.state!=='working') setState(b,'working'); spawnKids(b); b.next=rnd(10,16); };
+  }
+  cv.addEventListener('click', e=>{
+    const rect = cv.getBoundingClientRect();
+    const x = (e.clientX-rect.left)*W/rect.width, y=(e.clientY-rect.top)*H/rect.height;
+    let best=null, bd=18;
+    for (const b of bots){ const d=Math.hypot(b.x-x,b.y-y+4); if (d<bd){bd=d;best=b;} }
+    if (best){ selected=best; renderInspector(); return; }
+    if (x>DOCK.x && x<DOCK.x+DOCK.w && y>DOCK.y && y<DOCK.y+DOCK.h){ DOCK.packages=0; }
+  });
+})();
+</script>
