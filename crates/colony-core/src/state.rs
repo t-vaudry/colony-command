@@ -207,7 +207,12 @@ impl Colony {
     pub fn apply(&mut self, e: &Envelope) -> Vec<String> {
         let mut changed = Vec::new();
         let sid = e.session_id.clone();
-        let main = self.agents.entry(sid.clone()).or_insert_with(|| Agent::new_main(e));
+        if !self.agents.contains_key(&sid) {
+            let mut a = Agent::new_main(e);
+            a.name = self.unique_name(&a.name);
+            self.agents.insert(sid.clone(), a);
+        }
+        let main = self.agents.get_mut(&sid).expect("inserted above");
         match (&e.event, &e.cwd) {
             // Registry cwd is handled below as the project folder.
             (DomainEvent::SessionSeen { .. }, _) | (_, None) => {}
@@ -448,6 +453,16 @@ impl Colony {
             _ => return Vec::new(),
         }
         vec![id.to_string()]
+    }
+
+    /// Names come from a fixed list, so two sessions can draw the same one.
+    /// The later one gets a number: "Indigo 2".
+    fn unique_name(&self, base: &str) -> String {
+        let taken = |n: &str| self.agents.values().any(|a| a.kind == AgentKind::Main && a.name == n);
+        if !taken(base) {
+            return base.to_string();
+        }
+        (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).expect("some number is free")
     }
 
     /// The agent an event is about: the main agent, or a subagent created on

@@ -213,6 +213,21 @@ fn registry_folder_overrides_a_hook_cwd() {
 }
 
 #[test]
+fn colliding_names_get_numbers() {
+    let mut r = Run::new(HostId::Windows);
+    // Find a second session id that hashes to the same name as SID.
+    let name = colony_core::names::main_name(SID);
+    let other = (0..10_000)
+        .map(|i| format!("other-{i}"))
+        .find(|s| colony_core::names::main_name(s) == name)
+        .expect("a collision exists among 10k ids");
+    r.hook(json!({"hook_event_name": "SessionStart"}));
+    r.hook(json!({"hook_event_name": "SessionStart", "session_id": other}));
+    assert_eq!(r.colony.agents[SID].name, name);
+    assert_eq!(r.colony.agents[&other].name, format!("{name} 2"));
+}
+
+#[test]
 fn unknown_hook_events_are_ignored() {
     let mut r = Run::new(HostId::Windows);
     assert!(r.hook(json!({"hook_event_name": "SomethingFromTheFuture", "weird": [1, 2]})).is_empty());

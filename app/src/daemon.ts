@@ -36,6 +36,7 @@ export class Daemon {
   skew = 0;
   private info: DaemonInfo | null = null;
   private downSince: number | null = null;
+  private ws: WebSocket | null = null;
   private listeners = new Set<() => void>();
 
   onChange(fn: () => void): void {
@@ -63,7 +64,18 @@ export class Daemon {
     }
     const ws = new WebSocket(`ws://127.0.0.1:${this.info.port}/ws?token=${this.info.token}`);
     ws.onmessage = (ev) => this.handle(JSON.parse(ev.data as string) as Message);
-    ws.onclose = () => this.setOffline("lost connection to colonyd");
+    ws.onclose = () => {
+      this.ws = null;
+      this.setOffline("lost connection to colonyd");
+    };
+    this.ws = ws;
+  }
+
+  /** Commands go over the socket, so the browser's cross-origin rules don't apply. */
+  private send(command: object): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(command));
+    return true;
   }
 
   private setOffline(error: string): void {
@@ -105,12 +117,8 @@ export class Daemon {
       .sort((a, b) => rank[severity(a.state)!] - rank[severity(b.state)!] || a.state_since - b.state_since);
   }
 
-  async ack(id: string): Promise<void> {
-    if (!this.info) return;
-    await fetch(`http://127.0.0.1:${this.info.port}/api/ack?token=${this.info.token}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
+  /** Mark finished work reviewed, or clear a crash. False if not connected. */
+  ack(id: string): boolean {
+    return this.send({ type: "ack", id });
   }
 }

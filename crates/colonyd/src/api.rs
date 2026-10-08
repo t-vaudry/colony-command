@@ -2,9 +2,11 @@
 //! token from `~/.colony/daemon.json` (query `?token=` or a Bearer header),
 //! because later versions of this API can type into sessions.
 //!
-//! - `GET  /ws`        snapshot, then upsert/remove deltas as JSON text frames
+//! - `GET  /ws`        snapshot, then upsert/remove deltas as JSON text frames;
+//!                     the map sends commands back on the same socket
 //! - `GET  /api/agents` the current snapshot
-//! - `POST /api/ack`   `{"id": "..."}`: mark finished work reviewed, or clear a crash
+//! - `POST /api/ack`   `{"id": "..."}`: mark finished work reviewed, or clear a
+//!                     crash (for scripts; the map uses the socket)
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -80,16 +82,39 @@ async fn ack(
     if !authorized(&shared, &params, &headers) {
         return unauthorized();
     }
+    Json(json!({ "ok": acknowledge(&shared, &body.id).await })).into_response()
+}
+
+async fn acknowledge(shared: &Shared, id: &str) -> bool {
     let msgs = {
         let mut colony = shared.colony.write().await;
-        let changed = colony.acknowledge(&body.id, now_ms());
+        let changed = colony.acknowledge(id, now_ms());
         delta_messages(&colony, &changed)
     };
     let found = !msgs.is_empty();
     for m in msgs {
         let _ = shared.deltas.send(m);
     }
-    Json(json!({ "ok": found })).into_response()
+    found
+}
+
+/// Commands the map sends over its WebSocket. Using the socket rather than
+/// HTTP keeps the browser's cross-origin rules out of the way.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Command {
+    Ack { id: String },
+}
+
+async fn handle_command(shared: &Shared, text: &str) {
+    match serde_json::from_str::<Command>(text) {
+        Ok(Command::Ack { id }) => {
+            if !acknowledge(shared, &id).await {
+                log(format!("ack for {id}: nothing to acknowledge"));
+            }
+        }
+        Err(e) => log(format!("map sent an unknown command ({e}): {text}")),
+    }
 }
 
 async fn ws(
@@ -123,6 +148,7 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket) {
                 Err(RecvError::Closed) => return,
             },
             frame = incoming.next() => match frame {
+                Some(Ok(Message::Text(text))) => handle_command(&shared, text.as_str()).await,
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                 _ => {}
             },
