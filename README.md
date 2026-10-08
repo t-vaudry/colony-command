@@ -34,7 +34,7 @@ Or inside Ubuntu:
 ## Run the app
 
     powershell -File scripts/build-app.ps1
-    targeteleasecolony-command.exe
+    target/release/colony-command.exe
 
 The app starts `colonyd` (next to it) when no daemon is answering, and
 leaves it running when you close the window, so sessions it hosts keep
