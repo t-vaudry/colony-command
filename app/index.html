@@ -76,6 +76,22 @@
           <span class="k">Run on</span>
           <select id="ns-host"></select>
         </label>
+        <div class="row2">
+          <label>
+            <span class="k">Permission mode</span>
+            <select id="ns-mode">
+              <option value="">Your default</option>
+              <option value="default">Ask before acting</option>
+              <option value="acceptEdits">Accept edits</option>
+              <option value="plan">Plan only</option>
+              <option value="auto">Auto</option>
+            </select>
+          </label>
+          <label class="check">
+            <input id="ns-chrome" type="checkbox" />
+            <span>Browser tools (Claude in Chrome)</span>
+          </label>
+        </div>
         <label>
           <span class="k">Name (optional)</span>
           <input id="ns-name" type="text" placeholder="Shown as the session title" />

@@ -51,7 +51,18 @@ export interface Agent {
   project_dir: string | null;
   /** Set when Colony started this session in a terminal it owns. */
   terminal: string | null;
+  /** A permission request Colony is holding for the map to answer. */
+  permission: PermissionAsk | null;
 }
+
+export interface PermissionAsk {
+  request_id: string;
+  tool: string;
+  target: string | null;
+  asked_at: number;
+}
+
+export type PermissionChoice = "allow" | "allow_always" | "deny";
 
 /** Where Colony can start sessions. */
 export interface HostOption {
@@ -67,6 +78,8 @@ export interface SpawnRequest {
   prompt?: string;
   resume?: string;
   name?: string;
+  permission_mode?: string;
+  chrome?: boolean;
   cols?: number;
   rows?: number;
 }

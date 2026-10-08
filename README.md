@@ -16,10 +16,11 @@ Design spec: [`docs/design-spec.html`](docs/design-spec.html)
 | `crates/colonyd` | Daemon: reducer + local WebSocket API on 127.0.0.1:7878 |
 | `app` | The map: PixiJS world + HUD, connects to colonyd |
 | `app/src-tauri` | Desktop app: the map in a window; starts colonyd if it isn't running |
+| `hooks/colony-approve.sh` | Approval hook: hands permission requests to colonyd for Allow/Deny on the map |
 | `spikes/capture` | Hook that records raw Claude Code hook payloads, for schema checks |
 | `docs/` | Design spec |
 
-Planned: `crates/colony-hook` (replaces the capture spike, adds approvals).
+Planned: `crates/colony-hook` (replaces the capture spike); approvals for WSL sessions.
 
 ## Test
 
@@ -55,3 +56,16 @@ distros are attached automatically; stopped ones are left alone.
 Then open http://localhost:5173. In dev, the page reads the daemon's port and
 token through a Vite route. Keys: `Space` next agent that needs you, `0` fit
 the whole colony, `Esc` clear selection.
+
+## Approvals from the map
+
+Register `hooks/colony-approve.sh` for Claude Code's `PermissionRequest` event
+(copy it to `~/.colony/bin/`, then add to `~/.claude/settings.json`):
+
+    { "type": "command", "command": "sh \"$HOME/.colony/bin/colony-approve.sh\"", "timeout": 600 }
+
+While the map is open, permission requests show on the porch and in the
+inspector with Allow, Always allow (adds Claude Code's suggested rule), and
+Deny. The session's own prompt stays up too; whichever is answered first wins.
+With colonyd stopped or no map open, the hook steps aside. Windows sessions
+only for now: WSL hooks can't reach colonyd yet.

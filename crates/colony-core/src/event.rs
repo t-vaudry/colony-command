@@ -85,6 +85,11 @@ pub enum DomainEvent {
     /// Colony started this session in a terminal it owns. `dir` is the
     /// folder it was started in, as the host sees it.
     TerminalAttached { term_id: String, dir: String },
+    /// colonyd is holding a permission request from a session's approval hook
+    /// until someone answers it on the map.
+    PermissionAsked { request_id: String, agent_id: Option<String>, tool: String, target: Option<String> },
+    /// That request was answered on the map, timed out, or its hook gave up.
+    PermissionSettled { request_id: String },
     /// That terminal's process exited. `requested`: the user ended it from
     /// Colony, so it is not a crash.
     TerminalExited {

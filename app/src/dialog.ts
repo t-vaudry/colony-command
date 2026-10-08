@@ -33,6 +33,8 @@ export class NewSessionDialog {
   private other = document.getElementById("ns-folder-other") as HTMLInputElement;
   private host = document.getElementById("ns-host") as HTMLSelectElement;
   private name = document.getElementById("ns-name") as HTMLInputElement;
+  private mode = document.getElementById("ns-mode") as HTMLSelectElement;
+  private chrome = document.getElementById("ns-chrome") as HTMLInputElement;
   private prompt = document.getElementById("ns-prompt") as HTMLTextAreaElement;
   private error = document.getElementById("ns-error")!;
   private start = document.getElementById("ns-start") as HTMLButtonElement;
@@ -142,6 +144,9 @@ export class NewSessionDialog {
         prompt: this.prompt.value.trim() || undefined,
         name: this.resume ? undefined : this.name.value.trim() || undefined,
         resume: this.resume ?? undefined,
+        permission_mode: this.mode.value || undefined,
+        // Off unless ticked, which also skips Claude in Chrome's first-run question.
+        chrome: this.chrome.checked,
         ...this.termSize(),
       });
       this.dlg.close();

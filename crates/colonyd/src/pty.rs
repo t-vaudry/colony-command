@@ -24,6 +24,8 @@ use crate::conpty::Pty;
 use crate::log;
 
 const SCROLLBACK_BYTES: usize = 512 * 1024;
+/// Permission modes the map may start a session in.
+const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "auto"];
 /// Start of and end of a bracketed paste: the message arrives as one block,
 /// newlines included, instead of each line being submitted.
 const PASTE_START: &[u8] = b"\x1b[200~";
@@ -41,6 +43,13 @@ pub struct SpawnRequest {
     pub resume: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// `--permission-mode`; omitted means the user's own default.
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    /// Claude in Chrome: `Some(false)` passes `--no-chrome` (and skips its
+    /// first-run question), `Some(true)` `--chrome`, `None` neither.
+    #[serde(default)]
+    pub chrome: Option<bool>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -129,6 +138,18 @@ impl PtyHost {
         };
         if let Some(n) = req.name.as_ref().filter(|n| !n.trim().is_empty()) {
             claude_args.extend(["--name".into(), n.trim().to_string()]);
+        }
+        if let Some(mode) = req.permission_mode.as_ref().filter(|m| !m.is_empty()) {
+            // Never bypassPermissions from a button.
+            if !PERMISSION_MODES.contains(&mode.as_str()) {
+                return Err(format!("unknown permission mode {mode:?}"));
+            }
+            claude_args.extend(["--permission-mode".into(), mode.clone()]);
+        }
+        match req.chrome {
+            Some(true) => claude_args.push("--chrome".into()),
+            Some(false) => claude_args.push("--no-chrome".into()),
+            None => {}
         }
         if let Some(p) = req.prompt.as_ref().filter(|p| !p.trim().is_empty()) {
             claude_args.push(p.clone());

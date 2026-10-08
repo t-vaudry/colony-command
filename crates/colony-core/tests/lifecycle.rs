@@ -320,6 +320,47 @@ fn a_conversation_open_in_two_places_keeps_both_processes() {
 }
 
 #[test]
+fn held_permission_requests_show_and_clear() {
+    use colony_core::DomainEvent::{PermissionAsked, PermissionSettled};
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "make a folder"}));
+    let pre_tool_ts = r.t + 1000;
+    term(&mut r, PermissionAsked { request_id: "q1".into(), agent_id: None, tool: "Bash".into(), target: Some("mkdir x".into()) });
+    let a = &r.colony.agents[SID];
+    assert_eq!(a.state, AgentState::NeedsInput);
+    assert_eq!(a.permission.as_ref().map(|p| p.request_id.as_str()), Some("q1"));
+    assert_eq!(a.reason.as_deref(), Some("Bash: mkdir x"));
+
+    // The PreToolUse capture can arrive after the request (it's polled from
+    // disk); it happened before the request, so it doesn't clear it.
+    let p = HookPayload::parse(&json!({"session_id": SID, "hook_event_name": "PreToolUse", "tool_name": "Bash"}).to_string()).unwrap();
+    r.colony.apply(&Envelope::from_hook(HostId::Windows, pre_tool_ts - 500, &p).unwrap());
+    assert!(r.colony.agents[SID].permission.is_some());
+
+    // Answered on the map.
+    term(&mut r, PermissionSettled { request_id: "q1".into() });
+    assert!(r.colony.agents[SID].permission.is_none());
+
+    // Answered somewhere else: the tool finishing clears it.
+    term(&mut r, PermissionAsked { request_id: "q2".into(), agent_id: None, tool: "Bash".into(), target: None });
+    r.hook(json!({"hook_event_name": "PostToolUse", "tool_name": "Bash"}));
+    assert!(r.colony.agents[SID].permission.is_none());
+    assert_eq!(r.state(SID), AgentState::Working);
+}
+
+#[test]
+fn subagent_permission_requests_land_on_the_subagent() {
+    use colony_core::DomainEvent::PermissionAsked;
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}));
+    term(&mut r, PermissionAsked { request_id: "q1".into(), agent_id: Some("a1".into()), tool: "Bash".into(), target: None });
+    let sub = &r.colony.agents[&sub_id(SID, "a1")];
+    assert_eq!(sub.state, AgentState::NeedsInput);
+    assert!(sub.permission.is_some());
+    assert!(r.colony.agents[SID].permission.is_none());
+}
+
+#[test]
 fn unknown_hook_events_are_ignored() {
     let mut r = Run::new(HostId::Windows);
     assert!(r.hook(json!({"hook_event_name": "SomethingFromTheFuture", "weird": [1, 2]})).is_empty());

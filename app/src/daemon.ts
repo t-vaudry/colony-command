@@ -2,7 +2,7 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type HostOption, type SpawnRequest } from "./types";
+import { severity, type Agent, type HostOption, type PermissionChoice, type SpawnRequest } from "./types";
 
 interface DaemonInfo {
   port: number;
@@ -202,6 +202,11 @@ export class Daemon {
 
   kill(term: string): boolean {
     return this.send({ type: "kill", term });
+  }
+
+  /** Answer a permission request Colony is holding. */
+  decide(requestId: string, choice: PermissionChoice): boolean {
+    return this.send({ type: "permission", request_id: requestId, choice });
   }
 
   /** End a session Colony didn't start, so it can be resumed here. */

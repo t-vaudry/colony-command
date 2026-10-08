@@ -3,7 +3,7 @@
 
 import type { Daemon } from "./daemon";
 import { resumeWarning, type Prefill } from "./dialog";
-import { severity, STATE_LABEL, type Agent, type AgentState } from "./types";
+import { severity, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -99,7 +99,12 @@ export class Hud {
     daemon.onError((m) => this.toast(m));
     setInterval(() => this.tickDurations(), 1000);
     this.strip.addEventListener("click", (e) => {
-      const id = (e.target as HTMLElement).closest<HTMLElement>("[data-id]")?.dataset.id;
+      const el = (e.target as HTMLElement).closest<HTMLElement>("button");
+      if (el?.dataset.decide && el.dataset.req) {
+        this.decide(el, el.dataset.req, el.dataset.decide as PermissionChoice);
+        return;
+      }
+      const id = el?.dataset.id;
       if (id) this.actions.select(id);
     });
     this.panel.addEventListener("click", (e) => void this.action(e));
@@ -149,6 +154,14 @@ export class Hud {
     t.dataset.timer = String(setTimeout(() => (t.hidden = true), 6000));
   }
 
+  private decide(el: HTMLElement, requestId: string, choice: PermissionChoice): void {
+    if (!this.daemon.decide(requestId, choice)) {
+      this.toast("Not connected to colonyd.");
+      return;
+    }
+    el.closest(".actions")?.querySelectorAll("button").forEach((b) => b.setAttribute("disabled", ""));
+  }
+
   private resumeHere(a: Agent): void {
     this.actions.newSession({ dir: a.project_dir ?? a.cwd ?? undefined, host: a.host, resume: a.session_id, resumeLabel: a.name });
   }
@@ -179,7 +192,7 @@ export class Hud {
     this.compose.hidden = !target;
     // A permission prompt is showing in the session: offer Allow / Deny.
     const perm = document.getElementById("perm")!;
-    const asking = !!a && !!target && a.state === "needs_input" && !a.reason?.startsWith("Waiting in its terminal");
+    const asking = !!a && !!target && a.state === "needs_input" && !a.permission && !a.reason?.startsWith("Waiting in its terminal");
     perm.hidden = !asking;
     if (asking) document.getElementById("perm-text")!.textContent = `Claude wants to run ${a!.reason ?? "a tool"}.`;
     if (a && target) {
@@ -230,7 +243,10 @@ export class Hud {
           .map(
             (a) =>
               `<button type="button" class="porch-item ${severity(a.state)}${a.id === this.selected ? " sel" : ""}" data-id="${esc(a.id)}">` +
-              `<b>${esc(a.name)}</b> ${esc(STATE_LABEL[a.state])} · ${since(a.state_since)}</button>`,
+              `<b>${esc(a.name)}</b> ${esc(STATE_LABEL[a.state])} · ${since(a.state_since)}</button>` +
+              (a.permission
+                ? `<span class="quick"><button type="button" class="primary" data-decide="allow" data-req="${esc(a.permission.request_id)}" title="Allow ${esc(a.permission.tool)}">Allow</button><button type="button" class="danger" data-decide="deny" data-req="${esc(a.permission.request_id)}">Deny</button></span>`
+                : ""),
           )
           .join("") +
         `<span class="hint">Space: next</span>`
@@ -272,7 +288,19 @@ export class Hud {
       <div class="k">${a.kind === "subagent" ? `Subagent of ${esc(parent?.name ?? "?")}` : esc(a.project_name ?? "unknown project")}</div>
       <h2>${esc(a.name)}</h2>
       <div><span class="pill ${sev ?? a.state}">${esc(STATE_LABEL[a.state])}</span> <span class="muted">for ${since(a.state_since)}</span></div>
-      ${row(REASON_LABEL[a.state] ?? "Note", a.reason, "reason")}
+      ${
+        a.permission
+          ? `<div class="choice ask" role="group" aria-label="Permission request">
+              <p><b>Claude wants to use ${esc(a.permission.tool)}</b></p>
+              ${a.permission.target ? `<pre class="ask-target">${esc(a.permission.target)}</pre>` : ""}
+              <div class="actions">
+                <button type="button" class="primary" data-decide="allow" data-req="${esc(a.permission.request_id)}">Allow</button>
+                <button type="button" data-decide="allow_always" data-req="${esc(a.permission.request_id)}" title="Allow, and add Claude Code's suggested rule so it won't ask again for this">Always allow</button>
+                <button type="button" class="danger" data-decide="deny" data-req="${esc(a.permission.request_id)}">Deny</button>
+              </div>
+            </div>`
+          : row(REASON_LABEL[a.state] ?? "Note", a.reason, "reason")
+      }
       ${row("Session", a.title)}
       ${row("Objective", a.objective)}
       ${a.last_prompt !== a.objective ? row("Last prompt", a.last_prompt) : ""}
@@ -331,6 +359,7 @@ export class Hud {
     const el = (e.target as HTMLElement).closest<HTMLElement>("button");
     if (!el) return;
     if (el.dataset.select) this.actions.select(el.dataset.select);
+    if (el.dataset.decide && el.dataset.req) this.decide(el, el.dataset.req, el.dataset.decide as PermissionChoice);
     if (el.dataset.newHere) {
       const a = this.daemon.agents.get(el.dataset.newHere);
       this.actions.newSession({ dir: a?.project_dir ?? a?.cwd ?? undefined, host: a?.host });

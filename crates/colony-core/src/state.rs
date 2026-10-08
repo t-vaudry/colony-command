@@ -75,6 +75,15 @@ pub enum AgentKind {
     Subagent,
 }
 
+/// A permission request Colony is holding for the map to answer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PermissionAsk {
+    pub request_id: String,
+    pub tool: String,
+    pub target: Option<String>,
+    pub asked_at: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CurrentTool {
     pub name: String,
@@ -130,6 +139,9 @@ pub struct Agent {
     /// Set when Colony started this session in its own terminal, so the map
     /// can show the terminal and send input to it.
     pub terminal: Option<String>,
+    /// A permission request waiting for an answer on the map.
+    #[serde(default)]
+    pub permission: Option<PermissionAsk>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_gone_at: Option<u64>,
 }
@@ -166,6 +178,7 @@ impl Agent {
             last_event_at: e.ts,
             hooks_seen: false,
             terminal: None,
+            permission: None,
             process_gone_at: None,
         }
     }
@@ -246,6 +259,8 @@ impl Colony {
                 | DomainEvent::SessionGone { .. }
                 | DomainEvent::TerminalAttached { .. }
                 | DomainEvent::TerminalExited { .. }
+                | DomainEvent::PermissionAsked { .. }
+                | DomainEvent::PermissionSettled { .. }
         );
         if from_hooks {
             main.hooks_seen = true;
@@ -301,6 +316,7 @@ impl Colony {
                 }
             },
             DomainEvent::PromptSubmitted { preview, synthetic } => {
+                settle_if_after(main, e.ts);
                 if !synthetic && !preview.is_empty() {
                     if main.objective.is_none() {
                         main.objective = Some(preview.clone());
@@ -312,6 +328,7 @@ impl Colony {
             }
             DomainEvent::ToolStarted { agent_id, tool, target, tool_use_id } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
+                settle_if_after(a, e.ts);
                 a.current_tool = Some(CurrentTool {
                     name: tool.clone(),
                     target: target.clone(),
@@ -328,6 +345,7 @@ impl Colony {
             }
             DomainEvent::ToolFinished { agent_id, tool, tool_use_id, ok, error } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
+                settle_if_after(a, e.ts);
                 let same = a.current_tool.as_ref().is_some_and(|t| match (&t.tool_use_id, tool_use_id) {
                     (Some(x), Some(y)) => x == y,
                     _ => &t.name == tool,
@@ -390,6 +408,7 @@ impl Colony {
                 a.set_state(AgentState::Ended, Some("returned".into()), e.ts);
             }
             DomainEvent::TurnEnded { last_message } => {
+                settle_if_after(main, e.ts);
                 main.current_tool = None;
                 main.last_message = last_message.as_deref().map(preview);
                 match last_message.as_deref().and_then(question_in) {
@@ -399,6 +418,7 @@ impl Colony {
                 self.end_children(&sid, e.ts, &mut changed);
             }
             DomainEvent::TurnFailed { error } => {
+                settle_if_after(main, e.ts);
                 main.current_tool = None;
                 main.set_state(AgentState::Blocked, Some(format!("API error: {error}")), e.ts);
             }
@@ -409,9 +429,32 @@ impl Colony {
                 }
             }
             DomainEvent::SessionEnded => {
+                main.permission = None;
                 main.current_tool = None;
                 main.set_state(AgentState::Ended, None, e.ts);
                 self.end_children(&sid, e.ts, &mut changed);
+            }
+            DomainEvent::PermissionAsked { request_id, agent_id, tool, target } => {
+                let a = self.target(e, agent_id.as_deref(), &mut changed);
+                a.permission = Some(PermissionAsk {
+                    request_id: request_id.clone(),
+                    tool: tool.clone(),
+                    target: target.clone(),
+                    asked_at: e.ts,
+                });
+                let what = match target {
+                    Some(t) => format!("{tool}: {}", preview(t)),
+                    None => tool.clone(),
+                };
+                a.set_state(AgentState::NeedsInput, Some(what), e.ts);
+            }
+            DomainEvent::PermissionSettled { request_id } => {
+                for a in self.agents.values_mut() {
+                    if a.permission.as_ref().is_some_and(|p| &p.request_id == request_id) {
+                        a.permission = None;
+                        changed.push(a.id.clone());
+                    }
+                }
             }
             DomainEvent::TerminalAttached { term_id, dir } => {
                 main.terminal = Some(term_id.clone());
@@ -591,6 +634,15 @@ impl Colony {
             .collect();
         q.sort_by_key(|a| (a.state.severity(), a.state_since));
         q
+    }
+}
+
+/// Clear a held permission request once the session has moved past it: a
+/// later tool event or turn boundary means it was answered somewhere else.
+/// Events from before the request (hooks and the request race) don't count.
+fn settle_if_after(a: &mut Agent, ts: u64) {
+    if a.permission.as_ref().is_some_and(|p| ts > p.asked_at) {
+        a.permission = None;
     }
 }
 

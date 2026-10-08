@@ -7,6 +7,8 @@
 //! - `GET  /api/agents` the current snapshot
 //! - `POST /api/ack`    `{"id": "..."}`: mark finished work reviewed, or clear a
 //!                      crash (for scripts; the map uses the socket)
+//! - `POST /api/permission` a `PermissionRequest` hook payload; held until the
+//!                      map answers, then the hook's decision JSON (or no body)
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,6 +28,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 
+use crate::approvals::{Choice, Decision, Hold, MAX_WAIT};
 use crate::pty::SpawnRequest;
 use crate::{delta_messages, log, Shared};
 
@@ -40,6 +43,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/ws", get(ws))
         .route("/api/agents", get(agents))
         .route("/api/ack", post(ack))
+        .route("/api/permission", post(permission))
         .with_state(shared)
 }
 
@@ -127,6 +131,8 @@ enum Command {
     Resize { term: String, cols: u16, rows: u16 },
     /// End the session's process.
     Kill { term: String },
+    /// Answer a held permission request.
+    Permission { request_id: String, choice: Choice, #[serde(default)] message: Option<String> },
     /// End a session Colony did not start (e.g. one the Claude desktop app
     /// keeps running in the background), so it can be resumed here.
     Terminate { id: String },
@@ -198,6 +204,7 @@ async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<
         Command::Resize { term, cols, rows } => pty.resize(&term, cols, rows).map(|_| None),
         Command::Kill { term } => pty.kill(&term).map(|_| None),
         Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
+        Command::Permission { request_id, choice, message } => shared.approvals.decide(&request_id, choice, message).map(|_| None),
     };
     match result {
         Ok(reply) => reply,
@@ -220,6 +227,15 @@ async fn ws(
 }
 
 async fn stream(shared: Arc<Shared>, socket: WebSocket) {
+    // Count this map as able to answer permission requests while it's open.
+    shared.approvals.maps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    struct Watching(Arc<crate::approvals::Approvals>);
+    impl Drop for Watching {
+        fn drop(&mut self) {
+            self.0.maps.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _watching = Watching(shared.approvals.clone());
     // Subscribe before taking the snapshot so no delta falls in the gap.
     let mut rx = shared.deltas.subscribe();
     let mut term_rx = shared.pty.output.subscribe();
@@ -335,4 +351,59 @@ fn quiet(program: &str) -> tokio::process::Command {
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
     cmd
+}
+
+/// The approval hook's call: hold the request until the map answers it, the
+/// session moves on, or `MAX_WAIT` passes. No body means no decision, and
+/// Claude Code's own prompt takes over.
+async fn permission(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap, body: String) -> Response {
+    if !authorized(&shared, &params, &headers) {
+        return unauthorized();
+    }
+    let no_decision = || StatusCode::NO_CONTENT.into_response();
+    let Ok(p) = colony_core::HookPayload::parse(&body) else { return no_decision() };
+    if p.hook_event_name != "PermissionRequest" || !shared.approvals.anyone_watching() {
+        return no_decision();
+    }
+    let request_id = uuid::Uuid::new_v4().simple().to_string();
+    let agent_id = match &p.agent_id {
+        Some(a) => colony_core::state::sub_id(&p.session_id, a),
+        None => p.session_id.clone(),
+    };
+    let suggestions = p.extra.get("permission_suggestions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let rx = shared.approvals.hold(&request_id, agent_id, suggestions);
+    // Requests over HTTP come from hooks on this Windows machine.
+    let host = HostId::Windows;
+    let tool = p.tool_name.clone().unwrap_or_else(|| "tool".into());
+    log(format!("holding permission request {request_id} from {}: {tool}", p.session_id));
+    let _ = shared
+        .events
+        .send(Envelope {
+            ts: now_ms(),
+            host: host.clone(),
+            session_id: p.session_id.clone(),
+            cwd: p.cwd.clone(),
+            event: DomainEvent::PermissionAsked { request_id: request_id.clone(), agent_id: p.agent_id.clone(), tool, target: p.tool_target() },
+        })
+        .await;
+    // However this call ends (answered, timed out, or the hook was killed),
+    // take the request off the map.
+    let events = shared.events.clone();
+    let (sid, rid) = (p.session_id.clone(), request_id.clone());
+    let _hold = Hold {
+        approvals: shared.approvals.clone(),
+        request_id: request_id.clone(),
+        on_drop: Some(Box::new(move || {
+            let _ = events.try_send(Envelope { ts: now_ms(), host, session_id: sid, cwd: None, event: DomainEvent::PermissionSettled { request_id: rid } });
+        })),
+    };
+    let decision = tokio::select! {
+        d = rx => d.unwrap_or(Decision::Pass),
+        _ = tokio::time::sleep(MAX_WAIT) => Decision::Pass,
+    };
+    log(format!("permission request {request_id}: {decision:?}"));
+    match decision.hook_output() {
+        Some(out) => ([(header::CONTENT_TYPE, "application/json")], out).into_response(),
+        None => no_decision(),
+    }
 }

@@ -7,6 +7,7 @@
 //! `~/.colony/daemon.json` for the app to read.
 
 mod api;
+mod approvals;
 #[cfg(windows)]
 mod conpty;
 mod pty;
@@ -41,6 +42,8 @@ pub struct Shared {
     pub wsl_wake: Notify,
     /// Into the reducer, for events the API produces itself.
     pub events: mpsc::Sender<Envelope>,
+    /// Permission requests held for the map to answer.
+    pub approvals: Arc<approvals::Approvals>,
 }
 
 pub fn log(msg: impl AsRef<str>) {
@@ -81,6 +84,7 @@ async fn main() {
         distros: RwLock::default(),
         wsl_wake: Notify::new(),
         events: ev_tx.clone(),
+        approvals: Arc::default(),
     });
 
     // This machine's sessions.
@@ -117,11 +121,13 @@ async fn main() {
                     }
                     changed.sort();
                     changed.dedup();
+                    reducer.approvals.release_answered(&colony);
                     delta_messages(&colony, &changed)
                 }
                 _ = tick.tick() => {
                     let mut colony = reducer.colony.write().await;
                     let changed = colony.tick(now_ms());
+                    reducer.approvals.release_answered(&colony);
                     delta_messages(&colony, &changed)
                 }
             };
