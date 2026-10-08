@@ -1,0 +1,229 @@
+//! Watches one host's Claude Code state on disk and turns it into domain events:
+//!
+//! - `<claude home>/sessions/<pid>.json`: the live session registry. A new or
+//!   rewritten file is a `SessionSeen`; a vanished file is a `SessionGone`.
+//! - `<colony home>/capture/<nanotime>-<pid>.json`: one hook payload per file,
+//!   written by the capture hook. Processed in name (= time) order.
+//!
+//! Polling a couple of small directories every few hundred milliseconds is
+//! cheap and avoids file-watcher edge cases (buffer overflows, network paths).
+
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use colony_core::{DomainEvent, Envelope, HookPayload, HostId, SessionRecord};
+
+/// A capture file that still fails to parse after this long is skipped; before
+/// that it may simply be half-written.
+const PARTIAL_WRITE_GRACE_MS: u64 = 5_000;
+
+pub fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// `~` for the current user: `USERPROFILE` on Windows, `HOME` elsewhere.
+pub fn home_dir() -> PathBuf {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+struct RecordFile {
+    modified: Option<SystemTime>,
+    len: u64,
+    pid: u32,
+    session_id: String,
+}
+
+pub struct DirSource {
+    host: HostId,
+    sessions_dir: PathBuf,
+    capture_dir: PathBuf,
+    records: HashMap<String, RecordFile>,
+    /// Name of the last capture file processed; later names are newer.
+    last_capture: Option<String>,
+    replay_since_ms: u64,
+}
+
+impl DirSource {
+    /// `replay_since_ms`: capture files older than this are skipped on the
+    /// first pass, so a restart rebuilds recent history without replaying
+    /// everything ever captured.
+    pub fn new(host: HostId, claude_home: &Path, colony_home: &Path, replay_since_ms: u64) -> Self {
+        DirSource {
+            host,
+            sessions_dir: claude_home.join("sessions"),
+            capture_dir: colony_home.join("capture"),
+            records: HashMap::new(),
+            last_capture: None,
+            replay_since_ms,
+        }
+    }
+
+    /// Defaults for the current user: `~/.claude` and `~/.colony`.
+    pub fn for_current_user(host: HostId, replay_since_ms: u64) -> Self {
+        let home = home_dir();
+        Self::new(host, &home.join(".claude"), &home.join(".colony"), replay_since_ms)
+    }
+
+    pub fn poll(&mut self) -> Vec<Envelope> {
+        let mut out = self.poll_captures();
+        out.extend(self.poll_registry());
+        out
+    }
+
+    fn poll_registry(&mut self) -> Vec<Envelope> {
+        let mut out = Vec::new();
+        let now = now_ms();
+        let mut present = Vec::new();
+        for entry in fs::read_dir(&self.sessions_dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !SessionRecord::is_record_file(&name) {
+                continue;
+            }
+            present.push(name.clone());
+            let Ok(meta) = entry.metadata() else { continue };
+            let modified = meta.modified().ok();
+            if let Some(known) = self.records.get(&name) {
+                if known.modified == modified && known.len == meta.len() {
+                    continue;
+                }
+            }
+            let Ok(text) = fs::read_to_string(entry.path()) else { continue };
+            // A half-written file fails to parse; it is retried next poll.
+            let Ok(record) = SessionRecord::parse(&text) else { continue };
+            self.records.insert(
+                name,
+                RecordFile { modified, len: meta.len(), pid: record.pid, session_id: record.session_id.clone() },
+            );
+            out.push(Envelope::from_record(self.host.clone(), now, record));
+        }
+        let gone: Vec<String> = self.records.keys().filter(|k| !present.contains(k)).cloned().collect();
+        for name in gone {
+            let r = self.records.remove(&name).expect("listed above");
+            out.push(Envelope {
+                ts: now,
+                host: self.host.clone(),
+                session_id: r.session_id,
+                cwd: None,
+                event: DomainEvent::SessionGone { pid: r.pid },
+            });
+        }
+        out
+    }
+
+    fn poll_captures(&mut self) -> Vec<Envelope> {
+        let mut names: Vec<String> = fs::read_dir(&self.capture_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".json"))
+            .filter(|n| self.last_capture.as_ref().is_none_or(|last| n > last))
+            .collect();
+        names.sort();
+        let now = now_ms();
+        let mut out = Vec::new();
+        for name in names {
+            let ts = capture_time_ms(&name).unwrap_or(now);
+            if self.last_capture.is_none() && ts < self.replay_since_ms {
+                continue;
+            }
+            let parsed = fs::read_to_string(self.capture_dir.join(&name))
+                .ok()
+                .and_then(|text| HookPayload::parse(&text).ok());
+            match parsed {
+                Some(p) => {
+                    if let Some(e) = Envelope::from_hook(self.host.clone(), ts, &p) {
+                        out.push(e);
+                    }
+                }
+                // Possibly still being written: stop here and retry next poll,
+                // keeping events in order. Give up on it after the grace period.
+                None if now.saturating_sub(ts) < PARTIAL_WRITE_GRACE_MS => break,
+                None => {}
+            }
+            self.last_capture = Some(name);
+        }
+        out
+    }
+}
+
+/// `1791490765344322000-560.json` -> 1791490765344 (ms).
+fn capture_time_ms(name: &str) -> Option<u64> {
+    let nanos: u128 = name.split(['-', '.']).next()?.parse().ok()?;
+    Some((nanos / 1_000_000) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("colony-source-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("claude/sessions")).unwrap();
+        fs::create_dir_all(d.join("colony/capture")).unwrap();
+        d
+    }
+
+    #[test]
+    fn capture_names_give_millisecond_times() {
+        assert_eq!(capture_time_ms("1791490765344322000-560.json"), Some(1791490765344));
+        assert_eq!(capture_time_ms("notes.json"), None);
+    }
+
+    #[test]
+    fn registry_files_appear_change_and_vanish() {
+        let d = tmp("registry");
+        let mut src = DirSource::new(HostId::Windows, &d.join("claude"), &d.join("colony"), 0);
+        let f = d.join("claude/sessions/42.json");
+        fs::write(&f, r#"{"pid":42,"sessionId":"s1","status":"busy"}"#).unwrap();
+        fs::write(d.join("claude/sessions/42.abc.key"), "secret").unwrap();
+        let ev = src.poll();
+        assert_eq!(ev.len(), 1);
+        assert!(matches!(&ev[0].event, DomainEvent::SessionSeen { record } if record.pid == 42));
+        assert!(src.poll().is_empty(), "unchanged file is not re-emitted");
+        fs::write(&f, r#"{"pid":42,"sessionId":"s1","status":"idle","name":"longer now"}"#).unwrap();
+        assert_eq!(src.poll().len(), 1);
+        fs::remove_file(&f).unwrap();
+        let ev = src.poll();
+        assert!(matches!(&ev[0].event, DomainEvent::SessionGone { pid: 42 }));
+        assert_eq!(ev[0].session_id, "s1");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn captures_are_read_in_order_once() {
+        let d = tmp("capture");
+        let cap = d.join("colony/capture");
+        let t = (now_ms() as u128) * 1_000_000;
+        fs::write(cap.join(format!("{}-2.json", t + 2_000_000)), r#"{"session_id":"s","hook_event_name":"Stop"}"#).unwrap();
+        fs::write(cap.join(format!("{}-1.json", t)), r#"{"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":"hi"}"#).unwrap();
+        let mut src = DirSource::new(HostId::Windows, &d.join("claude"), &d.join("colony"), 0);
+        let ev = src.poll();
+        assert_eq!(ev.len(), 2);
+        assert!(matches!(ev[0].event, DomainEvent::PromptSubmitted { .. }));
+        assert!(matches!(ev[1].event, DomainEvent::TurnEnded { .. }));
+        assert!(src.poll().is_empty());
+        // A half-written newest file holds the line until it parses.
+        fs::write(cap.join(format!("{}-3.json", t + 3_000_000)), r#"{"session_id":"s","hook_ev"#).unwrap();
+        assert!(src.poll().is_empty());
+        fs::write(cap.join(format!("{}-3.json", t + 3_000_000)), r#"{"session_id":"s","hook_event_name":"SessionEnd"}"#).unwrap();
+        assert_eq!(src.poll().len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn replay_window_skips_old_captures() {
+        let d = tmp("replay");
+        let cap = d.join("colony/capture");
+        fs::write(cap.join("1000000000000000000-1.json"), r#"{"session_id":"s","hook_event_name":"Stop"}"#).unwrap();
+        let mut src = DirSource::new(HostId::Windows, &d.join("claude"), &d.join("colony"), now_ms() - 60_000);
+        assert!(src.poll().is_empty());
+        let _ = fs::remove_dir_all(&d);
+    }
+}

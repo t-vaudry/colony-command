@@ -10,3 +10,9 @@ license = "UNLICENSED"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+colony-core = { path = "crates/colony-core" }
+colony-source = { path = "crates/colony-source" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net", "signal"] }
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }

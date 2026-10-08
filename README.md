@@ -11,11 +11,14 @@ Design spec: [`docs/design-spec.html`](docs/design-spec.html)
 | Path | What |
 |---|---|
 | `crates/colony-core` | Domain types and the state reducer (no I/O) |
+| `crates/colony-source` | Watches the session registry and hook captures, emits events |
+| `crates/colony-probe` | Runs in each WSL distro, streams its events to colonyd over stdio |
+| `crates/colonyd` | Daemon: reducer + local WebSocket API on 127.0.0.1:7878 |
 | `spikes/capture` | Hook that records raw Claude Code hook payloads, for schema checks |
 | `docs/` | Design spec |
 
-Planned: `crates/colonyd` (Windows daemon), `crates/colony-hook`,
-`crates/colony-probe` (WSL), `app/` (Tauri + PixiJS).
+Planned: `crates/colony-hook` (replaces the capture spike, adds approvals),
+`app/` (Tauri + PixiJS map).
 
 ## Test
 
@@ -26,3 +29,11 @@ From Windows (once Visual Studio C++ build tools are installed):
 Or inside Ubuntu:
 
     wsl -d Ubuntu -- bash scripts/test-wsl.sh
+
+## Run the daemon
+
+    wsl -d Ubuntu -- bash scripts/install-probe.sh   # once per distro
+    cargo run -p colonyd
+
+It writes its port and access token to `~/.colony/daemon.json`. Running WSL
+distros are attached automatically; stopped ones are left alone.

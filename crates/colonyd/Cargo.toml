@@ -1,0 +1,16 @@
+[package]
+name = "colonyd"
+description = "Colony Command daemon: gathers events from Windows and WSL, keeps colony state, serves the map."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+colony-core.workspace = true
+colony-source.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+uuid.workspace = true
