@@ -42,7 +42,7 @@ export class NewSessionDialog {
 
   constructor(
     private daemon: Daemon,
-    private onStarted: (sessionId: string) => void,
+    private onStarted: (started: { term: string; session_id: string }) => void,
     private termSize: () => { cols: number; rows: number },
   ) {
     this.folder.addEventListener("change", () => this.folderChanged());
@@ -136,7 +136,7 @@ export class NewSessionDialog {
     this.start.disabled = true;
     this.error.textContent = "";
     try {
-      const { session_id } = await this.daemon.spawn({
+      const started = await this.daemon.spawn({
         host: this.host.value,
         dir,
         prompt: this.prompt.value.trim() || undefined,
@@ -145,7 +145,7 @@ export class NewSessionDialog {
         ...this.termSize(),
       });
       this.dlg.close();
-      this.onStarted(session_id);
+      this.onStarted(started);
     } catch (e) {
       this.error.textContent = e instanceof Error ? e.message : String(e);
     } finally {

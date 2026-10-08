@@ -17,8 +17,13 @@ function select(id: string | null): void {
   if (terminal.visible && a?.terminal) showTerminal(a);
 }
 
+/** Agent whose terminal the pane shows, so it can follow a replaced terminal. */
+let paneAgent: string | null = null;
+
 function showTerminal(a: Agent): void {
-  if (a.terminal) terminal.show(a.terminal, `${a.name} · ${a.project_name ?? ""}`);
+  if (!a.terminal) return;
+  paneAgent = a.id;
+  terminal.show(a.terminal, `${a.name} · ${a.project_name ?? ""}`);
 }
 
 function newSession(prefill?: Prefill): void {
@@ -30,19 +35,13 @@ const terminal = new TerminalPane(daemon, () => requestAnimationFrame(() => worl
 const hud = new Hud(daemon, { select, showTerminal, newSession });
 const dialog = new NewSessionDialog(
   daemon,
-  (sessionId) => {
-    // The new bot appears with the TerminalAttached event; open its terminal.
-    const open = () => {
-      const a = daemon.agents.get(sessionId);
-      if (!a) return false;
-      select(sessionId);
-      showTerminal(a);
-      return true;
-    };
-    if (!open()) {
-      const timer = setInterval(() => open() && clearInterval(timer), 100);
-      setTimeout(() => clearInterval(timer), 5000);
-    }
+  ({ term, session_id }) => {
+    // Use the terminal id from the spawn reply: when resuming, the bot
+    // already exists and still carries its old (closed) terminal for a moment.
+    paneAgent = session_id;
+    const label = daemon.agents.get(session_id)?.name ?? "New session";
+    terminal.show(term, label);
+    select(session_id);
   },
   () => terminal.size(),
 );
@@ -52,11 +51,14 @@ document.getElementById("new-session-btn")!.addEventListener("click", () => {
   newSession(a ? { dir: a.project_dir ?? a.cwd ?? undefined, host: a.host } : undefined);
 });
 
-// After a daemon restart, re-subscribe the terminal pane.
+// After a daemon restart, re-subscribe the terminal pane. And if the agent in
+// the pane gets a new terminal (resumed again), follow it.
 let wasLive = false;
 daemon.onChange(() => {
   if (daemon.status === "live" && !wasLive) terminal.reattach();
   wasLive = daemon.status === "live";
+  const a = paneAgent ? daemon.agents.get(paneAgent) : undefined;
+  if (terminal.visible && a?.terminal && a.terminal !== terminal.attached) showTerminal(a);
 });
 
 window.addEventListener("keydown", (e) => {

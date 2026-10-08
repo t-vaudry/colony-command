@@ -508,3 +508,42 @@ button.primary kbd {
   border-radius: 8px;
   background: var(--bg);
 }
+
+/* Permission prompt and prompt keys in the reply area. */
+.perm {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--input);
+  border-left-width: 4px;
+  border-radius: 8px;
+  background: var(--surface);
+}
+.perm[hidden] {
+  display: none;
+}
+.perm p {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.keys .k {
+  margin-right: 4px;
+}
+.keys button {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  min-width: 34px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.keys button:hover {
+  border-color: var(--accent);
+}

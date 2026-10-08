@@ -47,6 +47,9 @@ function originLabel(a: Agent): string {
   }
 }
 
+/** Terminal key sequences for the prompt buttons. */
+const KEYS: Record<string, string> = { up: "\x1b[A", down: "\x1b[B", enter: "\r", esc: "\x1b" };
+
 const REASON_LABEL: Partial<Record<AgentState, string>> = {
   needs_input: "Permission",
   awaiting_reply: "Asks",
@@ -122,6 +125,20 @@ export class Hud {
       const a = this.composeAgent();
       if (a) this.actions.showTerminal(a);
     });
+    // Prompt keys and Allow/Deny press keys in the session, so menus can be
+    // answered without the terminal pane having keyboard focus.
+    this.compose.addEventListener("click", (e) => {
+      const key = (e.target as HTMLElement).closest<HTMLElement>("[data-key]")?.dataset.key;
+      if (key) this.press(KEYS[key]);
+    });
+    document.getElementById("perm-allow")!.addEventListener("click", () => this.press(KEYS.enter));
+    document.getElementById("perm-deny")!.addEventListener("click", () => this.press(KEYS.esc));
+  }
+
+  private press(seq: string | undefined): void {
+    const a = this.composeAgent();
+    if (!seq || !a?.terminal) return;
+    if (!this.daemon.input(a.terminal, seq)) this.toast("Not connected to colonyd.");
   }
 
   toast(message: string): void {
@@ -160,6 +177,11 @@ export class Hud {
       this.reply.value = (target && this.drafts.get(target)) ?? "";
     }
     this.compose.hidden = !target;
+    // A permission prompt is showing in the session: offer Allow / Deny.
+    const perm = document.getElementById("perm")!;
+    const asking = !!a && !!target && a.state === "needs_input" && !a.reason?.startsWith("Waiting in its terminal");
+    perm.hidden = !asking;
+    if (asking) document.getElementById("perm-text")!.textContent = `Claude wants to run ${a!.reason ?? "a tool"}.`;
     if (a && target) {
       this.reply.placeholder =
         a.state === "awaiting_reply"

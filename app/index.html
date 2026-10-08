@@ -35,6 +35,20 @@
       <aside id="inspector" aria-live="polite">
         <div id="insp-body"></div>
         <div id="compose" hidden>
+          <div id="perm" class="perm" hidden>
+            <p id="perm-text"></p>
+            <div class="actions">
+              <button type="button" class="primary" id="perm-allow" title="Choose the highlighted option, normally &quot;Yes&quot; (Enter)">Allow</button>
+              <button type="button" class="danger" id="perm-deny" title="Decline and let Claude try something else (Esc)">Deny</button>
+            </div>
+          </div>
+          <div class="keys" role="group" aria-label="Answer a prompt in the session">
+            <span class="k">Prompt keys</span>
+            <button type="button" data-key="up" aria-label="Up arrow">↑</button>
+            <button type="button" data-key="down" aria-label="Down arrow">↓</button>
+            <button type="button" data-key="enter">Enter</button>
+            <button type="button" data-key="esc">Esc</button>
+          </div>
           <label class="k" for="reply">Reply</label>
           <textarea id="reply" rows="3" placeholder="Message…"></textarea>
           <div class="actions">
@@ -43,7 +57,7 @@
             <button type="button" id="open-term">Terminal</button>
             <button type="button" id="end" class="danger">End session</button>
           </div>
-          <p class="muted small">Shift+Enter for a new line. Use the terminal for menus and prompts like folder trust.</p>
+          <p class="muted small">Shift+Enter for a new line. Menus in the session (folder trust, browser tools) answer with the prompt keys above or in the terminal.</p>
         </div>
       </aside>
     </main>
