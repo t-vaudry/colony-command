@@ -120,7 +120,12 @@ impl DirSource {
             }
             let Ok(text) = fs::read_to_string(entry.path()) else { continue };
             // A half-written file fails to parse; it is retried next poll.
-            let Ok(record) = SessionRecord::parse(&text) else { continue };
+            let Ok(mut record) = SessionRecord::parse(&text) else { continue };
+            // Inside WSL the session's environment says whether Colony
+            // started it. (On Windows, colonyd tags records itself.)
+            if let Some(term) = process::colony_term(record.pid) {
+                record.extra.insert("colonyTerm".into(), term.into());
+            }
             let proc_start = record.proc_start();
             if !process::alive(record.pid, proc_start) {
                 self.stale.insert(name, stamp);

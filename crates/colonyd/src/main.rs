@@ -62,6 +62,23 @@ pub fn delta_messages(colony: &Colony, changed: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// A registered session whose process (or a parent of it) is one Colony
+/// started belongs to that Colony terminal: note it on the record.
+fn tag_colony_session(e: &mut Envelope, owned: &pty::Owned) {
+    let colony_core::DomainEvent::SessionSeen { record } = &mut e.event else { return };
+    if record.colony_term().is_some() {
+        return;
+    }
+    let owned = owned.lock().unwrap();
+    if owned.is_empty() {
+        return;
+    }
+    let term = colony_source::process::lineage(record.pid).into_iter().find_map(|p| owned.get(&p).cloned());
+    if let Some(term) = term {
+        record.extra.insert("colonyTerm".into(), term.into());
+    }
+}
+
 fn local_host() -> HostId {
     if cfg!(windows) {
         HostId::Windows
@@ -89,10 +106,12 @@ async fn main() {
 
     // This machine's sessions.
     let local_tx = ev_tx.clone();
+    let owned = shared.pty.owned.clone();
     std::thread::spawn(move || {
         let mut src = DirSource::for_current_user(local_host(), now_ms().saturating_sub(REPLAY_MS));
         loop {
-            for e in src.poll() {
+            for mut e in src.poll() {
+                tag_colony_session(&mut e, &owned);
                 if local_tx.blocking_send(e).is_err() {
                     return;
                 }

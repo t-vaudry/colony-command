@@ -162,7 +162,8 @@ export class NewSessionDialog {
 /** Why resuming this session here would make a second copy, if it would. */
 export function resumeWarning(a: Agent): string | null {
   // Running copies the session registry knows about, whatever the bot's state.
-  const pids = a.pids?.length ? a.pids : [];
+  // The process in Colony's own terminal is this copy, not another one.
+  const pids = (a.pids ?? []).filter((p) => p !== a.terminal_pid);
   if (!pids.length) return null;
   const which = pids.length === 1 ? `process ${pids[0]}` : `processes ${pids.join(", ")}`;
   if (a.entrypoint === "claude-desktop") {

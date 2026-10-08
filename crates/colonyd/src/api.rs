@@ -288,8 +288,9 @@ async fn terminate(shared: &Shared, id: &str) -> Result<(), String> {
     let (session_id, pids, host, terminal) = {
         let colony = shared.colony.read().await;
         let a = colony.agents.get(id).ok_or("no such session")?;
-        let mut pids = a.pids.clone();
-        if pids.is_empty() {
+        // Only copies running outside Colony's own terminal.
+        let mut pids = a.other_pids();
+        if pids.is_empty() && a.terminal.is_none() {
             pids.extend(a.pid);
         }
         (a.session_id.clone(), pids, a.host.clone(), a.terminal.clone())
@@ -297,7 +298,13 @@ async fn terminate(shared: &Shared, id: &str) -> Result<(), String> {
     if pids.is_empty() {
         return Err("Colony doesn't know of another running copy of this session".into());
     }
+    let owned = shared.pty.owned.lock().unwrap().clone();
     for pid in &pids {
+        // Never a process Colony started, whatever the registry says.
+        if colony_source::process::lineage(*pid).iter().any(|p| owned.contains_key(p)) {
+            log(format!("not ending pid {pid}: it runs in a Colony terminal"));
+            continue;
+        }
         end_process(&session_id, *pid, &host).await?;
         log(format!("ended session {session_id} (pid {pid} on {host}) at the user's request"));
         let _ = shared

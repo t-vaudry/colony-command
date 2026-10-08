@@ -91,8 +91,14 @@ pub struct Output {
     pub bytes: Arc<Vec<u8>>,
 }
 
+/// Processes Colony started in its terminals, by pid, with their terminal id.
+pub type Owned = Arc<Mutex<HashMap<u32, String>>>;
+
 pub struct PtyHost {
     terms: Mutex<HashMap<String, Arc<Term>>>,
+    /// So registry entries from these processes are recognized as Colony's
+    /// own sessions, and never offered for termination as "other copies".
+    pub owned: Owned,
     pub output: broadcast::Sender<Output>,
     events: mpsc::Sender<Envelope>,
     windows_claude: Option<PathBuf>,
@@ -111,7 +117,7 @@ impl PtyHost {
             None => log("Claude Code CLI not found on Windows; Colony can start sessions in WSL only"),
         }
         let (output, _) = broadcast::channel(1024);
-        Arc::new(PtyHost { terms: Mutex::default(), output, events, windows_claude })
+        Arc::new(PtyHost { terms: Mutex::default(), owned: Owned::default(), output, events, windows_claude })
     }
 
     pub fn hosts(&self, distros: &[String]) -> Vec<HostOption> {
@@ -171,9 +177,23 @@ impl PtyHost {
                 ("wsl.exe".into(), a, None)
             }
         };
-        let (pty, reader, writer) = spawn_pty(&program, &args, cwd, &child_env(), req.cols.max(40), req.rows.max(10))?;
-
         let term_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+        // Mark the session as Colony's: Windows recognizes it by process id;
+        // inside WSL the probe reads this variable (WSLENV carries it across).
+        let mut env = child_env();
+        env.push(("COLONY_TERM_ID".into(), term_id.clone()));
+        if matches!(req.host, HostId::Wsl(_)) {
+            let wslenv = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("WSLENV")).map(|(_, v)| v.clone());
+            env.retain(|(k, _)| !k.eq_ignore_ascii_case("WSLENV"));
+            let joined = match wslenv.filter(|v| !v.is_empty()) {
+                Some(v) => format!("{v}:COLONY_TERM_ID/u"),
+                None => "COLONY_TERM_ID/u".into(),
+            };
+            env.push(("WSLENV".into(), joined));
+        }
+        let (pty, reader, writer) = spawn_pty(&program, &args, cwd, &env, req.cols.max(40), req.rows.max(10))?;
+        #[cfg(windows)]
+        self.owned.lock().unwrap().insert(pty.pid, term_id.clone());
         let term = Arc::new(Term {
             session_id: session_id.clone(),
             host: req.host.clone(),
@@ -191,6 +211,9 @@ impl PtyHost {
             cwd: None,
             event: DomainEvent::TerminalAttached { term_id: term_id.clone(), dir: req.dir.clone() },
         });
+        #[cfg(windows)]
+        log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {})", req.host, req.dir, pty.pid));
+        #[cfg(not(windows))]
         log(format!("started session {session_id} in terminal {term_id} ({}, {})", req.host, req.dir));
 
         // Reader: scrollback + live broadcast until the terminal closes.
@@ -229,6 +252,7 @@ impl PtyHost {
             }
         }
         self.terms.lock().unwrap().remove(&term_id);
+        self.owned.lock().unwrap().retain(|_, t| t != &term_id);
         let _ = self.events.blocking_send(Envelope {
             ts: now_ms(),
             host: term.host.clone(),

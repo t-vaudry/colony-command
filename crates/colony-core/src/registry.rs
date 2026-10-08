@@ -55,6 +55,12 @@ impl SessionRecord {
         }
     }
 
+    /// The Colony terminal this session runs in, when Colony started it.
+    /// Not written by Claude Code: added by Colony when it reads the record.
+    pub fn colony_term(&self) -> Option<&str> {
+        self.extra.get("colonyTerm").and_then(Value::as_str)
+    }
+
     /// Registry file names are `<pid>.json`; anything else in the folder is ignored.
     pub fn is_record_file(file_name: &str) -> bool {
         file_name

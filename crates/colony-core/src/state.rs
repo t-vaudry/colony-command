@@ -139,6 +139,10 @@ pub struct Agent {
     /// Set when Colony started this session in its own terminal, so the map
     /// can show the terminal and send input to it.
     pub terminal: Option<String>,
+    /// The registered process running in that terminal: this session's own
+    /// copy, as opposed to another copy open somewhere else.
+    #[serde(default)]
+    pub terminal_pid: Option<u32>,
     /// A permission request waiting for an answer on the map.
     #[serde(default)]
     pub permission: Option<PermissionAsk>,
@@ -178,6 +182,7 @@ impl Agent {
             last_event_at: e.ts,
             hooks_seen: false,
             terminal: None,
+            terminal_pid: None,
             permission: None,
             process_gone_at: None,
         }
@@ -209,6 +214,11 @@ impl Agent {
     fn set_project(&mut self, dir: &str) {
         self.project_key = Some(paths::project_key(&self.host, dir));
         self.project_name = Some(paths::project_name(dir));
+    }
+
+    /// Copies of this session running outside Colony's terminal.
+    pub fn other_pids(&self) -> Vec<u32> {
+        self.pids.iter().copied().filter(|p| Some(*p) != self.terminal_pid).collect()
     }
 
     pub fn is_finished(&self) -> bool {
@@ -279,6 +289,9 @@ impl Colony {
                     }
                 }
                 main.pid = Some(record.pid);
+                if record.colony_term().is_some() && record.colony_term() == main.terminal.as_deref() {
+                    main.terminal_pid = Some(record.pid);
+                }
                 if !main.pids.contains(&record.pid) {
                     main.pids.push(record.pid);
                 }
@@ -458,6 +471,7 @@ impl Colony {
             }
             DomainEvent::TerminalAttached { term_id, dir } => {
                 main.terminal = Some(term_id.clone());
+                main.terminal_pid = None;
                 if main.project_dir.is_none() {
                     main.set_project_dir(dir);
                     main.cwd = Some(dir.clone());
@@ -472,6 +486,7 @@ impl Colony {
             DomainEvent::TerminalExited { term_id, requested } => {
                 if main.terminal.as_deref() == Some(term_id.as_str()) {
                     main.terminal = None;
+                    main.terminal_pid = None;
                     main.current_tool = None;
                     if *requested {
                         main.process_gone_at = None;

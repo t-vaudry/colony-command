@@ -24,6 +24,8 @@ use windows_sys::Win32::System::Threading::{
 pub struct Pty {
     hpc: HPCON,
     process: HANDLE,
+    /// The started process's id.
+    pub pid: u32,
     closed: AtomicBool,
 }
 
@@ -74,7 +76,7 @@ impl Pty {
                 return Err(io::Error::other(format!("CreatePseudoConsole failed (0x{:08x})", hr as u32)));
             }
             // From here on, dropping `pty` closes the console on any early return.
-            let mut pty = Pty { hpc, process: null_mut(), closed: AtomicBool::new(false) };
+            let mut pty = Pty { hpc, process: null_mut(), pid: 0, closed: AtomicBool::new(false) };
 
             let mut size = 0usize;
             // Sizing call: fails by design and reports the size it needs.
@@ -131,6 +133,7 @@ impl Pty {
             }
             CloseHandle(pi.hThread);
             pty.process = pi.hProcess;
+            pty.pid = pi.dwProcessId;
             Ok((pty, reader, writer))
         }
     }

@@ -34,6 +34,8 @@ export interface Agent {
   pid: number | null;
   /** Every live process registered for this session (two when it's open in two places). */
   pids: number[];
+  /** The registered process in Colony's terminal: this session's own copy. */
+  terminal_pid: number | null;
   subagent_type: string | null;
   state: AgentState;
   state_since: number;

@@ -361,6 +361,23 @@ fn subagent_permission_requests_land_on_the_subagent() {
 }
 
 #[test]
+fn a_colony_sessions_own_registration_is_not_another_copy() {
+    use colony_core::DomainEvent::TerminalAttached;
+    let mut r = Run::new(HostId::Windows);
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: "C:/code/x".into() });
+    // The claude that Colony started registers itself; colonyd tags it.
+    r.t += 1000;
+    let rec = SessionRecord::parse(&format!(r#"{{"pid":35824,"sessionId":"{SID}","entrypoint":"cli","colonyTerm":"t1"}}"#)).unwrap();
+    r.colony.apply(&Envelope::from_record(HostId::Windows, r.t, rec));
+    let a = &r.colony.agents[SID];
+    assert_eq!(a.terminal_pid, Some(35824));
+    assert!(a.other_pids().is_empty(), "its own process isn't a second copy");
+    // A desktop copy of the same conversation is.
+    seen(&mut r, 100);
+    assert_eq!(r.colony.agents[SID].other_pids(), vec![100]);
+}
+
+#[test]
 fn unknown_hook_events_are_ignored() {
     let mut r = Run::new(HostId::Windows);
     assert!(r.hook(json!({"hook_event_name": "SomethingFromTheFuture", "weird": [1, 2]})).is_empty());
