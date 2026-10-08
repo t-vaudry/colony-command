@@ -103,7 +103,13 @@ pub struct Agent {
     pub title: Option<String>,
     pub entrypoint: Option<String>,
     pub version: Option<String>,
+    /// Most recently seen process for this session.
     pub pid: Option<u32>,
+    /// Every live process registered for this session. Usually one; two when
+    /// the same conversation is open in two places (say the desktop app and a
+    /// Colony terminal).
+    #[serde(default)]
+    pub pids: Vec<u32>,
     pub subagent_type: Option<String>,
     pub state: AgentState,
     pub state_since: u64,
@@ -145,6 +151,7 @@ impl Agent {
             entrypoint: None,
             version: None,
             pid: None,
+            pids: Vec::new(),
             subagent_type: None,
             state: AgentState::Spawning,
             state_since: e.ts,
@@ -257,6 +264,9 @@ impl Colony {
                     }
                 }
                 main.pid = Some(record.pid);
+                if !main.pids.contains(&record.pid) {
+                    main.pids.push(record.pid);
+                }
                 main.title = record.name.clone().or(main.title.take());
                 main.entrypoint = record.entrypoint.clone().or(main.entrypoint.take());
                 main.version = record.version.clone().or(main.version.take());
@@ -271,7 +281,13 @@ impl Colony {
                 }
             }
             DomainEvent::SessionGone { pid } => {
-                if main.pid == Some(*pid) && !main.is_finished() {
+                let known = main.pid == Some(*pid) || main.pids.contains(pid);
+                main.pids.retain(|p| p != pid);
+                if main.pid == Some(*pid) {
+                    main.pid = main.pids.last().copied();
+                }
+                // Only the last copy going away can mean a crash.
+                if known && main.pids.is_empty() && main.terminal.is_none() && !main.is_finished() {
                     main.process_gone_at = Some(e.ts);
                 }
             }
@@ -418,9 +434,10 @@ impl Colony {
                         main.process_gone_at = None;
                         main.set_state(AgentState::Ended, Some("ended from Colony".into()), e.ts);
                         self.end_children(&sid, e.ts, &mut changed);
-                    } else if !main.is_finished() {
+                    } else if !main.is_finished() && main.pids.is_empty() {
                         // A normal exit sends SessionEnd within the grace
-                        // period; otherwise tick() marks it crashed.
+                        // period; otherwise tick() marks it crashed. Not if
+                        // another copy of the session is still running.
                         main.process_gone_at = Some(e.ts);
                     }
                 }

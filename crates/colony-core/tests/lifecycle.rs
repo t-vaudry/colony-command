@@ -289,6 +289,36 @@ fn ending_a_session_from_colony_is_not_a_crash() {
     assert_eq!(r.colony.agents[SID].reason.as_deref(), Some("ended from Colony"));
 }
 
+fn seen(r: &mut Run, pid: u32) {
+    r.t += 1000;
+    let rec = SessionRecord::parse(&format!(r#"{{"pid":{pid},"sessionId":"{SID}","entrypoint":"claude-desktop","status":"idle"}}"#)).unwrap();
+    r.colony.apply(&Envelope::from_record(r.host.clone(), r.t, rec));
+}
+
+#[test]
+fn a_conversation_open_in_two_places_keeps_both_processes() {
+    use colony_core::DomainEvent::{SessionGone, TerminalAttached, TerminalExited};
+    let mut r = Run::new(HostId::Windows);
+    // Open in the desktop app, then also resumed in a Colony terminal.
+    seen(&mut r, 100);
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into() });
+    assert_eq!(r.colony.agents[SID].pids, vec![100]);
+
+    // Ending the Colony copy leaves the desktop copy known and running, so
+    // the map can still warn before resuming again.
+    term(&mut r, TerminalExited { term_id: "t1".into(), requested: true });
+    assert_eq!(r.state(SID), AgentState::Ended);
+    assert_eq!(r.colony.agents[SID].pids, vec![100]);
+
+    // One of two registered copies exiting is not a crash.
+    seen(&mut r, 200);
+    term(&mut r, SessionGone { pid: 100 });
+    let a = &r.colony.agents[SID];
+    assert_eq!((a.pids.clone(), a.pid), (vec![200], Some(200)));
+    r.colony.tick(r.t + CRASH_GRACE_MS + 1);
+    assert_ne!(r.state(SID), AgentState::Crashed);
+}
+
 #[test]
 fn unknown_hook_events_are_ignored() {
     let mut r = Run::new(HostId::Windows);

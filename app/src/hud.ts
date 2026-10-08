@@ -297,6 +297,15 @@ export class Hud {
         ${a.kind === "main" && !a.terminal ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
       </div>
       ${
+        a.kind === "main" && a.terminal && resumeWarning(a)
+          ? `<div class="choice">
+              <p><b>Also open elsewhere.</b> ${esc(resumeWarning(a)!)}</p>
+              <p class="muted small">Two copies write to one conversation. Keep the one in Colony and end the other.</p>
+              <div class="actions"><button type="button" class="primary" data-end-other="${esc(a.id)}">End that copy</button></div>
+            </div>`
+          : ""
+      }
+      ${
         this.moveChoice === a.id && resumeWarning(a)
           ? `<div class="choice" role="group" aria-label="Resume options">
               <p><b>This session is still running.</b> ${esc(resumeWarning(a)!)}</p>
@@ -336,6 +345,10 @@ export class Hud {
         return;
       }
       this.resumeHere(a);
+    }
+    if (el.dataset.endOther) {
+      if (!this.daemon.terminate(el.dataset.endOther)) this.toast("Not connected to colonyd.");
+      else el.textContent = "Ending…";
     }
     if (el.dataset.cancelMove) {
       this.moveChoice = null;

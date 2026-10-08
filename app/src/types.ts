@@ -32,6 +32,8 @@ export interface Agent {
   entrypoint: string | null;
   version: string | null;
   pid: number | null;
+  /** Every live process registered for this session (two when it's open in two places). */
+  pids: number[];
   subagent_type: string | null;
   state: AgentState;
   state_since: number;

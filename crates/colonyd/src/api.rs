@@ -263,60 +263,68 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket) {
     }
 }
 
-/// End the process behind a session Colony didn't start. Re-checks that the
-/// pid still belongs to that session first, so a reused pid is never killed.
+/// End the copies of a session that Colony didn't start (for example one the
+/// Claude desktop app keeps running in the background), so it can be resumed
+/// here without two copies writing to one conversation. Each pid is re-checked
+/// against its registry file first, so a reused pid is never touched. A
+/// Colony terminal for the session is left alone; End session handles that.
 async fn terminate(shared: &Shared, id: &str) -> Result<(), String> {
-    let (session_id, pid, host, terminal) = {
+    let (session_id, pids, host, terminal) = {
         let colony = shared.colony.read().await;
         let a = colony.agents.get(id).ok_or("no such session")?;
-        if a.is_finished() {
-            return Ok(());
+        let mut pids = a.pids.clone();
+        if pids.is_empty() {
+            pids.extend(a.pid);
         }
-        (a.session_id.clone(), a.pid, a.host.clone(), a.terminal.clone())
+        (a.session_id.clone(), pids, a.host.clone(), a.terminal.clone())
     };
-    if let Some(term) = terminal {
-        return shared.pty.kill(&term);
+    if pids.is_empty() {
+        return Err("Colony doesn't know of another running copy of this session".into());
     }
-    let pid = pid.ok_or("Colony doesn't know this session's process")?;
-    match &host {
+    for pid in &pids {
+        end_process(&session_id, *pid, &host).await?;
+        log(format!("ended session {session_id} (pid {pid} on {host}) at the user's request"));
+        let _ = shared
+            .events
+            .send(Envelope { ts: now_ms(), host: host.clone(), session_id: session_id.clone(), cwd: None, event: DomainEvent::SessionGone { pid: *pid } })
+            .await;
+    }
+    if terminal.is_none() {
+        // A forced exit skips Claude Code's SessionEnd hook; record the end here.
+        let _ = shared
+            .events
+            .send(Envelope { ts: now_ms(), host, session_id, cwd: None, event: DomainEvent::SessionEnded })
+            .await;
+    }
+    Ok(())
+}
+
+async fn end_process(session_id: &str, pid: u32, host: &HostId) -> Result<(), String> {
+    match host {
         HostId::Windows => {
             let record = std::fs::read_to_string(colony_source::home_dir().join(".claude").join("sessions").join(format!("{pid}.json")))
                 .ok()
                 .and_then(|t| colony_core::SessionRecord::parse(&t).ok())
-                .filter(|r| r.session_id == session_id)
-                .ok_or("that session's process has already exited")?;
+                .filter(|r| r.session_id == session_id);
+            let Some(record) = record else { return Ok(()) };
             if !colony_source::process::alive(pid, record.proc_start()) {
-                return Err("that session's process has already exited".into());
+                return Ok(());
             }
             // /T: also its tool and MCP child processes. /F: console programs
             // don't respond to a polite close request.
-            let status = quiet("taskkill.exe")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .output()
-                .await
-                .map_err(|e| e.to_string())?;
+            let status = quiet("taskkill.exe").args(["/PID", &pid.to_string(), "/T", "/F"]).output().await.map_err(|e| e.to_string())?;
             if !status.status.success() {
                 return Err(format!("taskkill failed: {}", String::from_utf8_lossy(&status.stderr).trim()));
             }
         }
         HostId::Wsl(distro) => {
             // SIGTERM lets Claude Code exit cleanly and run its SessionEnd hook.
-            let status = quiet("wsl.exe")
-                .args(["-d", distro, "-e", "kill", "-TERM", &pid.to_string()])
-                .output()
-                .await
-                .map_err(|e| e.to_string())?;
+            let status = quiet("wsl.exe").args(["-d", distro, "-e", "kill", "-TERM", &pid.to_string()]).output().await.map_err(|e| e.to_string())?;
             if !status.status.success() {
                 return Err(format!("kill failed: {}", String::from_utf8_lossy(&status.stderr).trim()));
             }
         }
     }
-    log(format!("ended session {session_id} (pid {pid} on {host}) at the user's request"));
-    // A forced exit skips Claude Code's SessionEnd hook; record the end here.
-    let _ = shared
-        .events
-        .send(Envelope { ts: now_ms(), host, session_id, cwd: None, event: DomainEvent::SessionEnded })
-        .await;
     Ok(())
 }
 
