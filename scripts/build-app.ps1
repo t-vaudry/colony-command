@@ -1,5 +1,5 @@
 # Builds the Colony Command desktop app and its daemon (release).
-# Output: colony-command.exe, colonyd.exe, and colony-ptyd.exe in targetelease.
+# Output: colony-command.exe, colonyd.exe, and colony-ptyd.exe in target/release.
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 Push-Location (Join-Path $root "app")
