@@ -84,6 +84,8 @@ export class Hud {
   private reply = document.getElementById("reply") as HTMLTextAreaElement;
   private composeTarget: string | null = null;
   private drafts = new Map<string, string>();
+  /** Agent whose "still running elsewhere" choice is showing in the panel. */
+  private moveChoice: string | null = null;
   private scheduled = false;
 
   constructor(
@@ -128,6 +130,10 @@ export class Hud {
     t.hidden = false;
     clearTimeout(Number(t.dataset.timer));
     t.dataset.timer = String(setTimeout(() => (t.hidden = true), 6000));
+  }
+
+  private resumeHere(a: Agent): void {
+    this.actions.newSession({ dir: a.project_dir ?? a.cwd ?? undefined, host: a.host, resume: a.session_id, resumeLabel: a.name });
   }
 
   private composeAgent(): Agent | undefined {
@@ -269,6 +275,19 @@ export class Hud {
         ${a.kind === "main" && !a.terminal ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
       </div>
       ${
+        this.moveChoice === a.id && resumeWarning(a)
+          ? `<div class="choice" role="group" aria-label="Resume options">
+              <p><b>This session is still running.</b> ${esc(resumeWarning(a)!)}</p>
+              <p class="muted small">Resuming here while it runs would put two copies on one conversation.</p>
+              <div class="actions">
+                <button type="button" class="primary" data-move="${esc(a.id)}">End it there, resume here</button>
+                <button type="button" data-resume-anyway="${esc(a.id)}">Resume anyway</button>
+                <button type="button" data-cancel-move="1">Cancel</button>
+              </div>
+            </div>`
+          : ""
+      }
+      ${
         a.kind === "main" && !a.terminal
           ? `<p class="muted small">Colony didn't start this session, so it can't type into it. ${
               a.state === "ready_to_review" ? "Mark reviewed only moves it off the dock. " : ""
@@ -288,12 +307,46 @@ export class Hud {
     if (el.dataset.resume) {
       const a = this.daemon.agents.get(el.dataset.resume);
       if (!a) return;
-      const warning = resumeWarning(a);
-      if (warning && !confirmed(el, "Still open elsewhere: click again")) {
-        this.toast(warning);
+      if (resumeWarning(a)) {
+        // Still running elsewhere: ask how to proceed, in the panel.
+        this.moveChoice = a.id;
+        this.schedule();
         return;
       }
-      this.actions.newSession({ dir: a.project_dir ?? a.cwd ?? undefined, host: a.host, resume: a.session_id, resumeLabel: a.name });
+      this.resumeHere(a);
+    }
+    if (el.dataset.cancelMove) {
+      this.moveChoice = null;
+      this.schedule();
+    }
+    if (el.dataset.resumeAnyway) {
+      const a = this.daemon.agents.get(el.dataset.resumeAnyway);
+      this.moveChoice = null;
+      if (a) this.resumeHere(a);
+    }
+    if (el.dataset.move) {
+      const id = el.dataset.move;
+      if (!this.daemon.terminate(id)) {
+        this.toast("Not connected to colonyd.");
+        return;
+      }
+      el.textContent = "Stopping the other copy…";
+      el.setAttribute("disabled", "");
+      // Resume once the daemon reports the old process gone.
+      const started = Date.now();
+      const wait = setInterval(() => {
+        const a = this.daemon.agents.get(id);
+        if (a && (a.state === "ended" || a.state === "crashed")) {
+          clearInterval(wait);
+          this.moveChoice = null;
+          this.resumeHere(a);
+        } else if (Date.now() - started > 8000) {
+          clearInterval(wait);
+          this.moveChoice = null;
+          this.schedule();
+          this.toast("The other copy didn't stop. Close it from the Claude desktop app's tray menu, then try again.");
+        }
+      }, 150);
     }
     if (el.dataset.ack && !this.daemon.ack(el.dataset.ack)) el.textContent = "Not connected; try again";
     if (el.dataset.copy) {

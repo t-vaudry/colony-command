@@ -44,6 +44,17 @@ impl SessionRecord {
         serde_json::from_str(json)
     }
 
+    /// `procStart`: when the process was created (on Windows, a FILETIME in
+    /// 100 ns units since 1601), to tell it apart from a later process that
+    /// reused its pid. Written as a string; accepted as a number too.
+    pub fn proc_start(&self) -> Option<u64> {
+        match self.extra.get("procStart")? {
+            Value::String(s) => s.parse().ok(),
+            Value::Number(n) => n.as_u64(),
+            _ => None,
+        }
+    }
+
     /// Registry file names are `<pid>.json`; anything else in the folder is ignored.
     pub fn is_record_file(file_name: &str) -> bool {
         file_name

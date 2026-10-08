@@ -19,6 +19,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
+use colony_core::{DomainEvent, Envelope, HostId};
 use colony_source::now_ms;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -126,6 +127,9 @@ enum Command {
     Resize { term: String, cols: u16, rows: u16 },
     /// End the session's process.
     Kill { term: String },
+    /// End a session Colony did not start (e.g. one the Claude desktop app
+    /// keeps running in the background), so it can be resumed here.
+    Terminate { id: String },
 }
 
 /// What one map connection is looking at.
@@ -193,6 +197,7 @@ async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<
         Command::Interrupt { term } => pty.input(&term, b"\x1b").map(|_| None),
         Command::Resize { term, cols, rows } => pty.resize(&term, cols, rows).map(|_| None),
         Command::Kill { term } => pty.kill(&term).map(|_| None),
+        Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
     };
     match result {
         Ok(reply) => reply,
@@ -256,4 +261,70 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket) {
             }
         }
     }
+}
+
+/// End the process behind a session Colony didn't start. Re-checks that the
+/// pid still belongs to that session first, so a reused pid is never killed.
+async fn terminate(shared: &Shared, id: &str) -> Result<(), String> {
+    let (session_id, pid, host, terminal) = {
+        let colony = shared.colony.read().await;
+        let a = colony.agents.get(id).ok_or("no such session")?;
+        if a.is_finished() {
+            return Ok(());
+        }
+        (a.session_id.clone(), a.pid, a.host.clone(), a.terminal.clone())
+    };
+    if let Some(term) = terminal {
+        return shared.pty.kill(&term);
+    }
+    let pid = pid.ok_or("Colony doesn't know this session's process")?;
+    match &host {
+        HostId::Windows => {
+            let record = std::fs::read_to_string(colony_source::home_dir().join(".claude").join("sessions").join(format!("{pid}.json")))
+                .ok()
+                .and_then(|t| colony_core::SessionRecord::parse(&t).ok())
+                .filter(|r| r.session_id == session_id)
+                .ok_or("that session's process has already exited")?;
+            if !colony_source::process::alive(pid, record.proc_start()) {
+                return Err("that session's process has already exited".into());
+            }
+            // /T: also its tool and MCP child processes. /F: console programs
+            // don't respond to a polite close request.
+            let status = quiet("taskkill.exe")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .output()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !status.status.success() {
+                return Err(format!("taskkill failed: {}", String::from_utf8_lossy(&status.stderr).trim()));
+            }
+        }
+        HostId::Wsl(distro) => {
+            // SIGTERM lets Claude Code exit cleanly and run its SessionEnd hook.
+            let status = quiet("wsl.exe")
+                .args(["-d", distro, "-e", "kill", "-TERM", &pid.to_string()])
+                .output()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !status.status.success() {
+                return Err(format!("kill failed: {}", String::from_utf8_lossy(&status.stderr).trim()));
+            }
+        }
+    }
+    log(format!("ended session {session_id} (pid {pid} on {host}) at the user's request"));
+    // A forced exit skips Claude Code's SessionEnd hook; record the end here.
+    let _ = shared
+        .events
+        .send(Envelope { ts: now_ms(), host, session_id, cwd: None, event: DomainEvent::SessionEnded })
+        .await;
+    Ok(())
+}
+
+/// A command that won't flash a console window.
+fn quiet(program: &str) -> tokio::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = tokio::process::Command::new(program);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    cmd
 }

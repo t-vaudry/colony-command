@@ -416,6 +416,7 @@ version = "0.1.0"
 dependencies = [
  "colony-core",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

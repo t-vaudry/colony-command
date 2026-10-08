@@ -203,4 +203,9 @@ export class Daemon {
   kill(term: string): boolean {
     return this.send({ type: "kill", term });
   }
+
+  /** End a session Colony didn't start, so it can be resumed here. */
+  terminate(id: string): boolean {
+    return this.send({ type: "terminate", id });
+  }
 }

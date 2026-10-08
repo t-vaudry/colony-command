@@ -154,9 +154,12 @@ export class NewSessionDialog {
   }
 }
 
+/** Why resuming this session here would make a second copy, if it would. */
 export function resumeWarning(a: Agent): string | null {
   const live = a.state !== "ended" && a.state !== "crashed" && a.pid !== null;
   if (!live) return null;
-  const where = a.entrypoint === "claude-desktop" ? "the Claude desktop app" : `a terminal on ${hostLabel(a.host)}`;
-  return `This session is still open in ${where}. Close it there first, or both copies will write to the same conversation.`;
+  if (a.entrypoint === "claude-desktop") {
+    return `It's still running in the Claude desktop app (process ${a.pid}). The app keeps sessions running in the background after you close their window.`;
+  }
+  return `It's still running in a terminal on ${hostLabel(a.host)} (process ${a.pid}).`;
 }

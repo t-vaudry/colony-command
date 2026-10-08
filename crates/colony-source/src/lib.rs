@@ -5,6 +5,9 @@
 //! - `<colony home>/capture/<nanotime>-<pid>.json`: one hook payload per file,
 //!   written by the capture hook. Processed in name (= time) order.
 //!
+//!   A file whose process has died (it was killed and could not clean up)
+//!   also counts as gone.
+//!
 //! Polling a couple of small directories every few hundred milliseconds is
 //! cheap and avoids file-watcher edge cases (buffer overflows, network paths).
 
@@ -15,9 +18,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use colony_core::{DomainEvent, Envelope, HookPayload, HostId, SessionRecord};
 
+pub mod process;
+
 /// A capture file that still fails to parse after this long is skipped; before
 /// that it may simply be half-written.
 const PARTIAL_WRITE_GRACE_MS: u64 = 5_000;
+/// Polls between checks that registered processes are still running.
+const ALIVE_CHECK_EVERY: u64 = 10;
 
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -35,6 +42,7 @@ struct RecordFile {
     modified: Option<SystemTime>,
     len: u64,
     pid: u32,
+    proc_start: Option<u64>,
     session_id: String,
 }
 
@@ -43,6 +51,10 @@ pub struct DirSource {
     sessions_dir: PathBuf,
     capture_dir: PathBuf,
     records: HashMap<String, RecordFile>,
+    /// Registry files whose process is dead, by modification stamp, so they
+    /// are not re-read until they change.
+    stale: HashMap<String, (Option<SystemTime>, u64)>,
+    polls: u64,
     /// Name of the last capture file processed; later names are newer.
     last_capture: Option<String>,
     replay_since_ms: u64,
@@ -58,6 +70,8 @@ impl DirSource {
             sessions_dir: claude_home.join("sessions"),
             capture_dir: colony_home.join("capture"),
             records: HashMap::new(),
+            stale: HashMap::new(),
+            polls: 0,
             last_capture: None,
             replay_since_ms,
         }
@@ -79,25 +93,50 @@ impl DirSource {
         let mut out = Vec::new();
         let now = now_ms();
         let mut present = Vec::new();
+        // Checking every known process each poll is wasteful; every couple of
+        // seconds is plenty to notice one that died without cleaning up.
+        let check_alive = self.polls % ALIVE_CHECK_EVERY == 0;
+        self.polls += 1;
         for entry in fs::read_dir(&self.sessions_dir).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if !SessionRecord::is_record_file(&name) {
                 continue;
             }
-            present.push(name.clone());
             let Ok(meta) = entry.metadata() else { continue };
-            let modified = meta.modified().ok();
+            let stamp = (meta.modified().ok(), meta.len());
             if let Some(known) = self.records.get(&name) {
-                if known.modified == modified && known.len == meta.len() {
+                if (known.modified, known.len) == stamp {
+                    if !check_alive || process::alive(known.pid, known.proc_start) {
+                        present.push(name);
+                    } else {
+                        // Left behind by a process that died: gone below.
+                        self.stale.insert(name, stamp);
+                    }
                     continue;
                 }
+            }
+            if self.stale.get(&name) == Some(&stamp) {
+                continue;
             }
             let Ok(text) = fs::read_to_string(entry.path()) else { continue };
             // A half-written file fails to parse; it is retried next poll.
             let Ok(record) = SessionRecord::parse(&text) else { continue };
+            let proc_start = record.proc_start();
+            if !process::alive(record.pid, proc_start) {
+                self.stale.insert(name, stamp);
+                continue;
+            }
+            self.stale.remove(&name);
+            present.push(name.clone());
             self.records.insert(
                 name,
-                RecordFile { modified, len: meta.len(), pid: record.pid, session_id: record.session_id.clone() },
+                RecordFile {
+                    modified: stamp.0,
+                    len: stamp.1,
+                    pid: record.pid,
+                    proc_start,
+                    session_id: record.session_id.clone(),
+                },
             );
             out.push(Envelope::from_record(self.host.clone(), now, record));
         }
@@ -180,19 +219,32 @@ mod tests {
     fn registry_files_appear_change_and_vanish() {
         let d = tmp("registry");
         let mut src = DirSource::new(HostId::Windows, &d.join("claude"), &d.join("colony"), 0);
-        let f = d.join("claude/sessions/42.json");
-        fs::write(&f, r#"{"pid":42,"sessionId":"s1","status":"busy"}"#).unwrap();
-        fs::write(d.join("claude/sessions/42.abc.key"), "secret").unwrap();
+        // A live pid: this test process.
+        let pid = std::process::id();
+        let f = d.join(format!("claude/sessions/{pid}.json"));
+        fs::write(&f, format!(r#"{{"pid":{pid},"sessionId":"s1","status":"busy"}}"#)).unwrap();
+        fs::write(d.join(format!("claude/sessions/{pid}.abc.key")), "secret").unwrap();
         let ev = src.poll();
         assert_eq!(ev.len(), 1);
-        assert!(matches!(&ev[0].event, DomainEvent::SessionSeen { record } if record.pid == 42));
+        assert!(matches!(&ev[0].event, DomainEvent::SessionSeen { record } if record.pid == pid));
         assert!(src.poll().is_empty(), "unchanged file is not re-emitted");
-        fs::write(&f, r#"{"pid":42,"sessionId":"s1","status":"idle","name":"longer now"}"#).unwrap();
+        fs::write(&f, format!(r#"{{"pid":{pid},"sessionId":"s1","status":"idle","name":"longer now"}}"#)).unwrap();
         assert_eq!(src.poll().len(), 1);
         fs::remove_file(&f).unwrap();
         let ev = src.poll();
-        assert!(matches!(&ev[0].event, DomainEvent::SessionGone { pid: 42 }));
+        assert!(matches!(&ev[0].event, DomainEvent::SessionGone { pid: p } if *p == pid));
         assert_eq!(ev[0].session_id, "s1");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn files_left_by_dead_processes_are_not_sessions() {
+        let d = tmp("stale");
+        let mut src = DirSource::new(HostId::Windows, &d.join("claude"), &d.join("colony"), 0);
+        let dead = u32::MAX - 7;
+        fs::write(d.join(format!("claude/sessions/{dead}.json")), format!(r#"{{"pid":{dead},"sessionId":"gone"}}"#)).unwrap();
+        assert!(src.poll().is_empty());
+        assert!(src.poll().is_empty(), "not re-read while unchanged");
         let _ = fs::remove_dir_all(&d);
     }
 

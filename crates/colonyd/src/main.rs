@@ -39,6 +39,8 @@ pub struct Shared {
     /// Wakes the WSL supervisor, e.g. right after starting a session in a
     /// distro that was stopped, so its probe attaches without waiting.
     pub wsl_wake: Notify,
+    /// Into the reducer, for events the API produces itself.
+    pub events: mpsc::Sender<Envelope>,
 }
 
 pub fn log(msg: impl AsRef<str>) {
@@ -78,6 +80,7 @@ async fn main() {
         pty: PtyHost::new(ev_tx.clone()),
         distros: RwLock::default(),
         wsl_wake: Notify::new(),
+        events: ev_tx.clone(),
     });
 
     // This machine's sessions.
