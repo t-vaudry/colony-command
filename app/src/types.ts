@@ -45,6 +45,28 @@ export interface Agent {
   children: string[];
   last_event_at: number;
   hooks_seen: boolean;
+  /** Folder the session started in; decides its district. */
+  project_dir: string | null;
+  /** Set when Colony started this session in a terminal it owns. */
+  terminal: string | null;
+}
+
+/** Where Colony can start sessions. */
+export interface HostOption {
+  id: string;
+  label: string;
+  available: boolean;
+  note?: string;
+}
+
+export interface SpawnRequest {
+  host: string;
+  dir: string;
+  prompt?: string;
+  resume?: string;
+  name?: string;
+  cols?: number;
+  rows?: number;
 }
 
 export type Severity = "critical" | "input" | "review";

@@ -13,6 +13,10 @@ use crate::paths;
 
 /// A session with no prompt this long after starting is idle.
 pub const SPAWN_TO_IDLE_MS: u64 = 60_000;
+/// A session Colony started with no activity this long after launch is
+/// waiting at its terminal for you.
+pub const STARTUP_WAIT_MS: u64 = 8_000;
+pub const STARTUP_REASON: &str = "Waiting in its terminal: answer the startup question or send a first message";
 /// Grace between a registry file vanishing and calling the session crashed,
 /// so a normal exit's `SessionEnd` can arrive first.
 pub const CRASH_GRACE_MS: u64 = 5_000;
@@ -117,6 +121,9 @@ pub struct Agent {
     /// True once any hook event arrived; until then the registry status
     /// drives the state.
     pub hooks_seen: bool,
+    /// Set when Colony started this session in its own terminal, so the map
+    /// can show the terminal and send input to it.
+    pub terminal: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_gone_at: Option<u64>,
 }
@@ -151,6 +158,7 @@ impl Agent {
             children: Vec::new(),
             last_event_at: e.ts,
             hooks_seen: false,
+            terminal: None,
             process_gone_at: None,
         }
     }
@@ -225,7 +233,14 @@ impl Colony {
             }
             (_, Some(cwd)) => main.set_cwd(cwd),
         }
-        if !matches!(e.event, DomainEvent::SessionSeen { .. } | DomainEvent::SessionGone { .. }) {
+        let from_hooks = !matches!(
+            e.event,
+            DomainEvent::SessionSeen { .. }
+                | DomainEvent::SessionGone { .. }
+                | DomainEvent::TerminalAttached { .. }
+                | DomainEvent::TerminalExited { .. }
+        );
+        if from_hooks {
             main.hooks_seen = true;
             main.last_event_at = main.last_event_at.max(e.ts);
             main.process_gone_at = None;
@@ -382,6 +397,34 @@ impl Colony {
                 main.set_state(AgentState::Ended, None, e.ts);
                 self.end_children(&sid, e.ts, &mut changed);
             }
+            DomainEvent::TerminalAttached { term_id, dir } => {
+                main.terminal = Some(term_id.clone());
+                if main.project_dir.is_none() {
+                    main.set_project_dir(dir);
+                    main.cwd = Some(dir.clone());
+                }
+                main.entrypoint.get_or_insert_with(|| "colony".into());
+                main.process_gone_at = None;
+                if main.is_finished() {
+                    // Resumed: the same session id comes back to life.
+                    main.set_state(AgentState::Spawning, None, e.ts);
+                }
+            }
+            DomainEvent::TerminalExited { term_id, requested } => {
+                if main.terminal.as_deref() == Some(term_id.as_str()) {
+                    main.terminal = None;
+                    main.current_tool = None;
+                    if *requested {
+                        main.process_gone_at = None;
+                        main.set_state(AgentState::Ended, Some("ended from Colony".into()), e.ts);
+                        self.end_children(&sid, e.ts, &mut changed);
+                    } else if !main.is_finished() {
+                        // A normal exit sends SessionEnd within the grace
+                        // period; otherwise tick() marks it crashed.
+                        main.process_gone_at = Some(e.ts);
+                    }
+                }
+            }
         }
         changed.dedup();
         changed
@@ -395,7 +438,13 @@ impl Colony {
         for a in self.agents.values_mut() {
             let before = (a.state, a.reason.clone());
             match a.state {
-                AgentState::Spawning if now.saturating_sub(a.state_since) > SPAWN_TO_IDLE_MS => {
+                // A session Colony started is waiting in its terminal: a
+                // first-run question (folder trust, browser tools) or an empty
+                // prompt. Either way it's waiting for you.
+                AgentState::Spawning if a.terminal.is_some() && now.saturating_sub(a.state_since) > STARTUP_WAIT_MS => {
+                    a.set_state(AgentState::NeedsInput, Some(STARTUP_REASON.into()), now);
+                }
+                AgentState::Spawning if a.terminal.is_none() && now.saturating_sub(a.state_since) > SPAWN_TO_IDLE_MS => {
                     a.set_state(AgentState::Idle, None, now);
                 }
                 AgentState::Working => {

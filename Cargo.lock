@@ -126,6 +126,7 @@ name = "colonyd"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "colony-core",
  "colony-source",
  "futures-util",
@@ -133,6 +134,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid",
+ "windows-sys",
 ]
 
 [[package]]

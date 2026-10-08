@@ -1,6 +1,7 @@
 //! Attaches a colony-probe to every running WSL distro and forwards its
 //! events. Distros are never started just to watch them: a stopped distro has
-//! no sessions anyway.
+//! no sessions anyway. Also keeps the list of installed distros current for
+//! the New session dialog.
 
 use std::collections::HashSet;
 use std::process::Stdio;
@@ -12,17 +13,18 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::log;
+use crate::{log, Shared};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const RESCAN: Duration = Duration::from_secs(15);
 /// The probe is installed per distro by `scripts/install-probe.sh`.
 const PROBE: &str = "exec \"$HOME/.colony/bin/colony-probe\"";
 
-pub async fn supervise(tx: mpsc::Sender<Envelope>) {
+pub async fn supervise(tx: mpsc::Sender<Envelope>, shared: Arc<Shared>) {
     let attached: Arc<Mutex<HashSet<String>>> = Arc::default();
     loop {
-        for distro in running_distros().await {
+        *shared.distros.write().await = list_distros(false).await;
+        for distro in list_distros(true).await {
             if !attached.lock().unwrap().insert(distro.clone()) {
                 continue;
             }
@@ -34,13 +36,18 @@ pub async fn supervise(tx: mpsc::Sender<Envelope>) {
                 attached.lock().unwrap().remove(&distro);
             });
         }
-        tokio::time::sleep(RESCAN).await;
+        tokio::select! {
+            _ = tokio::time::sleep(RESCAN) => {}
+            // A session was just started in WSL; give the distro a moment to boot.
+            _ = shared.wsl_wake.notified() => tokio::time::sleep(Duration::from_secs(2)).await,
+        }
     }
 }
 
-async fn running_distros() -> Vec<String> {
+async fn list_distros(running_only: bool) -> Vec<String> {
+    let args: &[&str] = if running_only { &["--list", "--running", "--quiet"] } else { &["--list", "--quiet"] };
     let out = Command::new("wsl.exe")
-        .args(["--list", "--running", "--quiet"])
+        .args(args)
         .creation_flags(CREATE_NO_WINDOW)
         .stdin(Stdio::null())
         .stderr(Stdio::null())

@@ -1,6 +1,8 @@
-// DOM layer: state counts, the porch strip, and the inspector panel.
+// DOM layer: state counts, the porch strip, the inspector panel, and the
+// reply box for sessions Colony started.
 
 import type { Daemon } from "./daemon";
+import { resumeWarning, type Prefill } from "./dialog";
 import { severity, STATE_LABEL, type Agent, type AgentState } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -36,6 +38,8 @@ function originLabel(a: Agent): string {
       return "Claude desktop app";
     case "cli":
       return "terminal";
+    case "colony":
+      return "started by Colony";
     case null:
       return a.hooks_seen ? "hooks only" : "unknown";
     default:
@@ -51,25 +55,113 @@ const REASON_LABEL: Partial<Record<AgentState, string>> = {
   ready_to_review: "Result",
 };
 
+export interface HudActions {
+  select: (id: string | null) => void;
+  showTerminal: (a: Agent) => void;
+  newSession: (prefill?: Prefill) => void;
+}
+
+/** Two-step confirm: the first click arms the button for a few seconds. */
+function confirmed(el: HTMLElement, prompt: string): boolean {
+  if (el.dataset.armed) return true;
+  const label = el.textContent;
+  el.dataset.armed = "1";
+  el.textContent = prompt;
+  setTimeout(() => {
+    delete el.dataset.armed;
+    el.textContent = label;
+  }, 4000);
+  return false;
+}
+
 export class Hud {
   selected: string | null = null;
   private counts = document.getElementById("counts")!;
   private conn = document.getElementById("conn")!;
   private strip = document.getElementById("porch-strip")!;
-  private panel = document.getElementById("inspector")!;
+  private panel = document.getElementById("insp-body")!;
+  private compose = document.getElementById("compose")!;
+  private reply = document.getElementById("reply") as HTMLTextAreaElement;
+  private composeTarget: string | null = null;
+  private drafts = new Map<string, string>();
   private scheduled = false;
 
   constructor(
     private daemon: Daemon,
-    private onSelect: (id: string | null) => void,
+    private actions: HudActions,
   ) {
     daemon.onChange(() => this.schedule());
+    daemon.onError((m) => this.toast(m));
     setInterval(() => this.tickDurations(), 1000);
     this.strip.addEventListener("click", (e) => {
       const id = (e.target as HTMLElement).closest<HTMLElement>("[data-id]")?.dataset.id;
-      if (id) this.onSelect(id);
+      if (id) this.actions.select(id);
     });
     this.panel.addEventListener("click", (e) => void this.action(e));
+    this.reply.addEventListener("input", () => {
+      if (this.composeTarget) this.drafts.set(this.composeTarget, this.reply.value);
+    });
+    this.reply.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        this.sendReply();
+      }
+    });
+    document.getElementById("send")!.addEventListener("click", () => this.sendReply());
+    document.getElementById("interrupt")!.addEventListener("click", () => {
+      const a = this.composeAgent();
+      if (a?.terminal) this.daemon.interrupt(a.terminal);
+    });
+    document.getElementById("end")!.addEventListener("click", (e) => {
+      const a = this.composeAgent();
+      if (a?.terminal && confirmed(e.currentTarget as HTMLElement, "Click again to end the session")) this.daemon.kill(a.terminal);
+    });
+    document.getElementById("open-term")!.addEventListener("click", () => {
+      const a = this.composeAgent();
+      if (a) this.actions.showTerminal(a);
+    });
+  }
+
+  toast(message: string): void {
+    const t = document.getElementById("toast")!;
+    t.textContent = message;
+    t.hidden = false;
+    clearTimeout(Number(t.dataset.timer));
+    t.dataset.timer = String(setTimeout(() => (t.hidden = true), 6000));
+  }
+
+  private composeAgent(): Agent | undefined {
+    return this.composeTarget ? this.daemon.agents.get(this.composeTarget) : undefined;
+  }
+
+  private sendReply(): void {
+    const a = this.composeAgent();
+    const text = this.reply.value.trim();
+    if (!a?.terminal || !text) return;
+    if (!this.daemon.sendText(a.terminal, text)) {
+      this.toast("Not connected to colonyd; your message is still in the box.");
+      return;
+    }
+    this.reply.value = "";
+    this.drafts.delete(a.id);
+  }
+
+  /** The reply box lives outside the re-rendered panel so typing survives updates. */
+  private renderCompose(a: Agent | undefined): void {
+    const target = a && a.kind === "main" && a.terminal ? a.id : null;
+    if (target !== this.composeTarget) {
+      this.composeTarget = target;
+      this.reply.value = (target && this.drafts.get(target)) ?? "";
+    }
+    this.compose.hidden = !target;
+    if (a && target) {
+      this.reply.placeholder =
+        a.state === "awaiting_reply"
+          ? "Answer the question…"
+          : a.state === "working"
+            ? "Message (Claude reads it after the current step)…"
+            : "Message…";
+    }
   }
 
   schedule(): void {
@@ -129,6 +221,7 @@ export class Hud {
 
   private renderPanel(): void {
     const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
+    this.renderCompose(a);
     if (!a) {
       setHtml(this.panel, `<div class="k">Inspector</div><h2>Click a bot</h2>
         <p class="muted">Bots on the front porch need you: red ones are stuck, yellow ones want a permission or an answer.
@@ -167,26 +260,41 @@ export class Hud {
           : ""
       }
       ${row("Last message", a.last_message)}
-      ${!a.hooks_seen ? `<p class="muted small">Seen through the session registry only, so state is coarse. New sessions report full detail through hooks.</p>` : ""}
+      ${!a.hooks_seen && !a.terminal ? `<p class="muted small">Seen through the session registry only, so state is coarse. New sessions report full detail through hooks.</p>` : ""}
       <div class="actions">
         ${a.state === "ready_to_review" ? `<button type="button" data-ack="${esc(a.id)}">Mark reviewed</button>` : ""}
         ${a.state === "crashed" ? `<button type="button" data-ack="${esc(a.id)}">Clear</button>` : ""}
-        ${a.kind === "main" ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
+        ${a.kind === "main" && !a.terminal ? `<button type="button" class="primary" data-resume="${esc(a.id)}">Resume in Colony</button>` : ""}
+        ${a.kind === "main" ? `<button type="button" data-new-here="${esc(a.id)}">New session here</button>` : ""}
+        ${a.kind === "main" && !a.terminal ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
       </div>
       ${
-        a.kind === "main"
-          ? `<p class="muted small">Colony can watch this session but can't type into it yet. ${
+        a.kind === "main" && !a.terminal
+          ? `<p class="muted small">Colony didn't start this session, so it can't type into it. ${
               a.state === "ready_to_review" ? "Mark reviewed only moves it off the dock. " : ""
-            }To continue it, reply in ${a.entrypoint === "claude-desktop" ? "the Claude desktop app" : "its terminal"}.</p>`
+            }Resume it here to talk to it from the map, or reply in ${a.entrypoint === "claude-desktop" ? "the Claude desktop app" : "its terminal"}.</p>`
           : ""
-      }
-      ${a.kind === "main" ? `<div class="mono small muted">${esc(resume)}</div>` : ""}`);
+      }`);
   }
 
   private async action(e: Event): Promise<void> {
     const el = (e.target as HTMLElement).closest<HTMLElement>("button");
     if (!el) return;
-    if (el.dataset.select) this.onSelect(el.dataset.select);
+    if (el.dataset.select) this.actions.select(el.dataset.select);
+    if (el.dataset.newHere) {
+      const a = this.daemon.agents.get(el.dataset.newHere);
+      this.actions.newSession({ dir: a?.project_dir ?? a?.cwd ?? undefined, host: a?.host });
+    }
+    if (el.dataset.resume) {
+      const a = this.daemon.agents.get(el.dataset.resume);
+      if (!a) return;
+      const warning = resumeWarning(a);
+      if (warning && !confirmed(el, "Still open elsewhere: click again")) {
+        this.toast(warning);
+        return;
+      }
+      this.actions.newSession({ dir: a.project_dir ?? a.cwd ?? undefined, host: a.host, resume: a.session_id, resumeLabel: a.name });
+    }
     if (el.dataset.ack && !this.daemon.ack(el.dataset.ack)) el.textContent = "Not connected; try again";
     if (el.dataset.copy) {
       try {

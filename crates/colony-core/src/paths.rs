@@ -27,6 +27,18 @@ pub fn project_name(cwd: &str) -> String {
         .to_string()
 }
 
+/// A folder as seen from inside WSL: `C:\Users\x` -> `/mnt/c/Users/x`.
+/// Linux paths are returned unchanged.
+pub fn to_wsl_path(path: &str) -> String {
+    let p = path.replace('\\', "/");
+    let b = p.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        format!("/mnt/{}{}", (b[0] as char).to_ascii_lowercase(), &p[2..]).trim_end_matches('/').to_string()
+    } else {
+        p
+    }
+}
+
 /// `C:\X\Y` or `/mnt/c/X/Y` -> `c:/x/y`. Windows paths are case-insensitive,
 /// so the key is lowercased.
 fn windows_form(path: &str) -> Option<String> {
@@ -60,6 +72,13 @@ mod tests {
     #[test]
     fn distro_paths_are_keyed_by_distro() {
         assert_eq!(project_key(&HostId::Wsl("Ubuntu".into()), "/home/thomas/api"), "wsl:ubuntu:/home/thomas/api");
+    }
+
+    #[test]
+    fn wsl_paths() {
+        assert_eq!(to_wsl_path(r"C:\Users\thoma\code\colony-command"), "/mnt/c/Users/thoma/code/colony-command");
+        assert_eq!(to_wsl_path("D:/"), "/mnt/d");
+        assert_eq!(to_wsl_path("/home/thomas"), "/home/thomas");
     }
 
     #[test]

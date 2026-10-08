@@ -161,6 +161,11 @@ export class World {
     this.cam.user = false;
   }
 
+  /** The map's container changed size without the window resizing. */
+  resize(): void {
+    this.app.resize();
+  }
+
   /** Center the camera on an agent without changing zoom. */
   focus(id: string): void {
     const b = this.bodies.get(id);

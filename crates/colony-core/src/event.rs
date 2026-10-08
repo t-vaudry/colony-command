@@ -82,6 +82,16 @@ pub enum DomainEvent {
     Compacting,
     Compacted,
     SessionEnded,
+    /// Colony started this session in a terminal it owns. `dir` is the
+    /// folder it was started in, as the host sees it.
+    TerminalAttached { term_id: String, dir: String },
+    /// That terminal's process exited. `requested`: the user ended it from
+    /// Colony, so it is not a crash.
+    TerminalExited {
+        term_id: String,
+        #[serde(default)]
+        requested: bool,
+    },
 }
 
 const PREVIEW_CHARS: usize = 160;

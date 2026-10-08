@@ -15,13 +15,68 @@
     <header class="bar">
       <div class="brand">Colony Command</div>
       <div class="counts" id="counts"></div>
+      <button type="button" class="primary" id="new-session-btn" title="Start a Claude Code session in a terminal Colony owns (N)">
+        + New session
+      </button>
       <div class="conn connecting" id="conn">connecting…</div>
     </header>
     <main class="stage">
-      <div id="map"></div>
-      <aside id="inspector" aria-live="polite"></aside>
+      <div class="map-col">
+        <div id="map"></div>
+        <section id="term-pane" hidden>
+          <div class="term-head">
+            <span class="k" id="term-title">Terminal</span>
+            <span class="muted small">Typing here goes straight to the session.</span>
+            <button type="button" id="term-close" aria-label="Hide terminal">Hide</button>
+          </div>
+          <div id="term-host"></div>
+        </section>
+      </div>
+      <aside id="inspector" aria-live="polite">
+        <div id="insp-body"></div>
+        <div id="compose" hidden>
+          <label class="k" for="reply">Reply</label>
+          <textarea id="reply" rows="3" placeholder="Message…"></textarea>
+          <div class="actions">
+            <button type="button" class="primary" id="send">Send <kbd>Enter</kbd></button>
+            <button type="button" id="interrupt" title="Press Esc in the session: stops the current step, keeps the conversation">Interrupt</button>
+            <button type="button" id="open-term">Terminal</button>
+            <button type="button" id="end" class="danger">End session</button>
+          </div>
+          <p class="muted small">Shift+Enter for a new line. Use the terminal for menus and prompts like folder trust.</p>
+        </div>
+      </aside>
     </main>
     <footer id="porch-strip"></footer>
+    <div id="toast" role="status" hidden></div>
+
+    <dialog id="new-session">
+      <form id="ns-form">
+        <h2 id="ns-title">New session</h2>
+        <label>
+          <span class="k">Folder</span>
+          <select id="ns-folder"></select>
+          <input id="ns-folder-other" type="text" placeholder="C:\path\to\project or /home/you/project" hidden />
+        </label>
+        <label>
+          <span class="k">Run on</span>
+          <select id="ns-host"></select>
+        </label>
+        <label>
+          <span class="k">Name (optional)</span>
+          <input id="ns-name" type="text" placeholder="Shown as the session title" />
+        </label>
+        <label>
+          <span class="k">First message (optional)</span>
+          <textarea id="ns-prompt" rows="4" placeholder="What should it work on? Ctrl+Enter to start."></textarea>
+        </label>
+        <p id="ns-error" class="error" role="alert"></p>
+        <div class="actions">
+          <button type="submit" class="primary" id="ns-start">Start</button>
+          <button type="button" id="ns-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

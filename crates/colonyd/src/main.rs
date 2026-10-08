@@ -2,10 +2,14 @@
 //!
 //! Gathers events from this machine's Claude home and from a colony-probe in
 //! each running WSL distro, folds them into one `Colony`, and serves it to the
-//! map over a local WebSocket. Connection details (port and a random token)
-//! are written to `~/.colony/daemon.json` for the app to read.
+//! map over a local WebSocket. It also hosts the terminals of sessions the
+//! map starts. Connection details (port and a random token) are written to
+//! `~/.colony/daemon.json` for the app to read.
 
 mod api;
+#[cfg(windows)]
+mod conpty;
+mod pty;
 #[cfg(windows)]
 mod wsl;
 
@@ -15,7 +19,9 @@ use std::time::Duration;
 use colony_core::{Colony, Envelope, HostId};
 use colony_source::{home_dir, now_ms, DirSource};
 use serde_json::json;
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, Notify, RwLock};
+
+use crate::pty::PtyHost;
 
 const DEFAULT_PORT: u16 = 7878;
 const POLL: Duration = Duration::from_millis(200);
@@ -27,6 +33,12 @@ pub struct Shared {
     /// Serialized delta messages for every connected map.
     pub deltas: broadcast::Sender<String>,
     pub token: String,
+    pub pty: Arc<PtyHost>,
+    /// Installed WSL distros, for the New session dialog.
+    pub distros: RwLock<Vec<String>>,
+    /// Wakes the WSL supervisor, e.g. right after starting a session in a
+    /// distro that was stopped, so its probe attaches without waiting.
+    pub wsl_wake: Notify,
 }
 
 pub fn log(msg: impl AsRef<str>) {
@@ -58,8 +70,15 @@ async fn main() {
     let port: u16 = std::env::var("COLONY_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT);
     let token = uuid::Uuid::new_v4().simple().to_string();
     let (deltas, _) = broadcast::channel(4096);
-    let shared = Arc::new(Shared { colony: RwLock::new(Colony::new()), deltas, token: token.clone() });
     let (ev_tx, mut ev_rx) = mpsc::channel::<Envelope>(8192);
+    let shared = Arc::new(Shared {
+        colony: RwLock::new(Colony::new()),
+        deltas,
+        token: token.clone(),
+        pty: PtyHost::new(ev_tx.clone()),
+        distros: RwLock::default(),
+        wsl_wake: Notify::new(),
+    });
 
     // This machine's sessions.
     let local_tx = ev_tx.clone();
@@ -77,7 +96,7 @@ async fn main() {
 
     // Sessions inside running WSL distros.
     #[cfg(windows)]
-    tokio::spawn(wsl::supervise(ev_tx.clone()));
+    tokio::spawn(wsl::supervise(ev_tx.clone(), shared.clone()));
     drop(ev_tx);
 
     // The reducer: the only writer of colony state.

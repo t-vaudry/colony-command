@@ -227,6 +227,68 @@ fn colliding_names_get_numbers() {
     assert_eq!(r.colony.agents[&other].name, format!("{name} 2"));
 }
 
+fn term(r: &mut Run, event: colony_core::DomainEvent) {
+    r.t += 1000;
+    let e = Envelope { ts: r.t, host: r.host.clone(), session_id: SID.into(), cwd: None, event };
+    r.colony.apply(&e);
+}
+
+#[test]
+fn colony_started_session_links_its_terminal() {
+    use colony_core::DomainEvent::{TerminalAttached, TerminalExited};
+    let mut r = Run::new(HostId::Wsl("Ubuntu".into()));
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\Users\thoma\code\colony-command".into() });
+    let a = &r.colony.agents[SID];
+    assert_eq!(a.terminal.as_deref(), Some("t1"));
+    assert_eq!(a.state, AgentState::Spawning);
+    assert_eq!(a.project_name.as_deref(), Some("colony-command"));
+    assert_eq!(a.entrypoint.as_deref(), Some("colony"));
+
+    // Hooks from the same session arrive with the WSL view of the folder: same project.
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup", "cwd": "/mnt/c/Users/thoma/code/colony-command"}));
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "continue"}));
+    assert_eq!(r.state(SID), AgentState::Working);
+    assert_eq!(r.colony.agents[SID].terminal.as_deref(), Some("t1"));
+
+    // Terminal closes without SessionEnd: crashed after the grace period.
+    term(&mut r, TerminalExited { term_id: "t1".into(), requested: false });
+    assert_eq!(r.colony.agents[SID].terminal, None);
+    r.colony.tick(r.t + CRASH_GRACE_MS + 1);
+    assert_eq!(r.state(SID), AgentState::Crashed);
+
+    // Resuming it in a new terminal brings the same bot back.
+    term(&mut r, TerminalAttached { term_id: "t2".into(), dir: r"C:\Users\thoma\code\colony-command".into() });
+    assert_eq!(r.state(SID), AgentState::Spawning);
+    assert_eq!(r.colony.agents[SID].terminal.as_deref(), Some("t2"));
+}
+
+#[test]
+fn colony_session_waiting_at_startup_needs_you() {
+    use colony_core::state::STARTUP_WAIT_MS;
+    use colony_core::DomainEvent::TerminalAttached;
+    let mut r = Run::new(HostId::Windows);
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into() });
+    r.colony.tick(r.t + STARTUP_WAIT_MS + 1);
+    assert_eq!(r.state(SID), AgentState::NeedsInput);
+    assert_eq!(r.colony.porch().len(), 1);
+    // Sending the first message puts it to work.
+    r.t += STARTUP_WAIT_MS + 1000;
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "continue the build"}));
+    assert_eq!(r.state(SID), AgentState::Working);
+}
+
+#[test]
+fn ending_a_session_from_colony_is_not_a_crash() {
+    use colony_core::DomainEvent::{TerminalAttached, TerminalExited};
+    let mut r = Run::new(HostId::Windows);
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into() });
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    term(&mut r, TerminalExited { term_id: "t1".into(), requested: true });
+    r.colony.tick(r.t + CRASH_GRACE_MS + 1);
+    assert_eq!(r.state(SID), AgentState::Ended);
+    assert_eq!(r.colony.agents[SID].reason.as_deref(), Some("ended from Colony"));
+}
+
 #[test]
 fn unknown_hook_events_are_ignored() {
     let mut r = Run::new(HostId::Windows);

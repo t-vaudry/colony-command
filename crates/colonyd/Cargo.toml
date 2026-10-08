@@ -14,3 +14,15 @@ tokio.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 uuid.workspace = true
+base64.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Same version tokio already uses; PTY crates are avoided because Smart App
+# Control blocks their build scripts.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
