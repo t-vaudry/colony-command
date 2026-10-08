@@ -61,22 +61,30 @@ fn daemon_exe() -> Result<PathBuf, String> {
 fn start_daemon() -> Result<(), String> {
     let exe = daemon_exe()?;
     std::fs::create_dir_all(colony_home()).map_err(|e| e.to_string())?;
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(colony_home().join("colonyd.log"))
-        .map_err(|e| format!("can't open colonyd.log: {e}"))?;
-    let mut cmd = Command::new(&exe);
-    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(log));
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-    }
-    cmd.spawn().map_err(|e| format!("couldn't start {}: {e}", exe.display()))?;
-    Ok(())
+    let spawn = |flags: u32| -> Result<(), String> {
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(colony_home().join("colonyd.log"))
+            .map_err(|e| format!("can't open colonyd.log: {e}"))?;
+        let mut cmd = Command::new(&exe);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::from(log));
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(flags);
+        }
+        #[cfg(not(windows))]
+        let _ = flags;
+        cmd.spawn().map(|_| ()).map_err(|e| format!("couldn't start {}: {e}", exe.display()))
+    };
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    // Break away from the app's job where allowed, so a terminal window the
+    // app was launched from can't take the daemon down when it closes.
+    spawn(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB)
+        .or_else(|_| spawn(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP))
 }
 
 /// Connection details for a running daemon, starting one if needed.

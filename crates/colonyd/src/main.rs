@@ -87,6 +87,9 @@ fn local_host() -> HostId {
 
 #[tokio::main]
 async fn main() {
+    if let Some(w) = colony_source::process::elevation_warning("colonyd") {
+        log(w);
+    }
     let port: u16 = std::env::var("COLONY_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT);
     let token = uuid::Uuid::new_v4().simple().to_string();
     let (deltas, _) = broadcast::channel(4096);

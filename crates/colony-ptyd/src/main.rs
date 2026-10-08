@@ -96,6 +96,9 @@ fn main() {
         return;
     }
     log(format!("listening on 127.0.0.1:{port}"));
+    if let Some(w) = colony_source::process::elevation_warning("colony-ptyd") {
+        log(w);
+    }
     let state = Arc::new(State::default());
     state.touch();
 
