@@ -325,7 +325,7 @@ fn held_permission_requests_show_and_clear() {
     let mut r = Run::new(HostId::Windows);
     r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "make a folder"}));
     let pre_tool_ts = r.t + 1000;
-    term(&mut r, PermissionAsked { request_id: "q1".into(), agent_id: None, tool: "Bash".into(), target: Some("mkdir x".into()) });
+    term(&mut r, PermissionAsked { request_id: "q1".into(), agent_id: None, tool: "Bash".into(), target: Some("mkdir x".into()), input: None });
     let a = &r.colony.agents[SID];
     assert_eq!(a.state, AgentState::NeedsInput);
     assert_eq!(a.permission.as_ref().map(|p| p.request_id.as_str()), Some("q1"));
@@ -342,7 +342,7 @@ fn held_permission_requests_show_and_clear() {
     assert!(r.colony.agents[SID].permission.is_none());
 
     // Answered somewhere else: the tool finishing clears it.
-    term(&mut r, PermissionAsked { request_id: "q2".into(), agent_id: None, tool: "Bash".into(), target: None });
+    term(&mut r, PermissionAsked { request_id: "q2".into(), agent_id: None, tool: "Bash".into(), target: None, input: None });
     r.hook(json!({"hook_event_name": "PostToolUse", "tool_name": "Bash"}));
     assert!(r.colony.agents[SID].permission.is_none());
     assert_eq!(r.state(SID), AgentState::Working);
@@ -353,7 +353,7 @@ fn subagent_permission_requests_land_on_the_subagent() {
     use colony_core::DomainEvent::PermissionAsked;
     let mut r = Run::new(HostId::Windows);
     r.hook(json!({"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}));
-    term(&mut r, PermissionAsked { request_id: "q1".into(), agent_id: Some("a1".into()), tool: "Bash".into(), target: None });
+    term(&mut r, PermissionAsked { request_id: "q1".into(), agent_id: Some("a1".into()), tool: "Bash".into(), target: None, input: None });
     let sub = &r.colony.agents[&sub_id(SID, "a1")];
     assert_eq!(sub.state, AgentState::NeedsInput);
     assert!(sub.permission.is_some());

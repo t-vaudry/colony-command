@@ -210,8 +210,8 @@ export class Daemon {
   }
 
   /** Answer a permission request Colony is holding. */
-  decide(requestId: string, choice: PermissionChoice): boolean {
-    return this.send({ type: "permission", request_id: requestId, choice });
+  decide(requestId: string, choice: PermissionChoice, answers?: Record<string, string>): boolean {
+    return this.send({ type: "permission", request_id: requestId, choice, answers });
   }
 
   /** End a session Colony didn't start, so it can be resumed here. */

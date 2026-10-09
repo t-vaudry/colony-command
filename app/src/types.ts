@@ -43,6 +43,8 @@ export interface Agent {
   objective: string | null;
   last_prompt: string | null;
   last_message: string | null;
+  /** The whole last message, for reading a question in full. */
+  last_message_full?: string | null;
   current_tool: CurrentTool | null;
   tool_calls: number;
   consecutive_failures: number;
@@ -87,13 +89,15 @@ export function modelLabel(model: string | null): string | null {
 }
 
 export interface PermissionAsk {
+  /** The tool call's input (long strings trimmed): a question's options, a diff, a command. */
+  input?: Record<string, unknown> | null;
   request_id: string;
   tool: string;
   target: string | null;
   asked_at: number;
 }
 
-export type PermissionChoice = "allow" | "allow_always" | "deny";
+export type PermissionChoice = "allow" | "allow_always" | "deny" | "pass";
 
 /** Where Colony can start sessions. */
 export interface HostOption {

@@ -28,13 +28,15 @@ pub enum Choice {
     Allow,
     /// Allow, and add Claude Code's suggested allow rule so it won't ask again.
     AllowAlways,
+    /// No decision: Claude Code's own prompt in the terminal handles it.
+    Pass,
     Deny,
 }
 
 /// What the hook prints. `Pass` prints nothing: Claude Code's prompt decides.
 #[derive(Debug, PartialEq)]
 pub enum Decision {
-    Allow { rule: Option<Value> },
+    Allow { rule: Option<Value>, updated_input: Option<Value> },
     Deny { message: String },
     Pass,
 }
@@ -43,8 +45,8 @@ impl Decision {
     /// The hook's stdout, or `None` for no decision.
     pub fn hook_output(&self) -> Option<String> {
         let decision = match self {
-            Decision::Allow { rule: None } => json!({ "behavior": "allow" }),
-            Decision::Allow { rule: Some(r) } => json!({ "behavior": "allow", "updatedPermissions": [r] }),
+            Decision::Allow { rule: None, updated_input } => with_input(json!({ "behavior": "allow" }), updated_input),
+            Decision::Allow { rule: Some(r), updated_input } => with_input(json!({ "behavior": "allow", "updatedPermissions": [r] }), updated_input),
             Decision::Deny { message } => json!({ "behavior": "deny", "message": message }),
             Decision::Pass => return None,
         };
@@ -55,6 +57,8 @@ impl Decision {
 struct Pending {
     agent_id: String,
     suggestions: Vec<Value>,
+    /// The tool call's input as received, echoed back with answers filled in.
+    input: Option<Value>,
     /// Set once the colony shows this request on the agent; only then can its
     /// disappearance mean "answered elsewhere".
     shown: bool,
@@ -73,12 +77,12 @@ impl Approvals {
         self.maps.load(Ordering::SeqCst) > 0
     }
 
-    pub fn hold(&self, request_id: &str, agent_id: String, suggestions: Vec<Value>) -> oneshot::Receiver<Decision> {
+    pub fn hold(&self, request_id: &str, agent_id: String, suggestions: Vec<Value>, input: Option<Value>) -> oneshot::Receiver<Decision> {
         let (tx, rx) = oneshot::channel();
         self.pending
             .lock()
             .unwrap()
-            .insert(request_id.to_string(), Pending { agent_id, suggestions, shown: false, tx });
+            .insert(request_id.to_string(), Pending { agent_id, suggestions, input, shown: false, tx });
         rx
     }
 
@@ -87,7 +91,7 @@ impl Approvals {
     }
 
     /// Answer from the map. Err if the request is no longer waiting.
-    pub fn decide(&self, request_id: &str, choice: Choice, message: Option<String>) -> Result<(), String> {
+    pub fn decide(&self, request_id: &str, choice: Choice, message: Option<String>, answers: Option<Value>) -> Result<(), String> {
         let p = self
             .pending
             .lock()
@@ -95,8 +99,9 @@ impl Approvals {
             .remove(request_id)
             .ok_or("That request isn't waiting any more; it was answered or timed out.")?;
         let decision = match choice {
-            Choice::Allow => Decision::Allow { rule: None },
-            Choice::AllowAlways => Decision::Allow { rule: allow_rule(&p.suggestions) },
+            Choice::Allow => Decision::Allow { rule: None, updated_input: answered(p.input.as_ref(), answers) },
+            Choice::AllowAlways => Decision::Allow { rule: allow_rule(&p.suggestions), updated_input: None },
+            Choice::Pass => Decision::Pass,
             Choice::Deny => Decision::Deny {
                 message: message
                     .filter(|m| !m.trim().is_empty())
@@ -129,6 +134,21 @@ impl Approvals {
             }
         }
     }
+}
+
+/// A question tool's input with the chosen answers added (question text -> answer),
+/// which is how a hook answers AskUserQuestion without its terminal prompt.
+fn answered(input: Option<&Value>, answers: Option<Value>) -> Option<Value> {
+    let mut input = input?.clone();
+    input.as_object_mut()?.insert("answers".into(), answers?);
+    Some(input)
+}
+
+fn with_input(mut decision: Value, updated_input: &Option<Value>) -> Value {
+    if let Some(i) = updated_input {
+        decision["updatedInput"] = i.clone();
+    }
+    decision
 }
 
 /// The allow rule Claude Code suggested for this request, to echo back so it
@@ -164,7 +184,7 @@ mod tests {
     #[test]
     fn hook_output_shapes() {
         assert_eq!(Decision::Pass.hook_output(), None);
-        let allow: Value = serde_json::from_str(&Decision::Allow { rule: None }.hook_output().unwrap()).unwrap();
+        let allow: Value = serde_json::from_str(&Decision::Allow { rule: None, updated_input: None }.hook_output().unwrap()).unwrap();
         assert_eq!(allow["hookSpecificOutput"]["hookEventName"], "PermissionRequest");
         assert_eq!(allow["hookSpecificOutput"]["decision"]["behavior"], "allow");
         let deny: Value = serde_json::from_str(&Decision::Deny { message: "no".into() }.hook_output().unwrap()).unwrap();
@@ -176,24 +196,24 @@ mod tests {
         let a = Approvals::default();
         let rule = json!({"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "npm test"}], "behavior": "allow", "destination": "localSettings"});
         let mode = json!({"type": "setMode", "mode": "acceptEdits", "destination": "session"});
-        let mut rx = a.hold("q", "s".into(), vec![mode, rule.clone()]);
-        a.decide("q", Choice::AllowAlways, None).unwrap();
-        assert_eq!(rx.try_recv().unwrap(), Decision::Allow { rule: Some(rule) });
-        assert!(a.decide("q", Choice::Allow, None).is_err(), "can't answer twice");
+        let mut rx = a.hold("q", "s".into(), vec![mode, rule.clone()], None);
+        a.decide("q", Choice::AllowAlways, None, None).unwrap();
+        assert_eq!(rx.try_recv().unwrap(), Decision::Allow { rule: Some(rule), updated_input: None });
+        assert!(a.decide("q", Choice::Allow, None, None).is_err(), "can't answer twice");
     }
 
     #[test]
     fn released_only_after_being_shown() {
         use colony_core::{DomainEvent, Envelope, HostId};
         let a = Approvals::default();
-        let mut rx = a.hold("q", "s".into(), vec![]);
+        let mut rx = a.hold("q", "s".into(), vec![], None);
         let mut colony = Colony::new();
         // Not shown yet (its event hasn't been applied): not released.
         colony.apply(&Envelope { ts: 1, host: HostId::Windows, session_id: "s".into(), cwd: None, event: DomainEvent::SessionStarted { source: None, model: None } });
         a.release_answered(&colony);
         assert!(rx.try_recv().is_err());
         // Shown, then the session moves on: released with no decision.
-        let ask = DomainEvent::PermissionAsked { request_id: "q".into(), agent_id: None, tool: "Bash".into(), target: None };
+        let ask = DomainEvent::PermissionAsked { request_id: "q".into(), agent_id: None, tool: "Bash".into(), target: None, input: None };
         colony.apply(&Envelope { ts: 2, host: HostId::Windows, session_id: "s".into(), cwd: None, event: ask });
         a.release_answered(&colony);
         colony.apply(&Envelope { ts: 3, host: HostId::Windows, session_id: "s".into(), cwd: None, event: DomainEvent::TurnEnded { last_message: None } });

@@ -134,7 +134,15 @@ enum Command {
     /// Switch a Colony-started session's model (types `/model <name>`).
     SetModel { id: String, model: String },
     /// Answer a held permission request.
-    Permission { request_id: String, choice: Choice, #[serde(default)] message: Option<String> },
+    Permission {
+        request_id: String,
+        choice: Choice,
+        #[serde(default)]
+        message: Option<String>,
+        /// For AskUserQuestion: chosen answer per question text.
+        #[serde(default)]
+        answers: Option<serde_json::Value>,
+    },
     /// End a session Colony did not start (e.g. one the Claude desktop app
     /// keeps running in the background), so it can be resumed here.
     Terminate { id: String },
@@ -210,7 +218,7 @@ async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<
         Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
         Command::Dismiss { id } => dismiss(shared, &id).await.map(|_| None),
         Command::SetModel { id, model } => set_model(shared, &id, &model).await.map(|_| None),
-        Command::Permission { request_id, choice, message } => shared.approvals.decide(&request_id, choice, message).map(|_| None),
+        Command::Permission { request_id, choice, message, answers } => shared.approvals.decide(&request_id, choice, message, answers).map(|_| None),
     };
     match result {
         Ok(reply) => reply,
@@ -455,7 +463,7 @@ async fn permission(State(shared): State<Arc<Shared>>, Query(params): Params, he
         None => p.session_id.clone(),
     };
     let suggestions = p.extra.get("permission_suggestions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let rx = shared.approvals.hold(&request_id, agent_id, suggestions);
+    let rx = shared.approvals.hold(&request_id, agent_id, suggestions, p.tool_input.clone());
     // Requests over HTTP come from hooks on this Windows machine.
     let host = HostId::Windows;
     let tool = p.tool_name.clone().unwrap_or_else(|| "tool".into());
@@ -467,7 +475,7 @@ async fn permission(State(shared): State<Arc<Shared>>, Query(params): Params, he
             host: host.clone(),
             session_id: p.session_id.clone(),
             cwd: p.cwd.clone(),
-            event: DomainEvent::PermissionAsked { request_id: request_id.clone(), agent_id: p.agent_id.clone(), tool, target: p.tool_target() },
+            event: DomainEvent::PermissionAsked { request_id: request_id.clone(), agent_id: p.agent_id.clone(), tool, target: p.tool_target(), input: p.tool_input.as_ref().map(colony_core::state::trim_strings) },
         })
         .await;
     // However this call ends (answered, timed out, or the hook was killed),
