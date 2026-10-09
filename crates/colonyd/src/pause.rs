@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn only_between_turns_with_nothing_outstanding() {
         let mut colony = Colony::new();
-        let a = agent_in(&mut colony, vec![attached(), DomainEvent::PromptSubmitted { preview: "go".into(), synthetic: false, task_ended: false }]);
+        let a = agent_in(&mut colony, vec![attached(), DomainEvent::PromptSubmitted { preview: "go".into(), synthetic: false, task_ended: false, full: None }]);
         assert!(!at_safe_point(&colony, &a), "mid-turn");
         let a = agent_in(&mut colony, vec![DomainEvent::TurnEnded { last_message: Some("All done.".into()) }]);
         assert!(at_safe_point(&colony, &a), "between turns");

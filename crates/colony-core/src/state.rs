@@ -96,6 +96,40 @@ pub struct PermissionAsk {
     pub asked_at: u64,
 }
 
+/// What an activity entry records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityKind {
+    /// A message sent to the session.
+    Prompt,
+    /// A tool call; `ok` says how it ended (absent while running).
+    Tool,
+    /// The session's own words at the end of a turn.
+    Reply,
+    /// Something went wrong, or the session was held up.
+    Problem,
+}
+
+/// One line of an agent's recent history, for the inspector's activity feed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Activity {
+    pub at: u64,
+    pub kind: ActivityKind,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+    #[serde(skip)]
+    pub tool_use_id: Option<String>,
+}
+
+/// Entries kept per agent.
+pub const ACTIVITY_KEEP: usize = 40;
+/// Longest tool target or error kept in an entry.
+const ACTIVITY_TEXT_CHARS: usize = 600;
+/// Longest prompt or reply kept in the activity feed. The whole text is in
+/// `objective_full`, `last_prompt_full` and `last_message_full`.
+const ACTIVITY_MESSAGE_CHARS: usize = 800;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CurrentTool {
     pub name: String,
@@ -142,6 +176,14 @@ pub struct Agent {
     /// First prompt of the session, or the subagent's type.
     pub objective: Option<String>,
     pub last_prompt: Option<String>,
+    /// The whole first and latest prompts (capped); the fields above are one-line previews.
+    #[serde(default)]
+    pub objective_full: Option<String>,
+    #[serde(default)]
+    pub last_prompt_full: Option<String>,
+    /// Recent history, oldest first: prompts, tool calls, replies, problems.
+    #[serde(default)]
+    pub activity: Vec<Activity>,
     pub last_message: Option<String>,
     /// The whole of that message (capped), for reading a question in full.
     #[serde(default)]
@@ -237,6 +279,9 @@ impl Agent {
             reason: None,
             objective: None,
             last_prompt: None,
+            objective_full: None,
+            last_prompt_full: None,
+            activity: Vec::new(),
             last_message: None,
             last_message_full: None,
             current_tool: None,
@@ -273,6 +318,13 @@ impl Agent {
             self.diff_stat = None;
         }
         self.reason = reason;
+    }
+
+    fn log(&mut self, at: u64, kind: ActivityKind, text: String, ok: Option<bool>, tool_use_id: Option<String>) {
+        self.activity.push(Activity { at, kind, text, ok, tool_use_id });
+        if self.activity.len() > ACTIVITY_KEEP {
+            self.activity.remove(0);
+        }
     }
 
     fn set_cwd(&mut self, cwd: &str) {
@@ -512,13 +564,17 @@ impl Colony {
                 main.model = Some(model.clone());
                 main.model_hint = models::suggest(main.model.as_deref(), &main.recent_tools);
             }
-            DomainEvent::PromptSubmitted { preview, synthetic, task_ended } => {
+            DomainEvent::PromptSubmitted { preview, synthetic, task_ended, full } => {
                 settle_if_after(main, e.ts);
                 if !synthetic && !preview.is_empty() {
+                    let whole = trim_text(full.as_deref().unwrap_or(preview).trim(), FULL_TEXT_CHARS);
                     if main.objective.is_none() {
                         main.objective = Some(preview.clone());
+                        main.objective_full = Some(whole.clone());
                     }
                     main.last_prompt = Some(preview.clone());
+                    main.log(e.ts, ActivityKind::Prompt, trim_text(&whole, ACTIVITY_MESSAGE_CHARS), None, None);
+                    main.last_prompt_full = Some(whole);
                 }
                 // Claude Code announces a finished background call or Monitor this way.
                 if *synthetic && *task_ended {
@@ -550,6 +606,11 @@ impl Colony {
                     started_at: e.ts,
                     background: *background,
                 });
+                let line = match target {
+                    Some(t) => format!("{tool}: {}", trim_text(&t.split_whitespace().collect::<Vec<_>>().join(" "), ACTIVITY_TEXT_CHARS)),
+                    None => tool.clone(),
+                };
+                a.log(e.ts, ActivityKind::Tool, line, None, tool_use_id.clone());
                 a.tool_calls += 1;
                 if a.state != AgentState::Ended {
                     a.set_state(AgentState::Working, None, e.ts);
@@ -579,6 +640,23 @@ impl Colony {
                         a.background_tasks = a.background_tasks.saturating_sub(1);
                     }
                     a.current_tool = None;
+                }
+                // Mark the entry this call opened, else the latest still-open one of that tool.
+                let open = a.activity.iter_mut().rev().find(|x| {
+                    x.kind == ActivityKind::Tool
+                        && x.ok.is_none()
+                        && match (&x.tool_use_id, tool_use_id) {
+                            (Some(p), Some(q)) => p == q,
+                            _ => x.text.strip_prefix(tool.as_str()).is_some_and(|r| r.is_empty() || r.starts_with(": ")),
+                        }
+                });
+                if let Some(x) = open {
+                    x.ok = Some(*ok);
+                }
+                if !*ok {
+                    if let Some(err) = error.as_deref().filter(|s| !s.trim().is_empty()) {
+                        a.log(e.ts, ActivityKind::Problem, format!("{tool} failed: {}", trim_text(err.trim(), ACTIVITY_TEXT_CHARS)), None, None);
+                    }
                 }
                 if *ok {
                     a.consecutive_failures = 0;
@@ -647,6 +725,9 @@ impl Colony {
                 main.current_tool = None;
                 main.last_message = last_message.as_deref().map(preview);
                 main.last_message_full = last_message.as_deref().map(|m| trim_text(m, FULL_TEXT_CHARS));
+                if let Some(m) = main.last_message_full.clone().filter(|m| !m.trim().is_empty()) {
+                    main.log(e.ts, ActivityKind::Reply, trim_text(&m, ACTIVITY_MESSAGE_CHARS), None, None);
+                }
                 match last_message.as_deref().and_then(question_in) {
                     Some(q) => main.set_state(AgentState::AwaitingReply, Some(q), e.ts),
                     // Stopped to wait on a background run: not finished, and
@@ -661,6 +742,7 @@ impl Colony {
             DomainEvent::TurnFailed { error } => {
                 settle_if_after(main, e.ts);
                 main.current_tool = None;
+                main.log(e.ts, ActivityKind::Problem, format!("Turn failed: {}", trim_text(error, ACTIVITY_TEXT_CHARS)), None, None);
                 match crate::auth::detect(error) {
                     // Claude itself is signed out: only the user can fix that.
                     Some(need) => {

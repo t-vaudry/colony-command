@@ -207,9 +207,32 @@ started yourself, run it with `COLONY_INGEST=1` and its own `COLONY_HOME` /
 map, fail-open hooks, daemon CPU/RAM, 50-session frame rate) against a throwaway
 colonyd; it never touches your real one. Results and gaps: [`docs/acceptance.md`](docs/acceptance.md).
 
+## The side panel
+
+Click a bot and the panel on the right shows what it is doing, so you rarely
+need its terminal:
+
+- **Activity** lists the bot's recent history, newest first: your prompts, each
+  tool call (running, passed, or failed), Claude's replies, and errors. Prompts
+  and replies in the feed are cut at 800 characters; the Objective and Latest
+  reply boxes above it hold the whole text. Older sessions fill in from their
+  next event on.
+- Long text (objective, reason, current tool, latest reply) sits in boxes that
+  scroll instead of cutting it off. Drag a box's corner to make it taller.
+- **Resizing:** drag the divider between the map and the panel, or the top edge
+  of the terminal. Sizes are remembered. Double-click a divider to reset it, or
+  focus it and use the arrow keys (Shift for bigger steps).
+- **Actions** are one row at the top, showing only what fits the bot's state
+  (Mark reviewed, Terminal, Pause, Resume). The **More** menu holds New session
+  here, Copy resume command, End session, and Dismiss from map.
+- Under the reply box, **Answer a menu in the session** has arrow, Enter and Esc
+  buttons for menus that aren't permission requests (folder trust, browser tools).
+- **Session details** (host, folder, worktree, tool calls, session id) is
+  collapsed by default.
+
 ## Dismissing sessions
 
-**Dismiss** in a bot's inspector ends every copy of that session (Colony's
+**Dismiss from map** (in a bot's More menu) ends every copy of that session (Colony's
 terminal and any outside one) and takes it off the map right away. With no bot
 selected, **Dismiss N idle bots** does the same for every idle, ended, or
 crashed session; ones waiting for review are left alone. Dismissals are kept in
