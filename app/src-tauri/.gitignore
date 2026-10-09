@@ -1,1 +1,4 @@
 /gen/schemas
+/binaries
+/resources/linux/*
+!/resources/linux/README.txt

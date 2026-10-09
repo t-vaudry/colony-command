@@ -1,0 +1,21 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Colony Command",
+    "shortDescription": "Every Claude Code session as a bot on a colony map",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "externalBin": ["binaries/colonyd", "binaries/colony-ptyd", "binaries/colony-hook", "binaries/colony-setup"],
+    "resources": {
+      "resources/linux/": "linux/",
+      "../../hooks/colony-approve.sh": "colony-approve.sh"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "installer-hooks.nsh",
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}
