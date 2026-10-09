@@ -3,7 +3,7 @@
 //! - `<claude home>/sessions/<pid>.json`: the live session registry. A new or
 //!   rewritten file is a `SessionSeen`; a vanished file is a `SessionGone`.
 //! - `<colony home>/capture/<nanotime>-<pid>.json`: one hook payload per file,
-//!   written by the capture hook. Processed in name (= time) order.
+//!   written by `colony-hook` (or moved in from `spool/`, see `drain_spool`). Processed in name (= time) order.
 //!
 //!   A file whose process has died (it was killed and could not clean up)
 //!   also counts as gone.
@@ -71,6 +71,7 @@ impl DirSource {
     /// first pass, so a restart rebuilds recent history without replaying
     /// everything ever captured.
     pub fn new(host: HostId, claude_home: &Path, colony_home: &Path, replay_since_ms: u64) -> Self {
+        drain_spool(colony_home);
         DirSource {
             host,
             sessions_dir: claude_home.join("sessions"),
@@ -202,6 +203,21 @@ impl DirSource {
     }
 }
 
+/// Moves payloads that colony-hook spooled while no daemon was reachable into
+/// `capture/`. The names are already time-ordered, so they keep their place.
+pub fn drain_spool(colony_home: &Path) {
+    let spool = colony_home.join("spool");
+    let capture = colony_home.join("capture");
+    let Ok(entries) = fs::read_dir(&spool) else { return };
+    let _ = fs::create_dir_all(&capture);
+    for e in entries.flatten() {
+        let name = e.file_name();
+        if name.to_string_lossy().ends_with(".json") {
+            let _ = fs::rename(e.path(), capture.join(name));
+        }
+    }
+}
+
 /// `1791490765344322000-560.json` -> 1791490765344 (ms).
 fn capture_time_ms(name: &str) -> Option<u64> {
     let nanos: u128 = name.split(['-', '.']).next()?.parse().ok()?;
@@ -277,6 +293,21 @@ mod tests {
         assert!(src.poll().is_empty());
         fs::write(cap.join(format!("{}-3.json", t + 3_000_000)), r#"{"session_id":"s","hook_event_name":"SessionEnd"}"#).unwrap();
         assert_eq!(src.poll().len(), 1);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn spooled_payloads_join_the_captures_when_a_source_starts() {
+        let d = tmp("spool");
+        let spool = d.join("colony/spool");
+        fs::create_dir_all(&spool).unwrap();
+        let t = (now_ms() as u128) * 1_000_000;
+        fs::write(spool.join(format!("{t}-1.json")), r#"{"session_id":"s","hook_event_name":"Stop"}"#).unwrap();
+        fs::write(spool.join(format!("{t}-2.tmp")), "half").unwrap();
+        let mut src = DirSource::new(HostId::Windows, &d.join("claude"), &d.join("colony"), 0);
+        assert_eq!(src.poll().len(), 1);
+        assert!(!spool.join(format!("{t}-1.json")).exists());
+        assert!(spool.join(format!("{t}-2.tmp")).exists(), "temp files are left alone");
         let _ = fs::remove_dir_all(&d);
     }
 
