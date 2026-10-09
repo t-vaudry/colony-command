@@ -32,6 +32,8 @@ jobs:
         working-directory: app
       - run: npm run build
         working-directory: app
+      - run: npm test
+        working-directory: app
       - run: cargo test --workspace --locked
 
   test-linux:

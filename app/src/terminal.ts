@@ -81,9 +81,13 @@ export class TerminalPane {
     if (this.attached !== term) {
       this.attached = term;
       this.term.reset();
+      // Fit to the pane before the replay arrives, so the scrollback is
+      // written at the final size instead of being reflowed (garbled) after.
+      this.refit();
       this.daemon.attach(term);
+    } else {
+      this.refit();
     }
-    this.refit();
     this.term.focus();
   }
 
