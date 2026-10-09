@@ -391,6 +391,32 @@ Colony only pauses sessions it owns. For a session started in a terminal or the
 Claude desktop app the inspector says why: stopping that process isn't Colony's
 to do. Resume it in Colony to get Pause.
 
+## When a bot's state looks wrong
+
+The inspector's **Why** row says what decided the state (for example "a question
+mark in the final 400 characters of its last message"). **Wrong state?** beside it
+lets you say what the bot should have shown; each click appends a line (session,
+state, reason, basis, what it should be) to `~/.colony/feedback.jsonl`. Nothing
+leaves your machine.
+
+Stall and question limits can be tuned in `~/.colony/thresholds.json` (read when
+colonyd starts; every key is optional, defaults shown):
+
+    { "stall_ms": 600000, "tool_stall_ms": 1800000,
+      "question_tail_chars": 400, "question_trailing_chars": 160, "question_min_chars": 6 }
+
+A tool call (a long build or test run) past `tool_stall_ms` is not called stuck
+while its processes are still using CPU; colonyd checks that every few seconds
+for sessions on the same machine. Sessions inside WSL keep the plain time limit.
+
+**Haiku classifier (off by default).** When the rules are unsure whether a finished
+turn asks you something ("let me know if...", or a question mark followed by more
+text), turning on *Haiku classifier* in a bot's Session details sends only that bot's
+last message to the Claude API (`claude-haiku-5-5`) and uses the answer. The key comes
+from `ANTHROPIC_API_KEY`, else `anthropic_api_key` in `~/.colony/settings.json` (which
+also holds the on/off switch). The rules stay the default and the fallback: no key,
+a network error or a timeout leaves the state as the rules set it.
+
 ## Replying from the map
 
 A bot with a question shows it in full in the inspector. For sessions Colony

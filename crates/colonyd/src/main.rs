@@ -8,6 +8,7 @@
 
 mod api;
 mod approvals;
+mod classifier;
 mod diffstat;
 mod eventlog;
 mod latency_store;
@@ -156,7 +157,10 @@ async fn main() {
         // Response times are saved shortly after they change, not on every one.
         let mut latency_dirty = false;
         let mut latency_saved = std::time::Instant::now();
+        let transport: Arc<dyn classifier::Transport> = Arc::new(classifier::Http);
         loop {
+            // Agents the events just changed, for the optional classifier.
+            let mut touched: Vec<String> = Vec::new();
             let changed = tokio::select! {
                 Some(e) = ev_rx.recv() => {
                     let mut colony = reducer.colony.write().await;
@@ -170,6 +174,7 @@ async fn main() {
                     events.flush();
                     changed.sort();
                     changed.dedup();
+                    touched = changed.clone();
                     reducer.approvals.release_answered(&colony);
                     delta_messages(&colony, &changed)
                 }
@@ -205,6 +210,9 @@ async fn main() {
             for msg in changed {
                 // No connected maps is fine.
                 let _ = reducer.deltas.send(msg);
+            }
+            if !touched.is_empty() {
+                classifier::consider(&reducer, &touched, transport.clone()).await;
             }
         }
     });
