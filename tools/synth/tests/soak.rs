@@ -80,7 +80,7 @@ fn check(events: usize, agents: usize, min_hours: u64) {
     }
     // Growth must level off once the first windows have filled.
     let (mid, last) = (s[5], *s.last().unwrap());
-    assert!(last < mid + mid / 4 + 512 * 1024, "heap still growing: {} KB -> {} KB", mid / 1024, last / 1024);
+    assert!(last < mid + mid / 10 + 128 * 1024, "heap still growing: {} KB -> {} KB", mid / 1024, last / 1024);
 }
 
 #[test]

@@ -125,7 +125,7 @@ fn corrupt_and_odd_registry_files_are_ignored() {
     fs::write(s.join("114.json"), "null").unwrap();
     fs::write(s.join("115.json"), r#"{"pid":"x","sessionId":3}"#).unwrap();
     fs::write(s.join("0.json"), r#"{"pid":0,"sessionId":"zero"}"#).unwrap();
-    fs::write(s.join("99999999999999999999.json"), r#"{"pid":1,"sessionId":"huge"}"#).unwrap();
+    fs::write(s.join("99999999999999999999.json"), r#"{"pid":4294967290,"sessionId":"huge"}"#).unwrap();
     fs::create_dir(s.join("116.json")).unwrap();
     // A good one, with unknown fields and a wrong-typed optional field.
     fs::write(s.join(format!("{pid}.json")), format!(r#"{{"pid":{pid},"sessionId":"good","newThing":[1],"status":"busy"}}"#)).unwrap();

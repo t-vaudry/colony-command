@@ -1147,6 +1147,7 @@ impl Colony {
             .collect();
         for id in expired {
             self.agents.remove(&id);
+            self.usage_seq.remove(&id);
             changed.push(id);
         }
         self.dismissed.retain(|_, d| now.saturating_sub(d.at) <= DISMISSED_KEEP_MS);
@@ -1578,6 +1579,19 @@ pub struct QuestionVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_sequence_numbers_are_forgotten_with_the_agent() {
+        let env = |ts, event| Envelope { ts, host: HostId::Windows, session_id: "s".into(), cwd: Some("C:/x/p".into()), event };
+        let mut c = Colony::new();
+        c.apply(&env(1_000, DomainEvent::SessionStarted { source: None, model: None }));
+        c.apply(&env(2_000, DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: None, tokens: Default::default() }));
+        assert!(c.usage_seq.contains_key("s"));
+        c.apply(&env(3_000, DomainEvent::SessionEnded));
+        c.tick(3_000 + ENDED_TTL_MS + 1_000);
+        assert!(c.agents.is_empty());
+        assert!(c.usage_seq.is_empty(), "{:?}", c.usage_seq);
+    }
 
     #[test]
     fn finds_trailing_questions() {
