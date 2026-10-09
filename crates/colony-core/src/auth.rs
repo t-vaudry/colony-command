@@ -19,6 +19,14 @@ pub struct Provider {
 }
 
 pub const PROVIDERS: &[Provider] = &[
+    // The bot's own login, not a tool it runs: it shows up as a failed turn.
+    Provider {
+        id: "claude",
+        label: "Claude",
+        patterns: &["authentication_failed", "invalid api key", "please run /login", "oauth token has expired", "run claude auth login"],
+        login: &[&["claude", "auth", "login"]],
+        check: &["claude", "auth", "status"],
+    },
     Provider {
         id: "github",
         label: "GitHub",
@@ -219,6 +227,13 @@ mod tests {
         for t in TOOLS {
             assert!(!t.winget.is_empty() && !t.apt.is_empty() && !t.check.is_empty(), "{}", t.id);
         }
+    }
+
+    #[test]
+    fn recognizes_claudes_own_login_failing() {
+        assert_eq!(found("authentication_failed"), Some("claude".into()));
+        assert_eq!(found("Invalid API key · Please run /login"), Some("claude".into()));
+        assert_eq!(found("OAuth token has expired. Please run claude auth login"), Some("claude".into()));
     }
 
     #[test]

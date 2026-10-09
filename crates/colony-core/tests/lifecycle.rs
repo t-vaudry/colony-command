@@ -131,6 +131,23 @@ fn a_missing_login_blocks_at_once_until_signed_in() {
 }
 
 #[test]
+fn claude_being_signed_out_asks_for_a_sign_in() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "hi"}));
+    r.hook(json!({"hook_event_name": "StopFailure", "error": "authentication_failed"}));
+    assert_eq!(r.state(SID), AgentState::Blocked);
+    let a = &r.colony.agents[SID];
+    assert_eq!(a.auth_need.as_ref().map(|n| n.provider.as_str()), Some("claude"));
+    assert_eq!(a.reason.as_deref(), Some("Claude needs you to sign in"));
+    // Other API errors stay plain API errors.
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "hi"}));
+    r.hook(json!({"hook_event_name": "StopFailure", "error": "rate_limit"}));
+    assert!(r.colony.agents[SID].auth_need.is_none());
+    assert_eq!(r.colony.agents[SID].reason.as_deref(), Some("API error: rate_limit"));
+}
+
+#[test]
 fn interrupts_are_not_failures() {
     let mut r = Run::new(HostId::Windows);
     r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));

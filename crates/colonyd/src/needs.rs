@@ -37,6 +37,8 @@ struct Plan {
     kind: NeedKind,
     command: UtilityCommand,
     check: &'static [&'static str],
+    /// A running Claude doesn't notice a new login, so restart it afterwards.
+    restart: bool,
 }
 
 /// Open the terminal that fixes the need this agent is waiting on; returns its
@@ -68,7 +70,7 @@ fn plan(kind: NeedKind, id: &str) -> Result<Plan, String> {
             let p = provider(id).ok_or("unknown sign-in")?;
             let steps = p.login.iter().map(|argv| argv.join(" ")).collect::<Vec<_>>().join("; ");
             let bash = format!("{OPEN_BROWSER_ON_WINDOWS} {steps}");
-            Ok(Plan { label: p.label.into(), kind, command: pause_after(format!("{} sign-in", p.label), &steps, &bash), check: p.check })
+            Ok(Plan { label: p.label.into(), kind, command: pause_after(format!("{} sign-in", p.label), &steps, &bash), check: p.check, restart: p.id == "claude" })
         }
         NeedKind::Install => {
             let t = tool(id).ok_or("unknown program")?;
@@ -77,7 +79,7 @@ fn plan(kind: NeedKind, id: &str) -> Result<Plan, String> {
                 "if command -v apt-get >/dev/null 2>&1; then sudo apt-get update && {}; else echo 'No apt-get in this distro; install {} with its package manager.'; fi",
                 t.apt, t.label
             );
-            Ok(Plan { label: t.label.into(), kind, command: pause_after(format!("install of {}", t.label), &powershell, &bash), check: t.check })
+            Ok(Plan { label: t.label.into(), kind, command: pause_after(format!("install of {}", t.label), &powershell, &bash), check: t.check, restart: false })
         }
     }
 }
@@ -107,7 +109,8 @@ async fn finish(shared: &Shared, plan: &Plan, host: &HostId, dir: &str, session_
     // environment) with the retry request as its first message. Before the
     // prompt clears: a bot that looks busy can't be restarted.
     let mut told = false;
-    if plan.kind == NeedKind::Install && matches!(host, HostId::Windows) && bot_term.is_some() {
+    // (A program installed on Windows, or Claude's own new login.)
+    if (plan.restart || (plan.kind == NeedKind::Install && matches!(host, HostId::Windows))) && bot_term.is_some() {
         match crate::api::restart_session(shared, session_id, None, Some(note.clone())).await {
             Ok(()) => told = true,
             Err(e) => log(format!("couldn't restart session {session_id} to pick up {}: {e}", plan.label)),
@@ -167,6 +170,14 @@ mod tests {
         assert!(p.command.powershell.starts_with("gh auth login; gh auth setup-git; "));
         // Only WSL needs a browser pointed at Windows.
         assert!(p.command.bash.contains("BROWSER") && !p.command.powershell.contains("BROWSER"));
+    }
+
+    #[test]
+    fn claudes_own_login_restarts_the_bot_afterwards() {
+        let p = plan(NeedKind::SignIn, "claude").unwrap();
+        assert!(p.restart);
+        assert!(p.command.bash.ends_with(" claude auth login; echo; read -rp 'Press Enter to close ' _"), "{}", p.command.bash);
+        assert!(!plan(NeedKind::SignIn, "github").unwrap().restart);
     }
 
     #[test]

@@ -523,7 +523,14 @@ impl Colony {
             DomainEvent::TurnFailed { error } => {
                 settle_if_after(main, e.ts);
                 main.current_tool = None;
-                main.set_state(AgentState::Blocked, Some(format!("API error: {error}")), e.ts);
+                match crate::auth::detect(error) {
+                    // Claude itself is signed out: only the user can fix that.
+                    Some(need) => {
+                        main.set_state(AgentState::Blocked, Some(need.reason()), e.ts);
+                        main.auth_need = Some(need);
+                    }
+                    None => main.set_state(AgentState::Blocked, Some(format!("API error: {error}")), e.ts),
+                }
             }
             DomainEvent::Compacting => main.reason = Some("compacting context".into()),
             DomainEvent::Compacted => {
