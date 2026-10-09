@@ -165,6 +165,8 @@ enum Command {
     Focus { id: String },
     /// Done with a session: end every copy of it and clear it off the map.
     Dismiss { id: String },
+    /// A time-lapse of the logged events between two times (unix ms), sampled in `frames` steps.
+    Replay { from: u64, to: u64, frames: usize },
     /// Show a leftover worktree's folder in the file manager.
     OpenWorktree { session_id: String },
     /// Delete a leftover worktree and its branch, uncommitted work and all.
@@ -264,6 +266,10 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
         Command::Focus { id } => focus(shared, &id).await.map(|_| None),
         Command::Dismiss { id } => dismiss(shared, &id).await.map(|_| None),
+        Command::Replay { from, to, frames } => {
+            let events = tokio::task::spawn_blocking(move || crate::eventlog::read_window(&crate::eventlog::path(), from, to)).await.unwrap_or_default();
+            Ok(Some(crate::timelapse::build(&events, from, to, frames).to_string()))
+        }
         Command::OpenWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Open).await.map(|_| None),
         Command::DiscardWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Discard).await.map(|_| None),
         Command::ForgetWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Forget).await.map(|_| None),

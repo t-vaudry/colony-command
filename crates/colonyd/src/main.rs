@@ -9,12 +9,14 @@
 mod api;
 mod approvals;
 mod diffstat;
+mod eventlog;
 mod latency_store;
 mod needs;
 mod pause;
 mod policy;
 mod pty;
 mod resume;
+mod timelapse;
 mod worktree;
 #[cfg(windows)]
 mod wsl;
@@ -144,6 +146,7 @@ async fn main() {
     let reducer = shared.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let mut events = eventlog::EventLog::open(&eventlog::path(), now_ms());
         // Response times are saved shortly after they change, not on every one.
         let mut latency_dirty = false;
         let mut latency_saved = std::time::Instant::now();
@@ -151,17 +154,21 @@ async fn main() {
             let changed = tokio::select! {
                 Some(e) = ev_rx.recv() => {
                     let mut colony = reducer.colony.write().await;
+                    events.record(&e);
                     let mut changed = colony.apply(&e);
                     // Drain whatever else is queued in one lock.
                     while let Ok(e) = ev_rx.try_recv() {
+                        events.record(&e);
                         changed.extend(colony.apply(&e));
                     }
+                    events.flush();
                     changed.sort();
                     changed.dedup();
                     reducer.approvals.release_answered(&colony);
                     delta_messages(&colony, &changed)
                 }
                 _ = tick.tick() => {
+                    tokio::task::block_in_place(|| events.maybe_trim(now_ms()));
                     let mut colony = reducer.colony.write().await;
                     let changed = colony.tick(now_ms());
                     reducer.approvals.release_answered(&colony);

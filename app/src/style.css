@@ -1388,3 +1388,6 @@ details.menu[open] > summary {
 textarea.resume-reply {
   padding-right: 38px;
 }
+
+#tl-lanes { display: block; margin: 6px 0; }
+#tl-scrub { min-width: 0; }
