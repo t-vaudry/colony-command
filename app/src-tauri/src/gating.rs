@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 
 fn marker() -> PathBuf {
-    crate::daemon::colony_home().join("gating-paused")
+    colony_source::gating::marker_path(&crate::daemon::colony_home())
 }
 
 pub fn paused() -> bool {

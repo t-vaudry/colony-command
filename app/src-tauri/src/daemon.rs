@@ -22,12 +22,9 @@ pub struct Info {
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Same folder the hook and daemon use (`COLONY_HOME`, else `~/.colony`).
 pub fn colony_home() -> PathBuf {
-    if let Some(dir) = std::env::var_os("COLONY_HOME") {
-        return PathBuf::from(dir);
-    }
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).unwrap_or_else(|| ".".into());
-    PathBuf::from(home).join(".colony")
+    colony_source::colony_home()
 }
 
 fn read_info() -> Option<Info> {

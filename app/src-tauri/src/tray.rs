@@ -18,6 +18,8 @@ use crate::{autostart, daemon, gating};
 
 const TRAY_ID: &str = "main";
 const POLL: Duration = Duration::from_secs(5);
+/// Polls between registry reads for the autostart checkmark.
+const AUTOSTART_EVERY: u32 = 12;
 
 /// Bots needing a human, by the same grouping as the map's porch.
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
@@ -85,7 +87,7 @@ fn fetch_needs() -> Option<Needs> {
     Some(count_needs(&serde_json::from_str(text.get(start..=end)?).ok()?))
 }
 
-fn show(app: &AppHandle) {
+pub fn show(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -163,12 +165,17 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
     // Keep the counts, the tooltip and the checkmarks true to the world: the
     // file can also change from the map's Set up window or by hand.
     let app = app.clone();
+    let mut tick = 0u32;
     std::thread::spawn(move || loop {
+        // The registry read spawns reg.exe, so it runs about once a minute.
+        if tick % AUTOSTART_EVERY == 0 {
+            let _ = auto.set_checked(autostart::enabled());
+        }
+        tick = tick.wrapping_add(1);
         let needs = fetch_needs();
         let label = needs.map(|n| n.label()).unwrap_or_else(|| "Colony isn't running".into());
         let _ = needs_item.set_text(&label);
         let _ = pause.set_checked(gating::paused());
-        let _ = auto.set_checked(autostart::enabled());
         if let Some(t) = app.tray_by_id(TRAY_ID) {
             let paused = if gating::paused() { " · approvals paused" } else { "" };
             let _ = t.set_tooltip(Some(format!("Colony Command · {label}{paused}")));

@@ -76,8 +76,21 @@ fn autostart_set(on: bool) -> Result<bool, String> {
     Ok(autostart::enabled())
 }
 
+#[tauri::command]
+fn gating_paused() -> bool {
+    gating::paused()
+}
+
+#[tauri::command]
+fn gating_set(paused: bool) -> Result<bool, String> {
+    gating::set_paused(paused)?;
+    Ok(gating::paused())
+}
+
 fn main() {
     tauri::Builder::default()
+        // A second launch (a login start plus a manual one) just shows the first window.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show(app)))
         .setup(|app| {
             // The window starts hidden (tauri.conf.json) so a login start can stay
             // in the tray. Without a tray there'd be no way back, so show it then.
@@ -99,7 +112,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set])
+        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set])
         .run(tauri::generate_context!())
         .expect("Colony Command failed to start");
 }

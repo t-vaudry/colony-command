@@ -220,6 +220,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn permission_request_steps_aside_while_gating_is_paused() {
+        use std::net::TcpListener;
+        let home = std::env::temp_dir().join(format!("colony-hook-gating-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // A fake colonyd that answers every request with a decision.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for conn in listener.incoming().flatten() {
+                let mut conn = conn;
+                let mut buf = [0u8; 4096];
+                let _ = conn.read(&mut buf);
+                let body = r#"{"decision":"allow"}"#;
+                let _ = write!(conn, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            }
+        });
+        fs::write(home.join("daemon.json"), format!(r#"{{"port":{port},"token":"abc123"}}"#)).unwrap();
+        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default() };
+        let input = r#"{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"Bash"}"#;
+
+        assert!(run(input, &ctx).is_some(), "without the marker the request goes to colonyd");
+        fs::write(colony_source::gating::marker_path(&home), b"").unwrap();
+        assert_eq!(run(input, &ctx), None, "with the marker the hook steps aside");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
     fn spool_is_capped_and_aged_out() {
         let dir = std::env::temp_dir().join(format!("colony-hook-spool-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);

@@ -121,6 +121,7 @@ export class Hud {
     daemon.onError((m) => this.toast(m));
     daemon.onNotice((m) => this.toast(m));
     setInterval(() => this.tickDurations(), 1000);
+    this.watchGating();
     this.strip.addEventListener("click", (e) => {
       const el = (e.target as HTMLElement).closest<HTMLElement>("button");
       if (el?.dataset.decide && el.dataset.req) {
@@ -308,6 +309,38 @@ export class Hud {
     }
   }
 
+  /** The tray's approvals kill switch (desktop app only); a stale one must not hide. */
+  private gatingPaused = false;
+
+  private watchGating(): void {
+    const invoke = (window as unknown as { __TAURI__?: { core?: { invoke: <T>(cmd: string, args?: object) => Promise<T> } } }).__TAURI__?.core?.invoke;
+    if (!invoke) return;
+    const poll = () =>
+      void invoke<boolean>("gating_paused")
+        .then((p) => {
+          if (p !== this.gatingPaused) {
+            this.gatingPaused = p;
+            this.schedule();
+          }
+        })
+        .catch(() => {});
+    poll();
+    setInterval(poll, 5000);
+    this.counts.addEventListener("click", (e) => {
+      if (!(e.target as HTMLElement).closest("[data-resume-gating]")) return;
+      void invoke<boolean>("gating_set", { paused: false }).then((p) => {
+        this.gatingPaused = p;
+        this.schedule();
+      });
+    });
+  }
+
+  private gatingChip(): string {
+    return this.gatingPaused
+      ? `<button type="button" class="chip warn" data-resume-gating title="Approvals gating is paused from the tray: permission requests are not held here and Claude Code's own prompt decides. Click to turn gating back on.">⏸ approvals paused</button>`
+      : "";
+  }
+
   schedule(): void {
     if (this.scheduled) return;
     this.scheduled = true;
@@ -328,7 +361,7 @@ export class Hud {
       ["idle", "idle", count("idle", "spawning")],
     ]
       .map(([c, label, n]) => `<span class="chip"><span class="dot ${c}"></span>${label} <b>${n}</b></span>`)
-      .join("") + this.leftoverChip() + this.rulesChip() + this.spendChip());
+      .join("") + this.gatingChip() + this.leftoverChip() + this.rulesChip() + this.spendChip());
     this.conn.className = `conn ${this.daemon.status}`;
     this.conn.textContent =
       this.daemon.status === "live"

@@ -115,7 +115,9 @@ Or inside Ubuntu:
     target/release/colony-command.exe
 
 The app starts `colonyd` (next to it) when no daemon is answering, and
-leaves it running when you close the window.
+leaves it running when you close the window. Sessions Colony starts live in `colony-ptyd`, which colonyd starts and reconnects to, so they keep running
+through daemon restarts and updates. Logs: `~/.colony/colonyd.log`,
+`~/.colony/ptyd.log`.
 
 ### Tray
 
@@ -131,17 +133,19 @@ has:
   `~/.colony/gating-paused` (under `COLONY_HOME` if set), which `colony-hook`,
   `colony-approve.sh` and colonyd all check, so it also covers WSL sessions. It
   fails open: a missing or unreadable file means gating is on as usual, and the
-  switch can never block a tool call. It survives restarts until unticked. Hook
+  switch can never block a tool call. It survives restarts until unticked, so
+  while it is on the map's top bar shows **⏸ approvals paused** (click to turn
+  gating back on) and the tray tooltip says so. Hook
   events are still recorded, so the map keeps showing sessions.
 - **Start at login**: off by default. Adds `Colony Command` to your per-user
   Run key (no administrator needed) and starts the app hidden in the tray
   (`colony-command.exe --tray`). Also a checkbox in **Set up Colony**; it
   applies immediately rather than through Review changes.
 - **Quit** exits the app only; colonyd keeps running. If the desktop has no tray,
-  the window closes normally instead. Sessions Colony starts live in
-`colony-ptyd`, which colonyd starts and reconnects to, so they keep running
-through daemon restarts and updates. Logs: `~/.colony/colonyd.log`,
-`~/.colony/ptyd.log`.
+  the window closes normally instead.
+
+A second launch (say, a login start plus a manual one) just shows the existing
+window.
 
 To pick up code changes without ending sessions:
 
