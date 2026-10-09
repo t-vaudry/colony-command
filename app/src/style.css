@@ -805,6 +805,23 @@ input.other {
   z-index: 3;
   background: var(--surface);
 }
+#update-notice {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+}
+#update-notice[hidden] {
+  display: none;
+}
 #setup-btn[hidden] {
   display: none;
 }

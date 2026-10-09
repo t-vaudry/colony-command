@@ -47,7 +47,10 @@ if (-not $SkipLinux) {
 
 Push-Location (Join-Path $root "app")
 try {
-    npm run tauri -- build --bundles nsis --config src-tauri/tauri.bundle.conf.json
+    $configs = @("--config", "src-tauri/tauri.bundle.conf.json")
+    # Updater artifacts (.sig) need the signing key; local builds without it skip them.
+    if ($env:TAURI_SIGNING_PRIVATE_KEY) { $configs += @("--config", "src-tauri/tauri.updater.conf.json") }
+    npm run tauri -- build --bundles nsis @configs
     if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
 } finally { Pop-Location }
 Get-ChildItem (Join-Path $root "target\release\bundle\nsis\*.exe") | ForEach-Object { Write-Host "Built $($_.FullName)" }

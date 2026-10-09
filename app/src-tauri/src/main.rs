@@ -6,6 +6,7 @@ mod daemon;
 mod gating;
 mod notify;
 mod tray;
+mod updater;
 
 use colony_setup::{Applied, Options, Plan, Selection, TargetStatus};
 use serde::Serialize;
@@ -93,6 +94,8 @@ fn main() {
         // A second launch (a login start plus a manual one) just shows the first window.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show(app)))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::Pending::default())
         .manage(notify::Patience::default())
         .setup(|app| {
             // The window starts hidden (tauri.conf.json) so a login start can stay
@@ -115,7 +118,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test])
+        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install])
         .run(tauri::generate_context!())
         .expect("Colony Command failed to start");
 }

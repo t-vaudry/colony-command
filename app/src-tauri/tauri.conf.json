@@ -26,5 +26,12 @@
   "bundle": {
     "active": false,
     "icon": ["icons/icon.png", "icons/icon.ico"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZENTNEODAxNDJGMjI4REEKUldUYUtQSkNBZGhUL1NSTXpHMmtubEE0Zk1NVlVIWlplc1FmS3FYRVdMMGErL1hTckU3QnUxTUcK",
+      "endpoints": ["https://github.com/t-vaudry/colony-command/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
   }
 }
