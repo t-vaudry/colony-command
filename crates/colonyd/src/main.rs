@@ -124,8 +124,11 @@ async fn main() {
     });
 
     // Sessions inside running WSL distros.
+    // COLONY_INGEST=1 is a test daemon fed by tools/synth: leave real distros alone.
     #[cfg(windows)]
-    tokio::spawn(wsl::supervise(ev_tx.clone(), shared.clone()));
+    if std::env::var("COLONY_INGEST").map_or(true, |v| v != "1") {
+        tokio::spawn(wsl::supervise(ev_tx.clone(), shared.clone()));
+    }
     drop(ev_tx);
 
     // The reducer: the only writer of colony state.

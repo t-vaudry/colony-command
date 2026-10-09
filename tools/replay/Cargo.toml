@@ -1,0 +1,12 @@
+[package]
+name = "colony-replay"
+description = "Feeds a recorded event log (JSON lines of envelopes) into a test colonyd."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+colony-core.workspace = true
+colony-source.workspace = true
+colony-synth = { path = "../synth" }
+serde_json.workspace = true

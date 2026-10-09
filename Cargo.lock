@@ -423,12 +423,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "colony-replay"
+version = "0.1.0"
+dependencies = [
+ "colony-core",
+ "colony-source",
+ "colony-synth",
+ "serde_json",
+]
+
+[[package]]
 name = "colony-source"
 version = "0.1.0"
 dependencies = [
  "colony-core",
  "serde_json",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "colony-synth"
+version = "0.1.0"
+dependencies = [
+ "colony-core",
+ "colony-source",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
