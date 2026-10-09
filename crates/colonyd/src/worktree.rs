@@ -90,7 +90,7 @@ pub async fn create(host: &HostId, dir: &str, session_id: &str, label: &str) -> 
 /// origin's default branch is), so a bot never starts on stale code. Falls back
 /// to the last fetched copy when offline, and to the current HEAD when the
 /// repository has no remote.
-async fn base_ref(host: &HostId, repo: &str) -> String {
+pub async fn base_ref(host: &HostId, repo: &str) -> String {
     // Never hang a spawn on a slow or unreachable remote.
     let fetch = |h: HostId, dir: String| async move {
         match tokio::time::timeout(Duration::from_secs(30), git(&h, &dir, &["fetch", "--quiet", "origin"])).await {
@@ -115,6 +115,85 @@ async fn base_ref(host: &HostId, repo: &str) -> String {
         }
     }
     "HEAD".into()
+}
+
+/// The commit a revision names, if it exists.
+pub async fn resolve(host: &HostId, repo: &str, rev: &str) -> Option<String> {
+    git(host, repo, &["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")]).await.ok().map(|s| s.trim().to_string())
+}
+
+/// What `sync_with_base` did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Synced {
+    UpToDate,
+    /// Rebased onto the base; `pushed`: the branch also exists on a remote, so
+    /// its next push must be a force push.
+    Rebased { commits: u32, pushed: bool },
+    /// Left alone, and why.
+    Skipped(&'static str),
+    /// Everything this branch changes is already in the base (a squash or
+    /// rebase merge): rebasing would only conflict with its own commits.
+    AlreadyMerged,
+    /// The rebase hit conflicts and was aborted; the branch is as it was.
+    Conflict,
+}
+
+/// Rebase a worktree's branch onto `base` (a freshly fetched origin/main) when
+/// it's behind. Never touches uncommitted work and never force-pushes: a dirty
+/// worktree, or one already mid-rebase, is skipped; a conflicting rebase is
+/// aborted.
+pub async fn sync_with_base(w: &Worktree, base: &str) -> Result<Synced, String> {
+    let behind: u32 = git(&w.host, &w.path, &["rev-list", "--count", &format!("HEAD..{base}")]).await?.trim().parse().map_err(|_| "unreadable commit count".to_string())?;
+    if behind == 0 {
+        return Ok(Synced::UpToDate);
+    }
+    if git(&w.host, &w.path, &["rev-parse", "--verify", "--quiet", "REBASE_HEAD"]).await.is_ok() {
+        return Ok(Synced::Skipped("a rebase is already in progress"));
+    }
+    if !git(&w.host, &w.path, &["status", "--porcelain"]).await?.trim().is_empty() {
+        return Ok(Synced::Skipped("it has uncommitted changes"));
+    }
+    // Merged by squash? Then merging the branch into the base changes nothing,
+    // and rebasing it would conflict with the squashed copy of its own commits.
+    let own: u32 = git(&w.host, &w.path, &["rev-list", "--count", &format!("{base}..HEAD")]).await?.trim().parse().unwrap_or(0);
+    if own > 0 {
+        let base_tree = git(&w.host, &w.path, &["rev-parse", &format!("{base}^{{tree}}")]).await.ok();
+        let merged_tree = git(&w.host, &w.path, &["merge-tree", "--write-tree", base, "HEAD"]).await.ok();
+        if let (Some(b), Some(m)) = (base_tree, merged_tree) {
+            if m.lines().next() == Some(b.trim()) {
+                return Ok(Synced::AlreadyMerged);
+            }
+        }
+    }
+    // Rebasing rewrites commits, which needs a committer identity. If none is
+    // configured, use the branch's own author rather than failing.
+    let mut args: Vec<String> = Vec::new();
+    for (key, field) in [("user.name", "%an"), ("user.email", "%ae")] {
+        if git(&w.host, &w.path, &["config", key]).await.map_or(true, |v| v.trim().is_empty()) {
+            if let Ok(v) = git(&w.host, &w.path, &["log", "-1", &format!("--format={field}")]).await {
+                args.extend(["-c".into(), format!("{key}={}", v.trim())]);
+            }
+        }
+    }
+    args.extend(["rebase".into(), base.into()]);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match git(&w.host, &w.path, &args).await {
+        Ok(_) => {
+            let pushed = git(&w.host, &w.repo, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{}", w.branch)]).await.is_ok();
+            log(format!("rebased {} onto {base} ({behind} new commit{})", w.branch, if behind == 1 { "" } else { "s" }));
+            Ok(Synced::Rebased { commits: behind, pushed })
+        }
+        Err(e) => {
+            // Put the branch back exactly as it was, whatever went wrong.
+            let _ = git(&w.host, &w.path, &["rebase", "--abort"]).await;
+            if e.contains("could not apply") || e.to_lowercase().contains("conflict") {
+                log(format!("rebasing {} onto {base} conflicts; aborted", w.branch));
+                Ok(Synced::Conflict)
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 /// Bring back the worktree of a session being resumed if it was cleaned up
@@ -486,6 +565,88 @@ mod tests {
         assert!(git(&host, &made.dir, &["rev-parse", "--is-inside-work-tree"]).await.is_ok());
     }
 
+    async fn write_file(host: &HostId, path: &str, content: &str) {
+        match host {
+            HostId::Windows => std::fs::write(path, content).unwrap(),
+            HostId::Wsl(d) => {
+                let st = quiet("wsl.exe").args(["-d", d, "-e", "sh", "-c", "printf '%s' \"$2\" > \"$1\"", "sh", &to_wsl_path(path), content]).status().await.unwrap();
+                assert!(st.success());
+            }
+        }
+    }
+
+    /// Origin's main moves on while a worktree exists: it is rebased when it
+    /// can be, and left alone when it can't.
+    async fn exercise_sync(host: HostId, base: String) {
+        let sep = if matches!(host, HostId::Windows) { "\\" } else { "/" };
+        let clone = fixture(&host, &base).await;
+        let seed = format!("{base}{sep}seed");
+        let id = ["-c", "user.name=t", "-c", "user.email=t@t"];
+        let push_commit = |file: &'static str, content: &'static str| {
+            let (host, seed) = (host.clone(), seed.clone());
+            async move {
+                write_file(&host, &format!("{seed}{}{file}", if matches!(host, HostId::Windows) { "\\" } else { "/" }), content).await;
+                git(&host, &seed, &["add", file]).await.unwrap();
+                git(&host, &seed, &[id[0], id[1], id[2], id[3], "commit", "-q", "-m", file]).await.unwrap();
+                git(&host, &seed, &["push", "-q", "origin", "main"]).await.unwrap();
+            }
+        };
+
+        // Behind by nothing yet (the fixture's own extra commit was fetched at creation).
+        let made = create(&host, &clone, "aaaa1111", "sync me").await.unwrap();
+        let w = &made.record;
+        let base_now = base_ref(&host, &clone).await;
+        assert_eq!(sync_with_base(w, &base_now).await.unwrap(), Synced::UpToDate);
+
+        // Main moves; the worktree is clean, so it is rebased and carries its own commit along.
+        write_file(&host, &format!("{}{sep}mine.txt", made.dir), "mine").await;
+        git(&host, &made.dir, &["add", "mine.txt"]).await.unwrap();
+        git(&host, &made.dir, &[id[0], id[1], id[2], id[3], "commit", "-q", "-m", "mine"]).await.unwrap();
+        push_commit("a.txt", "from main").await;
+        let base_now = base_ref(&host, &clone).await;
+        assert_eq!(sync_with_base(w, &base_now).await.unwrap(), Synced::Rebased { commits: 1, pushed: false });
+        let log = git(&host, &made.dir, &["log", "--format=%s", "-3"]).await.unwrap();
+        assert_eq!(log.lines().collect::<Vec<_>>(), vec!["mine", "a.txt", "two"], "own commit should sit on top of main");
+
+        // Uncommitted work is never touched.
+        push_commit("b.txt", "more").await;
+        write_file(&host, &format!("{}{sep}scratch.txt", made.dir), "wip").await;
+        let base_now = base_ref(&host, &clone).await;
+        assert_eq!(sync_with_base(w, &base_now).await.unwrap(), Synced::Skipped("it has uncommitted changes"));
+        assert_eq!(git(&host, &made.dir, &["status", "--porcelain"]).await.unwrap().trim(), "?? scratch.txt");
+
+        // Clean again, but now both sides changed the same file: conflict, aborted, branch untouched.
+        git(&host, &made.dir, &["add", "scratch.txt"]).await.unwrap();
+        git(&host, &made.dir, &[id[0], id[1], id[2], id[3], "commit", "-q", "-m", "scratch"]).await.unwrap();
+        write_file(&host, &format!("{}{sep}c.txt", made.dir), "theirs").await;
+        git(&host, &made.dir, &["add", "c.txt"]).await.unwrap();
+        git(&host, &made.dir, &[id[0], id[1], id[2], id[3], "commit", "-q", "-m", "c mine"]).await.unwrap();
+        push_commit("c.txt", "ours").await;
+        let before = git(&host, &made.dir, &["rev-parse", "HEAD"]).await.unwrap();
+        let base_now = base_ref(&host, &clone).await;
+        assert_eq!(sync_with_base(w, &base_now).await.unwrap(), Synced::Conflict);
+        assert_eq!(git(&host, &made.dir, &["rev-parse", "HEAD"]).await.unwrap(), before, "a conflicting rebase must leave the branch as it was");
+        assert_eq!(git(&host, &made.dir, &["status", "--porcelain"]).await.unwrap().trim(), "", "and the worktree clean");
+        assert!(git(&host, &made.dir, &["rev-parse", "--verify", "--quiet", "REBASE_HEAD"]).await.is_err());
+
+        // Squash-merged: the branch's two commits land on main as one. Rebasing would
+        // conflict with the squashed copy of its own work, so it is recognised instead.
+        let sq = create(&host, &clone, "bbbb2222", "squashed").await.unwrap();
+        write_file(&host, &format!("{}{sep}d.txt", sq.dir), "1").await;
+        git(&host, &sq.dir, &["add", "d.txt"]).await.unwrap();
+        git(&host, &sq.dir, &[id[0], id[1], id[2], id[3], "commit", "-q", "-m", "d one"]).await.unwrap();
+        write_file(&host, &format!("{}{sep}d.txt", sq.dir), "12").await;
+        git(&host, &sq.dir, &[id[0], id[1], id[2], id[3], "commit", "-q", "-am", "d two"]).await.unwrap();
+        push_commit("d.txt", "12").await;
+        let base_now = base_ref(&host, &clone).await;
+        assert_eq!(sync_with_base(&sq.record, &base_now).await.unwrap(), Synced::AlreadyMerged);
+        // A branch with no work of its own is simply moved forward, not mistaken for merged.
+        let fresh = create(&host, &clone, "cccc3333", "fresh").await.unwrap();
+        push_commit("e.txt", "later").await;
+        let base_now = base_ref(&host, &clone).await;
+        assert_eq!(sync_with_base(&fresh.record, &base_now).await.unwrap(), Synced::Rebased { commits: 1, pushed: false });
+    }
+
     fn first_distro() -> String {
         let out = std::process::Command::new("wsl.exe").args(["--list", "--quiet"]).output().unwrap();
         let units: Vec<u16> = out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
@@ -502,8 +663,10 @@ mod tests {
     fn worktrees_on_windows() {
         let base = std::env::temp_dir().join(format!("colony-wt-{}", std::process::id()));
         let base_s = base.display().to_string();
-        rt().block_on(exercise(HostId::Windows, base_s));
+        rt().block_on(exercise(HostId::Windows, base_s.clone()));
+        rt().block_on(exercise_sync(HostId::Windows, format!("{base_s}-sync")));
         let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(format!("{base_s}-sync"));
     }
 
     /// Needs a WSL distro with git; uses the first, a Linux path.
@@ -513,7 +676,8 @@ mod tests {
         let distro = first_distro();
         let base = format!("/tmp/colony-wt-{}", std::process::id());
         rt().block_on(exercise(HostId::Wsl(distro.clone()), base.clone()));
-        let _ = std::process::Command::new("wsl.exe").args(["-d", &distro, "-e", "rm", "-rf", &base]).status();
+        rt().block_on(exercise_sync(HostId::Wsl(distro.clone()), format!("{base}-sync")));
+        let _ = std::process::Command::new("wsl.exe").args(["-d", &distro, "-e", "rm", "-rf", &base, &format!("{base}-sync")]).status();
     }
 
     /// A Windows folder opened from WSL (`/mnt/c/...`), the usual way to share
@@ -523,8 +687,11 @@ mod tests {
     fn worktrees_in_wsl_on_a_windows_folder() {
         let distro = first_distro();
         let base = std::env::temp_dir().join(format!("colony-wtm-{}", std::process::id()));
-        rt().block_on(exercise(HostId::Wsl(distro), base.display().to_string().replace('\\', "/")));
+        let base_s = base.display().to_string().replace('\\', "/");
+        rt().block_on(exercise(HostId::Wsl(distro.clone()), base_s.clone()));
+        rt().block_on(exercise_sync(HostId::Wsl(distro), format!("{base_s}-sync")));
         let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(format!("{base_s}-sync"));
     }
 
     fn record(host: HostId, path: &str) -> Worktree {

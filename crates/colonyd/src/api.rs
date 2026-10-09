@@ -351,6 +351,111 @@ pub async fn sweep_worktrees(shared: &Shared) {
     }
 }
 
+/// How often origin is asked whether main has moved.
+const FETCH_EVERY: Duration = Duration::from_secs(120);
+
+/// What `sync_worktrees` remembers between rounds.
+#[derive(Default)]
+pub struct SyncState {
+    /// Repository -> when origin was last fetched, and the base ref then.
+    bases: HashMap<String, (std::time::Instant, String)>,
+    /// Session -> the base commit its conflict was already handed to the bot
+    /// for, so it isn't asked again until main moves again.
+    asked: HashMap<String, String>,
+    /// Session -> the last error logged for it, to log each only once.
+    failed: HashMap<String, String>,
+}
+
+/// Keep bots' branches current with origin/main. When main has moved, each
+/// bot's branch is rebased onto it, but only between turns, only when the
+/// worktree is clean, and never with a force push. A rebase that conflicts is
+/// aborted (the branch is left as it was) and the bot is asked to resolve it.
+pub async fn sync_worktrees(shared: &Shared, st: &mut SyncState) {
+    use crate::worktree::{base_ref, resolve, sync_with_base, Synced};
+    for w in crate::worktree::all() {
+        if w.kept.is_some() {
+            continue;
+        }
+        // Between turns: waiting for the user, or finished a turn. Not mid-edit.
+        let bot = {
+            let colony = shared.colony.read().await;
+            colony
+                .agents
+                .get(&w.session_id)
+                .filter(|a| matches!(a.state, colony_core::AgentState::Idle | colony_core::AgentState::AwaitingReply | colony_core::AgentState::ReadyToReview))
+                .and_then(|a| a.terminal.clone().map(|t| (t, a.name.clone())))
+        };
+        let Some((term, name)) = bot else { continue };
+
+        let key = format!("{}|{}", w.host, w.repo);
+        let base = match st.bases.get(&key) {
+            Some((at, b)) if at.elapsed() < FETCH_EVERY => b.clone(),
+            _ => {
+                let b = base_ref(&w.host, &w.repo).await;
+                st.bases.insert(key, (std::time::Instant::now(), b.clone()));
+                b
+            }
+        };
+        // No remote: nothing to follow.
+        if base == "HEAD" {
+            continue;
+        }
+        match sync_with_base(&w, &base).await {
+            Ok(Synced::UpToDate) => {
+                st.asked.remove(&w.session_id);
+            }
+            Ok(Synced::Skipped(_)) => {}
+            Ok(Synced::AlreadyMerged) => {
+                let sha = resolve(&w.host, &w.repo, &base).await.unwrap_or_default();
+                if st.asked.get(&w.session_id) != Some(&sha) {
+                    st.asked.insert(w.session_id.clone(), sha);
+                    notice(shared, format!("{name}: its branch is already merged into {base}; dismiss the bot when it is done"));
+                }
+            }
+            Ok(Synced::Rebased { commits, pushed }) => {
+                st.asked.remove(&w.session_id);
+                st.failed.remove(&w.session_id);
+                let s = if commits == 1 { "" } else { "s" };
+                notice(shared, format!("{name}: rebased onto {base} ({commits} new commit{s} on main)"));
+                if pushed {
+                    crate::needs::tell(
+                        shared,
+                        &term,
+                        &format!("Colony rebased this branch onto {base}. It was already pushed, so your next push must be `git push --force-with-lease`."),
+                    )
+                    .await;
+                }
+            }
+            Ok(Synced::Conflict) => {
+                let sha = resolve(&w.host, &w.repo, &base).await.unwrap_or_default();
+                if st.asked.get(&w.session_id) != Some(&sha) {
+                    st.asked.insert(w.session_id.clone(), sha);
+                    notice(shared, format!("{name}: main moved and conflicts with its branch; asked it to resolve"));
+                    crate::needs::tell(
+                        shared,
+                        &term,
+                        &format!(
+                            "New commits landed on {base} and conflict with this branch, so Colony left your branch as it was. At a good stopping point, run `git rebase {base}`, resolve the conflicts, `git rebase --continue`, and re-run the tests."
+                        ),
+                    )
+                    .await;
+                }
+            }
+            Err(e) => {
+                if st.failed.get(&w.session_id) != Some(&e) {
+                    log(format!("could not rebase {} onto {base}: {e}", w.branch));
+                    st.failed.insert(w.session_id.clone(), e);
+                }
+            }
+        }
+    }
+}
+
+/// A short message for the map to show as a toast.
+fn notice(shared: &Shared, message: String) {
+    let _ = shared.deltas.send(json!({ "type": "notice", "message": message }).to_string());
+}
+
 /// Remove a finished bot's worktree. Whatever can't go (uncommitted changes,
 /// unmerged commits) stays, recorded as a leftover the map lists for the user.
 async fn clean_up_worktree(shared: &Shared, w: &crate::worktree::Worktree) {

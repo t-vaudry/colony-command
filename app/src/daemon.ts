@@ -16,6 +16,7 @@ type Message =
   | { type: "remove"; id: string }
   | { type: "spawned"; term: string; session_id: string }
   | { type: "term_data"; term: string; data: string; reset: boolean }
+  | { type: "notice"; message: string }
   | { type: "error"; message: string };
 
 export type ConnectionStatus = "connecting" | "live" | "offline";
@@ -55,6 +56,7 @@ export class Daemon {
   private listeners = new Set<() => void>();
   private termListeners = new Set<(term: string, bytes: Uint8Array, reset: boolean) => void>();
   private errorListeners = new Set<(message: string) => void>();
+  private noticeListeners = new Set<(message: string) => void>();
   /** Spawn replies arrive in the order spawns were sent. */
   private pendingSpawns: { resolve: (v: { term: string; session_id: string }) => void; reject: (e: Error) => void }[] = [];
 
@@ -64,6 +66,11 @@ export class Daemon {
 
   onTermData(fn: (term: string, bytes: Uint8Array, reset: boolean) => void): void {
     this.termListeners.add(fn);
+  }
+
+  /** Something Colony did on its own that the user should hear about. */
+  onNotice(fn: (message: string) => void): void {
+    this.noticeListeners.add(fn);
   }
 
   onError(fn: (message: string) => void): void {
@@ -136,6 +143,9 @@ export class Daemon {
         for (const fn of this.termListeners) fn(m.term, bytes, m.reset);
         return;
       }
+      case "notice":
+        for (const fn of this.noticeListeners) fn(m.message);
+        return;
       case "error": {
         // A failed spawn reports here too; otherwise it's about some other command.
         const pending = this.pendingSpawns.shift();

@@ -112,6 +112,7 @@ export class Hud {
   ) {
     daemon.onChange(() => this.schedule());
     daemon.onError((m) => this.toast(m));
+    daemon.onNotice((m) => this.toast(m));
     setInterval(() => this.tickDurations(), 1000);
     this.strip.addEventListener("click", (e) => {
       const el = (e.target as HTMLElement).closest<HTMLElement>("button");

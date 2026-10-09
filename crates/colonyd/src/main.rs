@@ -171,6 +171,17 @@ async fn main() {
         }
     });
 
+    // Keep bots' branches current as origin/main moves.
+    let syncer = shared.clone();
+    tokio::spawn(async move {
+        let mut state = api::SyncState::default();
+        tokio::time::sleep(Duration::from_secs(90)).await;
+        loop {
+            api::sync_worktrees(&syncer, &mut state).await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
+
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
         Ok(l) => l,
         Err(e) => {

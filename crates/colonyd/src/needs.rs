@@ -119,10 +119,15 @@ async fn finish(shared: &Shared, plan: &Plan, host: &HostId, dir: &str, session_
         .await;
     // The bot has probably told the user it's stuck and stopped; tell it to carry on.
     if let (false, Some(term)) = (told, bot_term) {
-        if shared.pty.paste(term, &note).is_ok() {
-            tokio::time::sleep(PASTE_SETTLE).await;
-            let _ = shared.pty.input(term, b"\r");
-        }
+        tell(shared, term, &note).await;
+    }
+}
+
+/// Type a message to a bot in its terminal and submit it.
+pub async fn tell(shared: &Shared, term: &str, text: &str) {
+    if shared.pty.paste(term, text).is_ok() {
+        tokio::time::sleep(PASTE_SETTLE).await;
+        let _ = shared.pty.input(term, b"\r");
     }
 }
 
