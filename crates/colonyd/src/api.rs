@@ -699,10 +699,20 @@ async fn permission(State(shared): State<Arc<Shared>>, Query(params): Params, he
     if !authorized(&shared, &params, &headers) {
         return unauthorized();
     }
-    let no_decision = || StatusCode::NO_CONTENT.into_response();
-    let Ok(p) = colony_core::HookPayload::parse(&body) else { return no_decision() };
+    // Requests over HTTP come from hooks on this Windows machine.
+    match hold_permission(&shared, HostId::Windows, &body).await {
+        Some(out) => ([(header::CONTENT_TYPE, "application/json")], out).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
+/// Holds one permission request from `host` and returns the hook's stdout, or
+/// `None` for no decision. Shared by the HTTP route (Windows hooks) and the
+/// WSL probes' stdio channel.
+pub async fn hold_permission(shared: &Arc<Shared>, host: HostId, body: &str) -> Option<String> {
+    let Ok(p) = colony_core::HookPayload::parse(body) else { return None };
     if p.hook_event_name != "PermissionRequest" || !shared.approvals.anyone_watching() {
-        return no_decision();
+        return None;
     }
     let request_id = uuid::Uuid::new_v4().simple().to_string();
     let agent_id = match &p.agent_id {
@@ -711,8 +721,6 @@ async fn permission(State(shared): State<Arc<Shared>>, Query(params): Params, he
     };
     let suggestions = p.extra.get("permission_suggestions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let rx = shared.approvals.hold(&request_id, agent_id, suggestions, p.tool_input.clone());
-    // Requests over HTTP come from hooks on this Windows machine.
-    let host = HostId::Windows;
     let tool = p.tool_name.clone().unwrap_or_else(|| "tool".into());
     log(format!("holding permission request {request_id} from {}: {tool}", p.session_id));
     let _ = shared
@@ -741,10 +749,7 @@ async fn permission(State(shared): State<Arc<Shared>>, Query(params): Params, he
         _ = tokio::time::sleep(MAX_WAIT) => Decision::Pass,
     };
     log(format!("permission request {request_id}: {decision:?}"));
-    match decision.hook_output() {
-        Some(out) => ([(header::CONTENT_TYPE, "application/json")], out).into_response(),
-        None => no_decision(),
-    }
+    decision.hook_output()
 }
 
 /// Switch a session Colony started to another model by restarting it on that
