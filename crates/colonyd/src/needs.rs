@@ -25,6 +25,12 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// Pause between pasting the retry message and pressing Enter.
 const PASTE_SETTLE: Duration = Duration::from_millis(80);
 
+/// WSL has no browser of its own, so a login that opens one (`gh auth login`)
+/// fails there. Unless the user chose a BROWSER, open links in the Windows
+/// default browser: through wslview if it's installed, else PowerShell.
+const OPEN_BROWSER_ON_WINDOWS: &str = "if [ -z \"$BROWSER\" ]; then if command -v wslview >/dev/null 2>&1; then export BROWSER=wslview; \
+     else export BROWSER='powershell.exe -NoProfile -Command Start-Process'; fi; fi;";
+
 /// What to run for one need, and how to tell it worked.
 struct Plan {
     label: String,
@@ -61,7 +67,8 @@ fn plan(kind: NeedKind, id: &str) -> Result<Plan, String> {
         NeedKind::SignIn => {
             let p = provider(id).ok_or("unknown sign-in")?;
             let steps = p.login.iter().map(|argv| argv.join(" ")).collect::<Vec<_>>().join("; ");
-            Ok(Plan { label: p.label.into(), kind, command: pause_after(format!("{} sign-in", p.label), &steps, &steps), check: p.check })
+            let bash = format!("{OPEN_BROWSER_ON_WINDOWS} {steps}");
+            Ok(Plan { label: p.label.into(), kind, command: pause_after(format!("{} sign-in", p.label), &steps, &bash), check: p.check })
         }
         NeedKind::Install => {
             let t = tool(id).ok_or("unknown program")?;
@@ -151,8 +158,10 @@ mod tests {
     #[test]
     fn github_login_signs_in_then_sets_up_git() {
         let p = plan(NeedKind::SignIn, "github").unwrap();
-        assert_eq!(p.command.bash, "gh auth login; gh auth setup-git; echo; read -rp 'Press Enter to close ' _");
+        assert!(p.command.bash.ends_with(" gh auth login; gh auth setup-git; echo; read -rp 'Press Enter to close ' _"), "{}", p.command.bash);
         assert!(p.command.powershell.starts_with("gh auth login; gh auth setup-git; "));
+        // Only WSL needs a browser pointed at Windows.
+        assert!(p.command.bash.contains("BROWSER") && !p.command.powershell.contains("BROWSER"));
     }
 
     #[test]
