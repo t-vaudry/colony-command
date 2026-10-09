@@ -61,6 +61,11 @@ fn daemon_exe() -> Result<PathBuf, String> {
 fn start_daemon() -> Result<(), String> {
     let exe = daemon_exe()?;
     std::fs::create_dir_all(colony_home()).map_err(|e| e.to_string())?;
+    // The log is only ever appended to; keep it from growing forever.
+    let log_path = colony_home().join("colonyd.log");
+    if std::fs::metadata(&log_path).is_ok_and(|m| m.len() > 8 * 1024 * 1024) {
+        let _ = std::fs::rename(&log_path, log_path.with_extension("log.1"));
+    }
     let spawn = |flags: u32| -> Result<(), String> {
         let log = OpenOptions::new()
             .create(true)

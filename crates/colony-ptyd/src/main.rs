@@ -102,6 +102,10 @@ fn main() {
     let state = Arc::new(State::default());
     state.touch();
 
+    // Bots working overnight must not be put to sleep with the computer.
+    let awake = state.clone();
+    std::thread::spawn(move || keep_awake(&awake));
+
     let idle = state.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(15));
@@ -119,6 +123,28 @@ fn main() {
         let token = token.clone();
         std::thread::spawn(move || serve(state, conn, &token));
     }
+}
+
+/// While terminals are live, ask Windows not to sleep on idle (the display may
+/// still turn off). The request belongs to the thread that made it, so one
+/// thread makes and withdraws it.
+fn keep_awake(state: &State) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS, ES_SYSTEM_REQUIRED};
+        let mut on = false;
+        loop {
+            let live = !state.terms.lock().unwrap().is_empty();
+            if live != on {
+                on = live;
+                unsafe { SetThreadExecutionState(if on { ES_CONTINUOUS | ES_SYSTEM_REQUIRED } else { ES_CONTINUOUS }) };
+                log(if on { "terminals live: keeping the computer awake" } else { "no terminals: the computer may sleep again" });
+            }
+            std::thread::sleep(Duration::from_secs(10));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = state;
 }
 
 fn serve(state: Arc<State>, conn: TcpStream, token: &str) {
