@@ -161,6 +161,8 @@ enum Command {
     /// End a session Colony did not start (e.g. one the Claude desktop app
     /// keeps running in the background), so it can be resumed here.
     Terminate { id: String },
+    /// Bring the window of a session Colony didn't start to the front.
+    Focus { id: String },
     /// Done with a session: end every copy of it and clear it off the map.
     Dismiss { id: String },
     /// Show a leftover worktree's folder in the file manager.
@@ -260,6 +262,7 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
             Err(e) => Err(e),
         },
         Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
+        Command::Focus { id } => focus(shared, &id).await.map(|_| None),
         Command::Dismiss { id } => dismiss(shared, &id).await.map(|_| None),
         Command::OpenWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Open).await.map(|_| None),
         Command::DiscardWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Discard).await.map(|_| None),
@@ -598,10 +601,19 @@ pub async fn spawn_session(shared: &Shared, mut req: SpawnRequest) -> Result<cra
 /// Colony terminal for the session is left alone; End session handles that.
 async fn terminate(shared: &Shared, id: &str) -> Result<(), String> {
     let c = copies(shared, id).await?;
+    if c.main_id.is_none() {
+        return Err("only a session's main bot can be ended".into());
+    }
     if c.others.is_empty() {
         return Err("Colony doesn't know of another running copy of this session".into());
     }
-    end_others(shared, &c).await?;
+    let report = end_others(shared, &c).await?;
+    if !report.refused.is_empty() {
+        return Err(report.refused.join("; "));
+    }
+    if report.ended == 0 {
+        return Err("Nothing was ended: this session runs in a Colony terminal (use End session).".into());
+    }
     if c.terminal.is_none() {
         // A forced exit skips Claude Code's SessionEnd hook; record the end here.
         let _ = shared
@@ -622,7 +634,10 @@ async fn dismiss(shared: &Shared, id: &str) -> Result<(), String> {
     }
     // First, so a restart already on its way can't bring it back.
     crate::resume::forget(&c.session_id);
-    end_others(shared, &c).await?;
+    let report = end_others(shared, &c).await?;
+    if !report.refused.is_empty() {
+        return Err(report.refused.join("; "));
+    }
     crate::pause::forget(&c.session_id);
     if let Some(term) = &c.terminal {
         // Already closed is fine: there's nothing left to end.
@@ -676,25 +691,55 @@ async fn copies(shared: &Shared, id: &str) -> Result<Copies, String> {
     })
 }
 
+/// What `end_others` did.
+#[derive(Default)]
+struct EndReport {
+    /// Processes that are now gone (ended, or already gone by themselves).
+    ended: usize,
+    /// Why a process was left running, for the user.
+    refused: Vec<String>,
+}
+
 /// End the copies of a session that Colony didn't start. Each pid is
 /// re-checked against its registry file first, so a reused pid is never
-/// touched.
-async fn end_others(shared: &Shared, c: &Copies) -> Result<(), String> {
+/// touched. Processes Colony won't end are reported, not hidden: a skipped
+/// kill must not look like a successful one. A Colony terminal's own process
+/// is skipped without being counted either way (End session handles that).
+async fn end_others(shared: &Shared, c: &Copies) -> Result<EndReport, String> {
+    if c.main_id.is_none() {
+        return Err("only a session's main bot can be ended".into());
+    }
+    let own = colony_source::process::ancestry(std::process::id());
     let owned = shared.pty.owned.lock().unwrap().clone();
+    let mut report = EndReport::default();
     for pid in &c.others {
+        // Never Colony itself, nor a process Colony runs inside of.
+        if colony_source::process::protected(*pid, &own) {
+            log(format!("not ending pid {pid}: it is Colony or hosts it"));
+            report.refused.push(format!("Refused: pid {pid} is Colony itself or what it runs inside of."));
+            continue;
+        }
         // Never a process Colony started, whatever the registry says.
-        if colony_source::process::lineage(*pid).iter().any(|p| owned.contains_key(p)) {
+        if colony_source::process::ancestry(*pid).iter().any(|p| owned.contains_key(p)) {
             log(format!("not ending pid {pid}: it runs in a Colony terminal"));
             continue;
         }
-        end_process(&c.session_id, *pid, &c.host).await?;
-        log(format!("ended session {} (pid {pid} on {}) at the user's request", c.session_id, c.host));
+        match end_process(&c.session_id, *pid, &c.host).await? {
+            Ended::Yes => log(format!("ended session {} (pid {pid} on {}) at the user's request", c.session_id, c.host)),
+            Ended::AlreadyGone => log(format!("session {} (pid {pid} on {}) had already exited", c.session_id, c.host)),
+            Ended::Refused(why) => {
+                log(format!("not ending pid {pid}: {why}"));
+                report.refused.push(format!("Refused: {why}"));
+                continue;
+            }
+        }
+        report.ended += 1;
         let _ = shared
             .events
             .send(Envelope { ts: now_ms(), host: c.host.clone(), session_id: c.session_id.clone(), cwd: None, event: DomainEvent::SessionGone { pid: *pid } })
             .await;
     }
-    Ok(())
+    Ok(report)
 }
 
 fn dismissed_path() -> std::path::PathBuf {
@@ -714,16 +759,41 @@ pub fn load_dismissed() -> std::collections::BTreeMap<String, colony_core::state
     std::fs::read(dismissed_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
-async fn end_process(session_id: &str, pid: u32, host: &HostId) -> Result<(), String> {
+enum Ended {
+    Yes,
+    /// Not running any more, so there was nothing to end.
+    AlreadyGone,
+    /// Left running, because it can't be shown to be this session's process.
+    Refused(String),
+}
+
+/// Whether a process's command line (NUL-split) is Claude Code: the `claude`
+/// executable, or `node`/`bun` running a script named `claude`. Not just any
+/// program with "claude" in its arguments, like an editor.
+fn is_claude_cmdline(args: &[&str]) -> bool {
+    let base = |s: &str| s.rsplit(['/', '\\']).next().unwrap_or(s).to_ascii_lowercase();
+    let is_claude = |s: &str| matches!(base(s).as_str(), "claude" | "claude.exe");
+    let Some(first) = args.first() else { return false };
+    is_claude(first) || (matches!(base(first).as_str(), "node" | "node.exe" | "bun") && args.get(1).is_some_and(|a| is_claude(a)))
+}
+
+async fn end_process(session_id: &str, pid: u32, host: &HostId) -> Result<Ended, String> {
     match host {
         HostId::Windows => {
             let record = std::fs::read_to_string(colony_source::home_dir().join(".claude").join("sessions").join(format!("{pid}.json")))
                 .ok()
                 .and_then(|t| colony_core::SessionRecord::parse(&t).ok())
                 .filter(|r| r.session_id == session_id);
-            let Some(record) = record else { return Ok(()) };
+            let Some(record) = record else {
+                // No registry record to prove it is this session's process.
+                return Ok(if colony_source::process::alive(pid, None) {
+                    Ended::Refused(format!("pid {pid} has no matching session record, so it may not be this session's process."))
+                } else {
+                    Ended::AlreadyGone
+                });
+            };
             if !colony_source::process::alive(pid, record.proc_start()) {
-                return Ok(());
+                return Ok(Ended::AlreadyGone);
             }
             // /T: also its tool and MCP child processes. /F: console programs
             // don't respond to a polite close request.
@@ -733,6 +803,19 @@ async fn end_process(session_id: &str, pid: u32, host: &HostId) -> Result<(), St
             }
         }
         HostId::Wsl(distro) => {
+            // The pid comes from the session registry inside the distro; make
+            // sure it is still a claude process before signalling it. Linux
+            // start times aren't in the registry, so a reused pid that is
+            // itself a claude process can't be told apart.
+            let probe = quiet("wsl.exe").args(["-d", distro, "-e", "cat", &format!("/proc/{pid}/cmdline")]).output().await.map_err(|e| e.to_string())?;
+            if !probe.status.success() {
+                return Ok(Ended::AlreadyGone);
+            }
+            let text = String::from_utf8_lossy(&probe.stdout);
+            let args: Vec<&str> = text.split('\0').filter(|a| !a.is_empty()).collect();
+            if !is_claude_cmdline(&args) {
+                return Ok(Ended::Refused(format!("pid {pid} in {distro} no longer looks like a claude process.")));
+            }
             // SIGTERM lets Claude Code exit cleanly and run its SessionEnd hook.
             let status = quiet("wsl.exe").args(["-d", distro, "-e", "kill", "-TERM", &pid.to_string()]).output().await.map_err(|e| e.to_string())?;
             if !status.status.success() {
@@ -740,7 +823,7 @@ async fn end_process(session_id: &str, pid: u32, host: &HostId) -> Result<(), St
             }
         }
     }
-    Ok(())
+    Ok(Ended::Yes)
 }
 
 /// A command that won't flash a console window.
@@ -950,4 +1033,50 @@ async fn ingest(State(shared): State<Arc<Shared>>, Query(params): Params, header
         }
     }
     Json(json!({ "ok": true, "accepted": n })).into_response()
+}
+
+/// Bring the window hosting a session Colony didn't start to the front. Only
+/// for Windows sessions: a WSL session's window isn't something Windows can
+/// match to the process inside the distro.
+async fn focus(shared: &Shared, id: &str) -> Result<(), String> {
+    let (host, has_terminal, pids) = {
+        let colony = shared.colony.read().await;
+        let a = colony.agents.get(id).ok_or("no such session")?;
+        if a.kind != colony_core::AgentKind::Main {
+            return Err("only a session's main bot has a window".into());
+        }
+        let mut pids = a.other_pids();
+        if pids.is_empty() {
+            pids.extend(a.pid);
+        }
+        (a.host.clone(), a.terminal.is_some(), pids)
+    };
+    if has_terminal {
+        return Err("This session runs in a Colony terminal: open its terminal pane.".into());
+    }
+    if !matches!(host, HostId::Windows) {
+        return Err("Colony can't find a WSL session's window. Switch to its terminal yourself.".into());
+    }
+    let Some(pid) = pids.into_iter().find(|p| colony_source::process::alive(*p, None)) else {
+        return Err("That session's process is no longer running.".into());
+    };
+    let own = colony_source::process::ancestry(std::process::id());
+    // The Windows calls block briefly; keep them off the async threads.
+    tokio::task::spawn_blocking(move || colony_source::process::focus_window(pid, &own)).await.map_err(|e| e.to_string())??;
+    Ok(())
+}
+
+#[cfg(test)]
+mod end_tests {
+    use super::is_claude_cmdline;
+
+    #[test]
+    fn recognizes_claude_and_not_things_that_mention_it() {
+        assert!(is_claude_cmdline(&["claude"]));
+        assert!(is_claude_cmdline(&["/home/u/.local/bin/claude", "--resume", "s1"]));
+        assert!(is_claude_cmdline(&["node", "/usr/lib/node_modules/.bin/claude"]));
+        assert!(!is_claude_cmdline(&["vim", "claude.md"]));
+        assert!(!is_claude_cmdline(&["node", "server.js", "--name", "claude-helper"]));
+        assert!(!is_claude_cmdline(&[]));
+    }
 }

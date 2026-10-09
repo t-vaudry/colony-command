@@ -293,6 +293,11 @@ export class Daemon {
     return this.send({ type: "terminate", id });
   }
 
+  /** Bring the window of a session Colony didn't start to the front. Errors come back as toasts. */
+  focus(id: string): boolean {
+    return this.send({ type: "focus", id });
+  }
+
   /** Show a leftover worktree's folder in the file manager. */
   openWorktree(sessionId: string): boolean {
     return this.send({ type: "open_worktree", session_id: sessionId });

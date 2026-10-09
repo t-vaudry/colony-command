@@ -230,6 +230,32 @@ need its terminal:
 - **Session details** (host, folder, worktree, tool calls, session id) is
   collapsed by default.
 
+## Sessions Colony didn't start
+
+Sessions found running in a Windows terminal, WSL or the Claude desktop app are
+marked **Adopted** at the top of their inspector (sessions Colony starts say
+**Started by Colony**). Colony can watch an adopted session but not type into
+it, and the inspector says so, pointing at **Resume in Colony** to take it over.
+What it can do:
+
+- **Focus terminal** (Windows sessions): a best effort. Colony walks up from the
+  `claude` process to the nearest ancestor that owns a window (a console, the
+  Claude desktop app, Windows Terminal; never File Explorer) and brings that
+  window forward. Windows Terminal can have several windows in one process, and
+  Colony can't tell which holds the tab, so it may raise a different one of its
+  windows. If no window is found, or Windows refuses, a message says so. Not
+  offered for WSL, where Windows can't tell which window a Linux process belongs
+  to.
+- **Kill process** (under *More*; click again to confirm): ends that session's `claude` process, and
+  only that one. On Windows the pid is re-checked against the session registry
+  (including process start time); in WSL it must still look like a `claude`
+  process (the executable, or `node`/`bun` running a script named `claude`), but
+  Linux start times aren't recorded, so a reused pid that is itself `claude`
+  can't be told apart. Colony refuses, and says so, rather than end itself, any
+  ancestor of itself, or a process it can't tie to the session; nothing is
+  shown as ended unless the process is gone. The conversation stays on disk and
+  can be resumed.
+
 ## Dismissing sessions
 
 **Dismiss from map** (in a bot's More menu) ends every copy of that session (Colony's
