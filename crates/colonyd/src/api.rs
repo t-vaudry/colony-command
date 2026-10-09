@@ -458,7 +458,7 @@ pub async fn sync_worktrees(shared: &Shared, st: &mut SyncState) {
 }
 
 /// A short message for the map to show as a toast.
-fn notice(shared: &Shared, message: String) {
+pub fn notice(shared: &Shared, message: String) {
     let _ = shared.deltas.send(json!({ "type": "notice", "message": message }).to_string());
 }
 
@@ -499,6 +499,7 @@ async fn leftover_command(shared: &Shared, session_id: &str, what: Leftover) -> 
         Leftover::Discard => crate::worktree::discard(&w).await?,
         Leftover::Forget => {}
     }
+    crate::resume::forget(session_id);
     crate::worktree::forget(session_id);
     broadcast_leftovers(shared);
     Ok(())
@@ -566,6 +567,8 @@ async fn dismiss(shared: &Shared, id: &str) -> Result<(), String> {
     if c.main_id.as_deref() != Some(id) {
         return Err("only a session's main bot can be dismissed".into());
     }
+    // First, so a restart already on its way can't bring it back.
+    crate::resume::forget(&c.session_id);
     end_others(shared, &c).await?;
     if let Some(term) = &c.terminal {
         // Already closed is fine: there's nothing left to end.

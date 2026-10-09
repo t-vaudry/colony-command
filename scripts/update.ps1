@@ -31,7 +31,8 @@ function Stop-AndWait($procs) {
 if ($IncludeTerminalHost -and (Get-Process colony-ptyd -ErrorAction SilentlyContinue) -and -not $Force) {
     $live = $null
     try {
-        $info = Get-Content (Join-Path $env:USERPROFILE ".colonydaemon.json") -Raw | ConvertFrom-Json
+        $home_ = if ($env:COLONY_HOME) { $env:COLONY_HOME } else { Join-Path $env:USERPROFILE ".colony" }
+        $info = Get-Content (Join-Path $home_ "daemon.json") -Raw | ConvertFrom-Json
         $agents = Invoke-RestMethod "http://127.0.0.1:$($info.port)/api/agents?token=$($info.token)" -TimeoutSec 5
         $live = @($agents.agents | Where-Object { $_.terminal }).Count
     } catch {}

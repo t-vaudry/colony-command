@@ -34,7 +34,7 @@ const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "auto"];
 /// newlines included, instead of each line being submitted.
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
-const NOT_CONNECTED: &str = "Colony's terminal host isn't running; try again in a moment";
+pub const NOT_CONNECTED: &str = "Colony's terminal host isn't running; try again in a moment";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpawnRequest {
