@@ -436,6 +436,7 @@ ignores subscription plans, discounts, and 1-hour cache writes. A model with no
 listed price still has its tokens counted but not its cost, and the UI says
 **partial**. Today and project totals come from a 48-hour ledger the daemon
 keeps in memory, so a restart rebuilds them from the transcripts.
+Click the top-bar total (or an empty side panel) for **cost by project**: an hourly bar chart per project over the last 24 hours, on one shared scale.
 `tools/synth` sends usage too (with an occasional unpriced model) for load tests.
 
 ## Where agents work

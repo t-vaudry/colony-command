@@ -296,3 +296,36 @@ export function spentToday(spend: Map<string, ProjectSpend>, now: number, key?: 
   }
   return out;
 }
+
+export const COST_HOURS = 24;
+
+export interface ProjectCost {
+  key: string;
+  name: string;
+  /** Cost per hour, oldest first; the last entry is the current hour. */
+  hours: number[];
+  usd: number;
+  partial: boolean;
+}
+
+/** Each project's spend over the last `COST_HOURS` hours, biggest first.
+ *  Hours are aligned to `now`, not to the clock, so they sit on bucket edges. */
+export function costByProject(spend: Map<string, ProjectSpend>, now: number): ProjectCost[] {
+  const perHour = 60 * 60_000 / BUCKET_MS;
+  const nowBucket = Math.floor(now / BUCKET_MS);
+  const out: ProjectCost[] = [];
+  for (const [key, p] of spend) {
+    const hours = new Array<number>(COST_HOURS).fill(0);
+    let usd = 0;
+    let partial = false;
+    for (const [b, s] of Object.entries(p.buckets)) {
+      const age = nowBucket - Number(b);
+      if (age < 0 || age >= COST_HOURS * perHour) continue;
+      hours[COST_HOURS - 1 - Math.floor(age / perHour)] += s.cost_usd;
+      usd += s.cost_usd;
+      partial ||= s.partial;
+    }
+    if (usd > 0 || partial) out.push({ key, name: p.name, hours, usd, partial });
+  }
+  return out.sort((a, b) => b.usd - a.usd);
+}

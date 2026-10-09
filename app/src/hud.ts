@@ -2,6 +2,7 @@
 // reply box for sessions Colony started.
 
 import type { Daemon } from "./daemon";
+import { costChart } from "./costchart";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { md } from "./markdown";
 import { repoDir, resumeWarning, worktreeName, type Prefill } from "./dialog";
@@ -165,7 +166,7 @@ export class Hud {
       if (btn && a) btn.disabled = !answersFrom(questionsOf(a), this.picks.get(el.dataset.req) ?? []);
     });
     this.counts.addEventListener("click", (e) => {
-      if (!(e.target as HTMLElement).closest("[data-show-leftovers], [data-show-rules]")) return;
+      if (!(e.target as HTMLElement).closest("[data-show-leftovers], [data-show-rules], [data-show-cost]")) return;
       // The list lives in the inspector when no bot is selected.
       this.actions.select(null);
       this.schedule();
@@ -417,7 +418,7 @@ export class Hud {
     if (t.tokens === 0) return "";
     const note = t.partial ? " · partial" : "";
     const why = "Estimate from list prices, since local midnight, all projects." + (t.partial ? " Some sessions ran a model without a known price: their tokens are counted but not their cost." : "");
-    return `<span class="chip spend" title="${esc(why)}">${money(t.usd)} today${note} · ${compact(t.tokens)} tokens</span>`;
+    return `<button type="button" class="chip spend" data-show-cost title="${esc(why)} Click for cost by project.">${money(t.usd)} today${note} · ${compact(t.tokens)} tokens</button>`;
   }
 
   /** Header chip: saved "allow always for project" rules. */
@@ -484,6 +485,7 @@ export class Hud {
         <p class="muted">Bots on the front porch need you: red ones are stuck, yellow ones want a permission or an answer.
         Bots holding a blue package at the review dock have finished a turn.</p>
         <p class="muted">Drag to pan, scroll to zoom, double-click a bot to zoom to its project, <kbd>0</kbd> to fit everything.</p>
+        ${costChart(this.daemon.spend, this.daemon.now())}
         ${this.leftoverList()}
         ${this.rulesList()}
         ${

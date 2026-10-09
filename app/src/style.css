@@ -1299,3 +1299,6 @@ details.menu[open] > summary {
 .act .md p {
   margin: 0 0 6px;
 }
+
+.cost-row { margin: 8px 0; }
+.cost-row svg { display: block; margin-top: 2px; }
