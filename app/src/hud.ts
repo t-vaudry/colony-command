@@ -3,7 +3,7 @@
 
 import type { Daemon } from "./daemon";
 import { resumeWarning, type Prefill } from "./dialog";
-import { severity, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
+import { MODELS, modelLabel, severity, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -89,6 +89,8 @@ export class Hud {
   private drafts = new Map<string, string>();
   /** Agent whose "still running elsewhere" choice is showing in the panel. */
   private moveChoice: string | null = null;
+  /** Model hints set aside with "Not now", by agent, until a different hint comes up. */
+  private hintsDismissed = new Map<string, string>();
   private scheduled = false;
 
   constructor(
@@ -160,6 +162,36 @@ export class Hud {
       return;
     }
     el.closest(".actions")?.querySelectorAll("button").forEach((b) => b.setAttribute("disabled", ""));
+  }
+
+  /** The bot's model, a switcher for sessions Colony started, and any hint. */
+  private modelRows(a: Agent): string {
+    if (a.kind !== "main") return "";
+    const current = modelLabel(a.model);
+    // Switching restarts the session on the new model (the conversation
+    // carries over), so not while Claude is in the middle of something.
+    const busy = a.state === "working";
+    const why = busy
+      ? "Claude is mid-task; switch when this turn ends"
+      : "Restarts this session on that model. The conversation carries over and your default model doesn't change.";
+    const off = busy ? " disabled" : "";
+    const switcher = a.terminal
+      ? `<div class="model-switch">${MODELS.filter(([v]) => modelLabel(v)?.split(" ")[0] !== current?.split(" ")[0])
+          .map(([v, label]) => `<button type="button" data-switch-model="${esc(v)}" data-agent="${esc(a.id)}" title="${esc(why)}"${off}>${esc(label)}</button>`)
+          .join("")}</div>`
+      : "";
+    const modelRow = current || a.terminal
+      ? `<div class="row"><span class="k">Model</span><span>${esc(current ?? "your default")}</span>${switcher}</div>`
+      : "";
+    const h = a.model_hint;
+    if (!h || this.hintsDismissed.get(a.id) === h.model) return modelRow;
+    const action = a.terminal
+      ? `<button type="button" class="primary" data-switch-model="${esc(h.model)}" data-agent="${esc(a.id)}" title="${esc(why)}"${off}>Switch to ${esc(h.label)}</button>${busy ? `<span class="muted small">After this turn</span>` : ""}`
+      : `<span class="muted small">Colony didn't start this session: run <code>/model ${esc(h.model)}</code> in it.</span>`;
+    return `${modelRow}<div class="choice hint" role="group" aria-label="Model suggestion">
+        <p><b>${esc(h.label)} may suit this better.</b> ${esc(h.reason)}</p>
+        <div class="actions">${action}<button type="button" data-dismiss-hint="${esc(h.model)}" data-agent="${esc(a.id)}">Not now</button></div>
+      </div>`;
   }
 
   private resumeHere(a: Agent): void {
@@ -319,6 +351,7 @@ export class Hud {
       ${row("Objective", a.objective)}
       ${a.last_prompt !== a.objective ? row("Last prompt", a.last_prompt) : ""}
       ${toolRow}
+      ${this.modelRows(a)}
       ${row("Where", `${hostLabel(a.host)} · ${originLabel(a)}${a.pid ? ` · pid ${a.pid}` : ""}`)}
       ${row("Folder", a.cwd, "mono")}
       ${row("Tool calls", a.tool_calls ? String(a.tool_calls) : null)}
@@ -389,6 +422,15 @@ export class Hud {
         return;
       }
       this.resumeHere(a);
+    }
+    if (el.dataset.switchModel) {
+      const id = el.dataset.agent!;
+      if (!this.daemon.setModel(id, el.dataset.switchModel)) this.toast("Not connected to colonyd.");
+      else this.toast(`Restarting on ${modelLabel(el.dataset.switchModel)}; the conversation carries over…`);
+    }
+    if (el.dataset.dismissHint) {
+      this.hintsDismissed.set(el.dataset.agent!, el.dataset.dismissHint);
+      this.schedule();
     }
     if (el.dataset.endOther) {
       if (!this.daemon.terminate(el.dataset.endOther)) this.toast("Not connected to colonyd.");

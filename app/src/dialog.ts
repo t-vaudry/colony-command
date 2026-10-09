@@ -34,6 +34,7 @@ export class NewSessionDialog {
   private host = document.getElementById("ns-host") as HTMLSelectElement;
   private name = document.getElementById("ns-name") as HTMLInputElement;
   private mode = document.getElementById("ns-mode") as HTMLSelectElement;
+  private model = document.getElementById("ns-model") as HTMLSelectElement;
   private chrome = document.getElementById("ns-chrome") as HTMLInputElement;
   private prompt = document.getElementById("ns-prompt") as HTMLTextAreaElement;
   private error = document.getElementById("ns-error")!;
@@ -145,6 +146,7 @@ export class NewSessionDialog {
         name: this.resume ? undefined : this.name.value.trim() || undefined,
         resume: this.resume ?? undefined,
         permission_mode: this.mode.value || undefined,
+        model: this.model.value || undefined,
         // Off unless ticked, which also skips Claude in Chrome's first-run question.
         chrome: this.chrome.checked,
         ...this.termSize(),

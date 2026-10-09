@@ -55,6 +55,12 @@ pub struct SpawnRequest {
     /// first-run question), `Some(true)` `--chrome`, `None` neither.
     #[serde(default)]
     pub chrome: Option<bool>,
+    /// For a new conversation: use this session id instead of a fresh one.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    /// `--model`: an alias ("opus", "sonnet", "haiku") or a full model id.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -112,6 +118,9 @@ pub struct PtyHost {
     pending: Mutex<HashMap<String, (TermInfo, SpawnReply)>>,
     /// Terminals not yet confirmed by ptyd after reconnecting.
     unconfirmed: Mutex<HashSet<String>>,
+    /// How each terminal was started, to restart it the same way (on another
+    /// model). Not kept across colonyd restarts.
+    requests: Mutex<HashMap<String, SpawnRequest>>,
 }
 
 pub struct Spawned {
@@ -140,6 +149,7 @@ impl PtyHost {
             conn: Mutex::default(),
             pending: Mutex::default(),
             unconfirmed: Mutex::default(),
+            requests: Mutex::default(),
         });
         let runner = host.clone();
         std::thread::spawn(move || runner.run());
@@ -163,7 +173,7 @@ impl PtyHost {
     }
 
     pub async fn spawn(&self, req: SpawnRequest) -> Result<Spawned, String> {
-        let session_id = req.resume.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let session_id = req.resume.clone().or_else(|| req.session_id.clone()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let mut claude_args: Vec<String> = match &req.resume {
             Some(id) => vec!["--resume".into(), id.clone()],
             None => vec!["--session-id".into(), session_id.clone()],
@@ -177,6 +187,9 @@ impl PtyHost {
                 return Err(format!("unknown permission mode {mode:?}"));
             }
             claude_args.extend(["--permission-mode".into(), mode.clone()]);
+        }
+        if let Some(m) = req.model.as_ref().filter(|m| !m.is_empty()) {
+            claude_args.extend(["--model".into(), checked_model(m)?.into()]);
         }
         match req.chrome {
             Some(true) => claude_args.push("--chrome".into()),
@@ -242,6 +255,7 @@ impl PtyHost {
             }
         };
         log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
+        self.requests.lock().unwrap().insert(term_id.clone(), req);
         Ok(Spawned { term_id, session_id })
     }
 
@@ -262,6 +276,23 @@ impl PtyHost {
         } else {
             Err("that terminal has closed".into())
         }
+    }
+
+    /// How a terminal was started, if this colonyd started it.
+    pub fn request_for(&self, id: &str) -> Option<SpawnRequest> {
+        self.requests.lock().unwrap().get(id).cloned()
+    }
+
+    /// Wait until a terminal has closed.
+    pub async fn closed(&self, id: &str, within: Duration) -> bool {
+        let end = Instant::now() + within;
+        while Instant::now() < end {
+            if !self.terms.lock().unwrap().contains_key(id) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        false
     }
 
     pub fn scrollback(&self, id: &str) -> Option<Vec<u8>> {
@@ -471,6 +502,20 @@ fn start_ptyd() -> Result<(), String> {
     Ok(())
 }
 
+/// A model name safe to pass to `--model` or type after `/model`: an alias or
+/// an id, nothing that could be another flag or a second command.
+pub fn checked_model(m: &str) -> Result<&str, String> {
+    let ok = !m.is_empty()
+        && m.len() <= 64
+        && !m.starts_with('-')
+        && m.chars().all(|c| c.is_ascii_alphanumeric() || "-._[]".contains(c));
+    if ok {
+        Ok(m)
+    } else {
+        Err(format!("not a model name: {m:?}"))
+    }
+}
+
 /// Variables a running Claude Code session sets for its children. If the
 /// daemon was started from inside a session (say, by Claude itself), passing
 /// them on would make the new session think it is that session's child.
@@ -538,6 +583,16 @@ fn find_windows_claude() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_names_are_checked() {
+        assert!(checked_model("opus").is_ok());
+        assert!(checked_model("claude-sonnet-5-5").is_ok());
+        assert!(checked_model("claude-opus-5-5[1m]").is_ok());
+        assert!(checked_model("--dangerously-skip-permissions").is_err());
+        assert!(checked_model("haiku; rm -rf /").is_err());
+        assert!(checked_model("").is_err());
+    }
 
     #[test]
     fn child_env_drops_inherited_session_markers() {

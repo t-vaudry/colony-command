@@ -603,3 +603,28 @@ button[disabled] {
 #ns-form label.check input {
   width: auto;
 }
+
+/* Model row and suggestion. */
+.model-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.model-switch button {
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+.model-switch button:hover {
+  border-color: var(--accent);
+}
+.choice.hint {
+  border-color: var(--done);
+}
+.choice.hint code {
+  font-family: var(--f-mono);
+  font-size: 11.5px;
+}

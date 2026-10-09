@@ -131,6 +131,8 @@ enum Command {
     Resize { term: String, cols: u16, rows: u16 },
     /// End the session's process.
     Kill { term: String },
+    /// Switch a Colony-started session's model (types `/model <name>`).
+    SetModel { id: String, model: String },
     /// Answer a held permission request.
     Permission { request_id: String, choice: Choice, #[serde(default)] message: Option<String> },
     /// End a session Colony did not start (e.g. one the Claude desktop app
@@ -207,6 +209,7 @@ async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<
         Command::Kill { term } => pty.kill(&term).map(|_| None),
         Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
         Command::Dismiss { id } => dismiss(shared, &id).await.map(|_| None),
+        Command::SetModel { id, model } => set_model(shared, &id, &model).await.map(|_| None),
         Command::Permission { request_id, choice, message } => shared.approvals.decide(&request_id, choice, message).map(|_| None),
     };
     match result {
@@ -487,4 +490,56 @@ async fn permission(State(shared): State<Arc<Shared>>, Query(params): Params, he
         Some(out) => ([(header::CONTENT_TYPE, "application/json")], out).into_response(),
         None => no_decision(),
     }
+}
+
+/// Switch a session Colony started to another model by restarting it on that
+/// model: `--resume <id> --model <name>`. The conversation carries over and,
+/// unlike typing `/model`, the user's default model for new sessions stays as
+/// it was. Only between turns, so no work is cut off.
+async fn set_model(shared: &Shared, id: &str, model: &str) -> Result<(), String> {
+    let model = crate::pty::checked_model(model)?.to_string();
+    let (term, session_id, host, dir, busy, has_conversation) = {
+        let colony = shared.colony.read().await;
+        let a = colony.agents.get(id).ok_or("no such session")?;
+        let term = a.terminal.clone().ok_or("Colony can only switch models in sessions it started; run /model in that session")?;
+        let dir = a.project_dir.clone().or_else(|| a.cwd.clone()).ok_or("Colony doesn't know this session's folder")?;
+        // Nothing to resume until it has been given something to do.
+        let has_conversation = a.last_prompt.is_some() || a.objective.is_some() || a.tool_calls > 0;
+        (term, a.session_id.clone(), a.host.clone(), dir, a.state == colony_core::AgentState::Working, has_conversation)
+    };
+    if busy {
+        return Err("Claude is in the middle of a task; switch models when this turn ends.".into());
+    }
+    let mut req = shared.pty.request_for(&term).unwrap_or(SpawnRequest {
+        host,
+        dir,
+        prompt: None,
+        resume: None,
+        name: None,
+        permission_mode: None,
+        chrome: Some(false),
+        session_id: None,
+        model: None,
+        cols: 120,
+        rows: 32,
+    });
+    if has_conversation {
+        req.resume = Some(session_id.clone());
+        req.session_id = None;
+    } else {
+        req.resume = None;
+        req.session_id = Some(session_id.clone());
+    }
+    req.prompt = None;
+    req.name = None;
+    req.model = Some(model.clone());
+    shared.pty.kill(&term)?;
+    if !shared.pty.closed(&term, Duration::from_secs(10)).await {
+        return Err("the session didn't stop; try again".into());
+    }
+    let spawned = shared.pty.spawn(req).await?;
+    let host = shared.colony.read().await.agents.get(id).map(|a| a.host.clone()).unwrap_or(HostId::Windows);
+    let _ = shared.events.send(Envelope { ts: now_ms(), host, session_id, cwd: None, event: DomainEvent::ModelSet { model: model.clone() } }).await;
+    log(format!("restarted session on {model} in terminal {}", spawned.term_id));
+    Ok(())
 }

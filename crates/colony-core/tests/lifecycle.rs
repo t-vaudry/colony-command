@@ -436,3 +436,21 @@ fn only_main_agents_can_be_dismissed() {
     assert!(r.colony.dismiss(&sub_id(SID, "a1"), r.t).is_empty());
     assert_eq!(r.colony.agents.len(), 2);
 }
+
+#[test]
+fn model_and_hint_follow_the_work() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup", "model": "claude-opus-5-5"}));
+    assert_eq!(r.colony.agents[SID].model.as_deref(), Some("claude-opus-5-5"));
+    for i in 0..10 {
+        r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": if i % 2 == 0 { "Grep" } else { "Read" }}));
+    }
+    let hint = r.colony.agents[SID].model_hint.clone().expect("reading on Opus suggests Haiku");
+    assert_eq!(hint.model, "haiku");
+    // Switching clears the hint; the next edit keeps it gone.
+    r.t += 1000;
+    let e = Envelope { ts: r.t, host: HostId::Windows, session_id: SID.into(), cwd: None, event: colony_core::DomainEvent::ModelSet { model: "haiku".into() } };
+    r.colony.apply(&e);
+    assert_eq!(r.colony.agents[SID].model.as_deref(), Some("haiku"));
+    assert!(r.colony.agents[SID].model_hint.is_none());
+}

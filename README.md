@@ -92,3 +92,16 @@ inspector with Allow, Always allow (adds Claude Code's suggested rule), and
 Deny. The session's own prompt stays up too; whichever is answered first wins.
 With colonyd stopped or no map open, the hook steps aside. Windows sessions
 only for now: WSL hooks can't reach colonyd yet.
+
+## Models
+
+The New session dialog picks the model (`--model`). The inspector shows each
+session's model and, for sessions Colony started, buttons to switch. Switching
+restarts the session on the new model with `--resume`, so the conversation
+carries over and your default model for new sessions doesn't change (typing
+`/model` in a session would change it). It's offered between turns only.
+
+Colony also suggests a model when recent work fits another one better: mostly
+reading and searching on a big model (Haiku), planning on a lighter one
+(Opus), or editing and running code on Haiku (Sonnet). Suggestions never
+switch anything on their own. The rules are in `crates/colony-core/src/models.rs`.

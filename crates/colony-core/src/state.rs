@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::event::{preview, DomainEvent, Envelope, HostId};
+use crate::models::{self, ModelHint, ToolKind};
 use crate::names;
 use crate::paths;
 
@@ -149,6 +150,15 @@ pub struct Agent {
     /// A permission request waiting for an answer on the map.
     #[serde(default)]
     pub permission: Option<PermissionAsk>,
+    /// The model the session runs, when known.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Kinds of the most recent tool calls, oldest first.
+    #[serde(default)]
+    pub recent_tools: Vec<ToolKind>,
+    /// A model better suited to what it's doing lately, if any.
+    #[serde(default)]
+    pub model_hint: Option<ModelHint>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_gone_at: Option<u64>,
 }
@@ -187,6 +197,9 @@ impl Agent {
             terminal: None,
             terminal_pid: None,
             permission: None,
+            model: None,
+            recent_tools: Vec::new(),
+            model_hint: None,
             process_gone_at: None,
         }
     }
@@ -244,7 +257,7 @@ impl Dismissed {
     fn revived_by(&self, e: &Envelope) -> bool {
         e.ts > self.at
             && match &e.event {
-                DomainEvent::SessionStarted { source } => source.as_deref() != Some("compact"),
+                DomainEvent::SessionStarted { source, .. } => source.as_deref() != Some("compact"),
                 DomainEvent::PromptSubmitted { .. } | DomainEvent::TerminalAttached { .. } => true,
                 DomainEvent::SessionSeen { record } => !self.pids.contains(&record.pid),
                 _ => false,
@@ -290,7 +303,7 @@ impl Colony {
             // Registry cwd is handled below as the project folder.
             (DomainEvent::SessionSeen { .. }, _) | (_, None) => {}
             // Where a session starts is its project, whatever it cds into later.
-            (DomainEvent::SessionStarted { source }, Some(cwd))
+            (DomainEvent::SessionStarted { source, .. }, Some(cwd))
                 if main.project_dir.is_none() && source.as_deref() != Some("compact") =>
             {
                 main.set_project_dir(cwd);
@@ -354,15 +367,25 @@ impl Colony {
                     main.process_gone_at = Some(e.ts);
                 }
             }
-            DomainEvent::SessionStarted { source } => match source.as_deref() {
-                Some("compact") => {}
-                Some("clear") => main.set_state(AgentState::Idle, None, e.ts),
-                _ => {
-                    if main.is_finished() || main.state == AgentState::Spawning {
-                        main.set_state(AgentState::Spawning, None, e.ts);
+            DomainEvent::SessionStarted { source, model } => {
+                if model.is_some() {
+                    main.model = model.clone();
+                    main.model_hint = models::suggest(main.model.as_deref(), &main.recent_tools);
+                }
+                match source.as_deref() {
+                    Some("compact") => {}
+                    Some("clear") => main.set_state(AgentState::Idle, None, e.ts),
+                    _ => {
+                        if main.is_finished() || main.state == AgentState::Spawning {
+                            main.set_state(AgentState::Spawning, None, e.ts);
+                        }
                     }
                 }
-            },
+            }
+            DomainEvent::ModelSet { model } => {
+                main.model = Some(model.clone());
+                main.model_hint = models::suggest(main.model.as_deref(), &main.recent_tools);
+            }
             DomainEvent::PromptSubmitted { preview, synthetic } => {
                 settle_if_after(main, e.ts);
                 if !synthetic && !preview.is_empty() {
@@ -377,6 +400,14 @@ impl Colony {
             DomainEvent::ToolStarted { agent_id, tool, target, tool_use_id } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
                 settle_if_after(a, e.ts);
+                a.recent_tools.push(models::tool_kind(tool));
+                if a.recent_tools.len() > models::RECENT_TOOLS {
+                    a.recent_tools.remove(0);
+                }
+                // Only main agents: a subagent's model isn't reported.
+                if a.kind == AgentKind::Main {
+                    a.model_hint = models::suggest(a.model.as_deref(), &a.recent_tools);
+                }
                 a.current_tool = Some(CurrentTool {
                     name: tool.clone(),
                     target: target.clone(),

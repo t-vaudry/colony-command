@@ -204,6 +204,11 @@ export class Daemon {
     return this.send({ type: "kill", term });
   }
 
+  /** Switch a Colony-started session's model (types /model in it). */
+  setModel(id: string, model: string): boolean {
+    return this.send({ type: "set_model", id, model });
+  }
+
   /** Answer a permission request Colony is holding. */
   decide(requestId: string, choice: PermissionChoice): boolean {
     return this.send({ type: "permission", request_id: requestId, choice });

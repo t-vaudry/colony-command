@@ -15,7 +15,7 @@ export default defineConfig({
         server.middlewares.use("/__colony/daemon.json", (_req, res) => {
           try {
             res.setHeader("content-type", "application/json");
-            res.end(readFileSync(join(homedir(), ".colony", "daemon.json")));
+            res.end(readFileSync(join(process.env.COLONY_HOME ?? join(homedir(), ".colony"), "daemon.json")));
           } catch {
             res.statusCode = 503;
             res.end(JSON.stringify({ error: "colonyd is not running (no ~/.colony/daemon.json)" }));

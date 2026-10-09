@@ -7,6 +7,7 @@
 
 pub mod event;
 pub mod hook;
+pub mod models;
 pub mod names;
 pub mod paths;
 pub mod ptyproto;

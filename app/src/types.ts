@@ -55,6 +55,35 @@ export interface Agent {
   terminal: string | null;
   /** A permission request Colony is holding for the map to answer. */
   permission: PermissionAsk | null;
+  /** The model the session runs, e.g. "claude-opus-5-5", when known. */
+  model: string | null;
+  /** A model better suited to what it's been doing lately. */
+  model_hint: ModelHint | null;
+}
+
+export interface ModelHint {
+  /** What to pass to /model, e.g. "haiku". */
+  model: string;
+  /** Button name, e.g. "Haiku". */
+  label: string;
+  reason: string;
+}
+
+/** Models offered in the map, as [value for --model or /model, label]. */
+export const MODELS: [string, string][] = [
+  ["opus", "Opus 5.5"],
+  ["sonnet", "Sonnet 5.5"],
+  ["haiku", "Haiku 5.5"],
+  ["claude-fable-5-1", "Fable 5.1"],
+];
+
+/** "claude-opus-5-5" -> "Opus 5.5"; aliases and unknown ids pass through readably. */
+export function modelLabel(model: string | null): string | null {
+  if (!model) return null;
+  const m = model.match(/(opus|sonnet|haiku|fable)[-_ ]?(\d+)?[-_.]?(\d+)?/i);
+  if (!m) return model;
+  const name = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
+  return m[2] ? `${name} ${m[2]}${m[3] ? "." + m[3] : ""}` : name;
 }
 
 export interface PermissionAsk {
@@ -82,6 +111,7 @@ export interface SpawnRequest {
   name?: string;
   permission_mode?: string;
   chrome?: boolean;
+  model?: string;
   cols?: number;
   rows?: number;
 }

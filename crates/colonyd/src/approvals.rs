@@ -189,7 +189,7 @@ mod tests {
         let mut rx = a.hold("q", "s".into(), vec![]);
         let mut colony = Colony::new();
         // Not shown yet (its event hasn't been applied): not released.
-        colony.apply(&Envelope { ts: 1, host: HostId::Windows, session_id: "s".into(), cwd: None, event: DomainEvent::SessionStarted { source: None } });
+        colony.apply(&Envelope { ts: 1, host: HostId::Windows, session_id: "s".into(), cwd: None, event: DomainEvent::SessionStarted { source: None, model: None } });
         a.release_answered(&colony);
         assert!(rx.try_recv().is_err());
         // Shown, then the session moves on: released with no decision.

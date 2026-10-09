@@ -66,6 +66,15 @@ impl HookPayload {
         None
     }
 
+    /// The `model` field as an id: a plain string, or an object's `id`.
+    pub fn model_id(&self) -> Option<String> {
+        match self.model.as_ref()? {
+            Value::String(s) if !s.is_empty() => Some(s.clone()),
+            Value::Object(o) => o.get("id").or_else(|| o.get("display_name")).and_then(Value::as_str).map(str::to_string),
+            _ => None,
+        }
+    }
+
     pub fn error_text(&self) -> Option<String> {
         match self.error.as_ref()? {
             Value::String(s) => Some(s.clone()),

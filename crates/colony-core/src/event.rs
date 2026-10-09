@@ -63,7 +63,14 @@ pub enum DomainEvent {
     SessionSeen { record: SessionRecord },
     /// A registry file disappeared: the process is gone.
     SessionGone { pid: u32 },
-    SessionStarted { source: Option<String> },
+    SessionStarted {
+        source: Option<String>,
+        /// The model the session runs, e.g. "claude-opus-5-5".
+        #[serde(default)]
+        model: Option<String>,
+    },
+    /// The session switched models (through Colony, or a model-switch hook).
+    ModelSet { model: String },
     /// `synthetic`: injected by Claude Code (task notifications, slash-command
     /// wrappers) rather than typed, so it is not the session's objective.
     PromptSubmitted {
@@ -132,7 +139,8 @@ impl Envelope {
     pub fn from_hook(host: HostId, ts: u64, p: &HookPayload) -> Option<Envelope> {
         let tool = || p.tool_name.clone().unwrap_or_else(|| "tool".into());
         let event = match p.hook_event_name.as_str() {
-            "SessionStart" => DomainEvent::SessionStarted { source: p.source.clone() },
+            "SessionStart" => DomainEvent::SessionStarted { source: p.source.clone(), model: p.model_id() },
+            "PostModelSwitch" => DomainEvent::ModelSet { model: p.model_id()? },
             "UserPromptSubmit" => {
                 let prompt = p.prompt.as_deref().unwrap_or("");
                 DomainEvent::PromptSubmitted { preview: preview(prompt), synthetic: is_synthetic_prompt(prompt) }
