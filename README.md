@@ -6,7 +6,79 @@ glance which agents are working, blocked, waiting on you, or done.
 
 Design spec: [`docs/design-spec.html`](docs/design-spec.html)
 
-## Layout
+## Install
+
+For using Colony, not developing it. Windows 10/11, x64. Claude Code must already
+be installed (on Windows, in WSL, or both).
+
+1. Download `Colony Command_<version>_x64-setup.exe` (from the repository's
+   Releases page, or the `colony-installer` artifact of a tagged CI run).
+   Windows SmartScreen will say the publisher is unknown: the installer isn't
+   code-signed yet. *More info → Run anyway*.
+2. Run it. It installs for your user only (no administrator prompt) under
+   `%LOCALAPPDATA%\Colony Command` and adds a Start menu entry.
+3. Start **Colony Command**. On first launch the **Set up Colony** window opens
+   (it is also the **Set up Colony** button at the map's bottom-left corner).
+   It lists Windows and each WSL distro (running or stopped) with a checklist:
+
+   | Item | What it does |
+   |---|---|
+   | Hooks | Registers `colony-hook` for every Claude Code hook event in `~/.claude/settings.json`, so sessions appear on the map |
+   | Probe (WSL) | Copies `colony-probe` to `~/.colony/bin` in the distro; it streams that distro's sessions to Colony. No Rust toolchain needed |
+   | Approvals | Lets permission requests be answered on the map (Allow / Deny). On Windows this is `colony-hook` with the long timeout; in WSL it also copies `colony-approve.sh` and registers it for `PermissionRequest` |
+
+   **Review changes** shows the exact edit to each `settings.json` as a diff and the
+   files that will be copied. Nothing is written until you press **Apply**. Before
+   any write, the old file is copied to `settings.json.colony-backup-<timestamp>`.
+   Your own hooks and settings are never reformatted or reordered, and an invalid
+   `settings.json` is refused rather than overwritten. A stopped distro is only
+   started if you tick it.
+4. The window re-opens after an update when installed hooks or the probe are older
+   than the app. **Not now** hides it until the next version; the button stays.
+
+Colony's entries are tagged with a `# colony-setup v=<version>` comment in their
+command, which is how it finds, repairs, upgrades and removes them. They are
+written so a broken or missing Colony can't get in Claude Code's way: if the
+binary isn't there the command does nothing and exits 0, and Colony's binaries
+never exit with the code that blocks a tool call.
+
+### Updating
+
+For now updating is manual: download the new installer and run it over the old
+one. It keeps your settings, replaces the app files (a running `colonyd` is
+stopped and restarts with the app; sessions in `colony-ptyd` keep running), and
+Set up Colony re-offers to refresh the hooks and probe. See the TODO under
+*Release and CI* for automatic updates.
+
+### Uninstalling
+
+*Settings → Apps → Colony Command → Uninstall*. It asks whether to also remove
+Colony's hooks from Claude Code's settings (Windows and running WSL distros);
+answer Yes to do it with the same backup-first edit. To remove them later, or if
+the app is already gone, run `%USERPROFILE%\.colony\bin\colony-setup.exe uninstall`,
+or untick items in Set up Colony. By hand: delete the entries in
+`~/.claude/settings.json` whose command ends in `# colony-setup ...` (leftover
+ones are harmless, they only run if `~/.colony/bin/colony-hook` still exists).
+`~/.colony` (your history and logs) is left in place.
+
+### Command line
+
+The same installer logic is available without the app:
+
+    colony-setup status [--target windows|wsl:Ubuntu|all] [--json]
+    colony-setup install   [--no-hooks] [--no-probe] [--no-approval] [--dry-run] [--yes]
+    colony-setup uninstall [--dry-run] [--yes]
+
+`--include-stopped` also reads stopped distros (starting them). For tests,
+`--user-home`, `--colony-home`, `--wsl-home` and `--bundle` redirect it to a
+scratch folder (also `COLONY_SETUP_USER_HOME`, `COLONY_HOME`,
+`COLONY_SETUP_WSL_HOME`, `COLONY_BUNDLE_DIR`).
+
+## Develop
+
+Everything below is for working on Colony itself.
+
+### Layout
 
 | Path | What |
 |---|---|
@@ -20,6 +92,7 @@ Design spec: [`docs/design-spec.html`](docs/design-spec.html)
 | `tools/synth`, `tools/replay` | Synthetic fleet generator and event-log replay, for load and visual tests |
 | `hooks/colony-approve.sh` | Approval hook (Windows and WSL): hands permission requests to colonyd for Allow/Deny on the map |
 | `crates/colony-hook` | Claude Code hook: records each hook payload for colonyd (spooling while it is away), keeps fixtures per Claude Code version |
+| `crates/colony-setup` | Installer logic: edits `~/.claude/settings.json` (Windows and each WSL distro), copies the hook, probe and approval hook; `colony-setup` CLI. Used by the app's Set up Colony window and the uninstaller |
 | `spikes/capture` | Superseded by `colony-hook`: shell hook that records raw payloads |
 | `docs/` | Design spec |
 
@@ -112,7 +185,7 @@ the whole colony, `Esc` clear selection.
 
 ## Approvals from the map
 
-Register `hooks/colony-approve.sh` for Claude Code's `PermissionRequest` event
+Set up Colony does this for you (see Install). By hand, for development: register `hooks/colony-approve.sh` for Claude Code's `PermissionRequest` event
 (copy it to `~/.colony/bin/`, then add to `~/.claude/settings.json`):
 
     { "type": "command", "command": "sh \"$HOME/.colony/bin/colony-approve.sh\"", "timeout": 600 }
@@ -191,7 +264,7 @@ to end that copy, so two copies never write to one conversation.
 
 ## Hook capture
 
-`colony-hook` replaces the capture spike. Build it
+`colony-hook` replaces the capture spike. Set up Colony registers it (see Install); to do it by hand, build it
 (`cargo build --release -p colony-hook`), copy `target/release/colony-hook` to
 `~/.colony/bin/`, and register it like the spike did: one
 `{ "type": "command", "command": "<path>/colony-hook", "timeout": 5 }` entry for
@@ -274,3 +347,41 @@ work, plus, for isolated sessions, commits since the branch left the default
 branch. If git can't say (not a repository, timeout, more than 30 untracked
 files) nothing is shown. Test daemons (`COLONY_INGEST=1`) show made-up counts.
 `tools/synth` now emits file paths so all of this can be seen under load.
+
+## Build the installer
+
+    powershell -File scripts/build-installer.ps1
+
+Builds the release binaries, the Linux `colony-probe` / `colony-hook`, and the
+NSIS installer into `target/release/bundle/nsis/`. The Linux binaries are static
+musl builds, taken from `-LinuxDir <folder>` (the CI artifact), or built inside a
+WSL distro (`-Distro Ubuntu`, needs rustup there); `-SkipLinux` makes an
+installer that can't set up WSL. The installer bundles `colonyd`, `colony-ptyd`,
+`colony-hook`, `colony-setup` and the Linux files, as Tauri sidecars/resources
+(`app/src-tauri/tauri.bundle.conf.json`; plain `cargo build` ignores it). Its
+hooks are in `app/src-tauri/installer-hooks.nsh`: stop `colonyd` (not
+`colony-ptyd`) before replacing files, and offer to remove Colony's hooks on
+uninstall.
+
+`scripts/build-app.ps1` and `scripts/update.ps1` still make the bare exe for
+development. `scripts/install-probe.sh` still builds the probe inside a distro
+with a Rust toolchain; use it when you are changing the probe.
+
+To try Set up Colony without touching your real settings, point it at scratch
+folders: `COLONY_SETUP_USER_HOME=<dir>` (stands in for `%USERPROFILE%` when
+setting up Windows), `COLONY_SETUP_WSL_HOME=/tmp/x` (stands in for `$HOME` in
+every distro), `COLONY_HOME=<dir>/.colony`, then start the app or run
+`colony-setup`.
+
+## Release and CI
+
+`.github/workflows/ci.yml` runs `cargo test` on Windows and Linux (and the app's
+`npm run build`) for every push and pull request. Pushing a tag `vX.Y.Z` (it
+must match the version in `Cargo.toml` and `tauri.conf.json`) also builds the
+static Linux probe and the installer and keeps them as the `colony-linux-x86_64`
+and `colony-installer` artifacts. No secrets are used, so nothing is signed or
+published.
+
+TODO (needs the owner's decisions, see the pull request that added this):
+automatic updates with the Tauri updater, code signing, and an aarch64 Linux
+probe for WSL on ARM.

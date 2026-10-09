@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -14,6 +15,7 @@
     "pixi.js": "^8.6.6"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"

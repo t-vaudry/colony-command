@@ -4,6 +4,7 @@ import { NewSessionDialog, repoDir, type Prefill } from "./dialog";
 import { Hud } from "./hud";
 import { TerminalPane } from "./terminal";
 import type { Agent } from "./types";
+import { SetupDialog } from "./setup";
 import { World } from "./world";
 
 const daemon = new Daemon();
@@ -98,4 +99,5 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+new SetupDialog();
 void world.init(document.getElementById("map")!).then(() => daemon.start());

@@ -1,0 +1,20 @@
+[package]
+name = "colony-setup"
+description = "Installs, repairs and removes Colony's Claude Code hooks and WSL probe, on Windows and in WSL distros. Used by the app and by the uninstaller."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "colony_setup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "colony-setup"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+similar = "2"

@@ -23,6 +23,7 @@
     <main class="stage">
       <div class="map-col">
         <div id="map"></div>
+        <button type="button" class="chip" id="setup-btn" title="Install, repair or remove Colony's Claude Code hooks and WSL probe">Set up Colony</button>
         <section id="term-pane" hidden>
           <div class="term-head">
             <span class="k" id="term-title">Terminal</span>
@@ -63,6 +64,10 @@
     </main>
     <footer id="porch-strip"></footer>
     <div id="toast" role="status" hidden></div>
+
+    <dialog id="setup">
+      <div id="setup-body"></div>
+    </dialog>
 
     <dialog id="new-session">
       <form id="ns-form">
