@@ -520,3 +520,28 @@ fn subagents_follow_a_renamed_parent() {
     term(&mut r, Renamed { name: "Ada".into() });
     assert_eq!(r.colony.agents[&id].name, "Ada · Explore 1");
 }
+
+#[test]
+fn waiting_on_a_background_run_is_not_ready_for_review() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "fix the flaky test"}));
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "t1",
+                  "tool_input": {"command": "cargo test", "run_in_background": true}}));
+    r.hook(json!({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "t1"}));
+
+    // The turn ends while the tests still run: still working, not for review.
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Tests are running; I'll check back when they finish."}));
+    assert_eq!(r.state(SID), AgentState::Working);
+    assert_eq!(r.colony.agents[SID].reason.as_deref(), Some(colony_core::state::WAITING_ON_BACKGROUND));
+
+    // Quiet waiting isn't a stall for as long as a hung tool would be.
+    let t = r.t;
+    r.colony.tick(t + colony_core::state::STALL_MS + 1);
+    assert_eq!(r.state(SID), AgentState::Working);
+
+    // The run reports back, the bot wakes, finishes, and now it's for review.
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "<task-notification>\n<task-id>t1</task-id>"}));
+    assert_eq!(r.state(SID), AgentState::Working);
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "All tests pass."}));
+    assert_eq!(r.state(SID), AgentState::ReadyToReview);
+}
