@@ -4,7 +4,7 @@
 import type { Daemon } from "./daemon";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { repoDir, resumeWarning, worktreeName, type Prefill } from "./dialog";
-import { compact, money, MODELS, modelLabel, severity, spentToday, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
+import { compact, diffText, money, MODELS, modelLabel, severity, spentToday, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -410,6 +410,14 @@ export class Hud {
     const usageRow = a.tokens && a.tokens.input + a.tokens.output + a.tokens.cache_read + a.tokens.cache_creation > 0
       ? `<div class="row"><span class="k">Usage</span><span title="Estimate from list prices${a.kind === "main" ? "; includes subagents" : ""}${a.cost_partial ? ". Some tokens were from a model without a known price, so the cost is low." : ""}">${esc(`${compact(a.tokens.input + a.tokens.cache_creation + a.tokens.cache_read)} in · ${compact(a.tokens.output)} out · ${money(a.cost_usd ?? 0)}${a.cost_partial ? " partial" : ""}`)}</span></div>`
       : "";
+    const collisionRow = a.collision
+      ? `<div class="row"><span class="k">Overlap</span><span class="reason" title="A warning only: nothing is blocked.">${esc(
+          `${a.collision.scope === "file" ? "Also editing" : "Same folder as"} ${a.collision.with.map((w) => this.daemon.agents.get(w)?.name ?? "another bot").join(", ")}: ${a.collision.path.split(/[\\/]/).slice(-2).join("/")}`,
+        )}</span></div>`
+      : "";
+    const diffRow = a.diff_stat
+      ? `<div class="row"><span class="k">Changes</span><span title="Uncommitted and untracked work in the session's folder, plus commits on its worktree branch">${esc(diffText(a.diff_stat))}</span></div>`
+      : "";
     const resume = `claude --resume ${a.session_id}`;
     setHtml(this.panel, `
       <div class="k">${a.kind === "subagent" ? `Subagent of ${esc(parent?.name ?? "?")}` : esc(a.project_name ?? "unknown project")}</div>
@@ -432,6 +440,8 @@ export class Hud {
       ${row("Objective", a.objective)}
       ${a.last_prompt !== a.objective ? row("Last prompt", a.last_prompt) : ""}
       ${toolRow}
+      ${collisionRow}
+      ${diffRow}
       ${usageRow}
       ${this.modelRows(a)}
       ${row("Where", `${hostLabel(a.host)} · ${originLabel(a)}${a.pid ? ` · pid ${a.pid}` : ""}`)}

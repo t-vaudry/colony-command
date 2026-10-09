@@ -74,6 +74,18 @@ interface Body {
   alpha: number;
   label: Text;
   glyph: Text;
+  /** Changed-file counts under a package on the dock. */
+  diff: Text;
+  /** The building it is working at, when it has one. */
+  dir: string;
+}
+
+/** A directory agents are working in, drawn inside its project's district. */
+interface Building {
+  key: string;
+  slot: number;
+  seen: number;
+  label: Text;
 }
 
 interface Spark {
@@ -91,6 +103,14 @@ const GAP = 28;
 const MARGIN = 40;
 const PORCH_H = 140;
 const DOCK_W = 230;
+/** The dock is taller than the porch: packages carry a line of changed-file counts. */
+const DOCK_H = 168;
+const DOCK_ROW = 64;
+/** Buildings per district: one per directory agents work in, at most this many. */
+const MAX_BUILDINGS = 6;
+/** A building stays this long after the last agent worked in it. */
+const BUILDING_TTL_MS = 5 * 60_000;
+const WARN = 0xf97316;
 const FONT = '"JetBrains Mono", "Cascadia Mono", Consolas, monospace';
 
 /** FNV-1a, for stable per-agent and per-project choices. */
@@ -121,6 +141,12 @@ export class World {
   private districtCosts = new Map<string, Text>();
   private projectOrder: string[] = [];
   private bodies = new Map<string, Body>();
+  private buildingLabels = new Container();
+  /** District key -> directory key -> building. */
+  private buildings = new Map<string, Map<string, Building>>();
+  /** "district|dir" -> bots working there, and whether any is in an edit collision. */
+  private occupancy = new Map<string, { n: number; hot: boolean }>();
+  private lastPrune = 0;
   private sparks: Spark[] = [];
   private porch: Rect = { x: 0, y: 0, w: 0, h: 0 };
   private dock: Rect = { x: 0, y: 0, w: 0, h: 0 };
@@ -145,7 +171,7 @@ export class World {
       autoDensity: true,
     });
     host.appendChild(this.app.canvas);
-    this.world.addChild(this.ground, this.groundText, this.actors, this.labels);
+    this.world.addChild(this.ground, this.groundText, this.buildingLabels, this.actors, this.labels);
     this.app.stage.addChild(this.world);
     this.app.ticker.add((tk) => this.frame(Math.min(0.05, tk.deltaMS / 1000)));
     this.bindInput(this.app.canvas);
@@ -202,11 +228,75 @@ export class World {
       if (!agents.has(id)) {
         b.label.destroy();
         b.glyph.destroy();
+        b.diff.destroy();
         this.bodies.delete(id);
         if (this.selected === id) this.onSelect(null);
       }
     }
+    this.updateBuildings(Date.now());
     this.updateDistrictLabels();
+  }
+
+  // ---- buildings: one per directory agents work in ---------------------------
+
+  /** The building for a directory in a district, or the one for its top folder
+   *  when the district is full and the directory got folded into it. */
+  private buildingFor(district: string, dir: string): Building | undefined {
+    const m = this.buildings.get(district);
+    return m?.get(dir) ?? m?.get(dir.split("/")[0]);
+  }
+
+  /** Open buildings where bots are working; close ones nobody has used lately. */
+  private updateBuildings(now: number): void {
+    for (const a of this.daemon.agents.values()) {
+      if (a.state !== "working" || a.work_dir == null) continue;
+      const district = this.projectOf(a);
+      let m = this.buildings.get(district);
+      if (!m) this.buildings.set(district, (m = new Map()));
+      let b = this.buildingFor(district, a.work_dir);
+      if (!b) {
+        // Over the limit, fold into the top folder so a project stays a handful of buildings.
+        let key = a.work_dir;
+        if (m.size >= MAX_BUILDINGS) {
+          key = a.work_dir.split("/")[0];
+          b = m.get(key);
+          if (!b) this.closeBuilding(m, [...m.values()].sort((x, y) => x.seen - y.seen)[0]);
+        }
+        b ??= this.openBuilding(m, key, now);
+      }
+      b.seen = now;
+    }
+    for (const [district, m] of this.buildings) {
+      for (const b of [...m.values()]) if (now - b.seen > BUILDING_TTL_MS) this.closeBuilding(m, b);
+      if (m.size === 0) this.buildings.delete(district);
+    }
+  }
+
+  private openBuilding(m: Map<string, Building>, key: string, now: number): Building {
+    const used = new Set([...m.values()].map((b) => b.slot));
+    let slot = 0;
+    while (used.has(slot)) slot++;
+    const label = new Text({ text: key === "" ? "(project root)" : key.length > 16 ? `…${key.slice(-15)}` : key, style: { fontFamily: FONT, fontSize: 9, fill: this.pal.muted } });
+    label.anchor.set(0.5, 0);
+    label.resolution = 3;
+    this.buildingLabels.addChild(label);
+    const b = { key, slot, seen: now, label };
+    m.set(key, b);
+    return b;
+  }
+
+  private closeBuilding(m: Map<string, Building>, b: Building | undefined): void {
+    if (!b) return;
+    b.label.destroy();
+    m.delete(b.key);
+  }
+
+  /** Where a building stands inside its district: three across, two deep, below the header. */
+  private plot(d: District, slot: number): { x: number; y: number; w: number; h: number; door: { x: number; y: number } } {
+    const cw = (d.w - 24) / 3;
+    const cx = d.x + 12 + (slot % 3) * cw + cw / 2;
+    const top = d.y + 66 + Math.floor(slot / 3) * 76;
+    return { x: cx - 26, y: top + 8, w: 52, h: 28, door: { x: cx, y: top + 46 } };
   }
 
   private newBody(a: Agent): Body {
@@ -218,7 +308,11 @@ export class World {
     const glyph = new Text({ text: "", style: { fontFamily: FONT, fontSize: 12, fontWeight: "700", fill: 0xffffff } });
     glyph.anchor.set(0.5, 0.5);
     glyph.resolution = 3;
-    this.labels.addChild(label, glyph);
+    const diff = new Text({ text: "", style: { fontFamily: FONT, fontSize: 9, fill: this.pal.muted } });
+    diff.anchor.set(0.5, 0);
+    diff.resolution = 3;
+    diff.visible = false;
+    this.labels.addChild(label, glyph, diff);
     return {
       x: start.x,
       y: start.y,
@@ -231,6 +325,8 @@ export class World {
       alpha: 1,
       label,
       glyph,
+      diff,
+      dir: "",
     };
   }
 
@@ -259,8 +355,8 @@ export class World {
     const by = rows * (DH + GAP) + 12;
     const bx = (this.worldW - bottomW) / 2;
     this.porch = { x: bx, y: by, w: porchW, h: PORCH_H };
-    this.dock = { x: bx + porchW + GAP, y: by, w: DOCK_W, h: PORCH_H };
-    this.worldH = by + PORCH_H;
+    this.dock = { x: bx + porchW + GAP, y: by, w: DOCK_W, h: DOCK_H };
+    this.worldH = by + Math.max(PORCH_H, DOCK_H);
     // Re-home idle bots in their (possibly moved) districts.
     for (const [id, b] of this.bodies) {
       const a = this.daemon.agents.get(id);
@@ -282,6 +378,12 @@ export class World {
 
   private spot(d: District): { x: number; y: number } {
     return { x: rand(d.x + 28, d.x + d.w - 28), y: rand(d.y + 64, d.y + d.h - 24) };
+  }
+
+  /** A spot at a building's door. */
+  private doorSpot(d: District, bld: Building): { x: number; y: number } {
+    const door = this.plot(d, bld.slot).door;
+    return { x: door.x + rand(-26, 26), y: door.y + rand(-4, 12) };
   }
 
   private updateDistrictLabels(): void {
@@ -352,6 +454,25 @@ export class World {
       .filter((a) => a.kind === "main" && a.state === "ready_to_review")
       .sort((a, b) => a.state_since - b.state_since);
 
+    // Which buildings have bots working in them (and any in an edit collision).
+    this.occupancy.clear();
+    for (const a of agents.values()) {
+      if (a.state !== "working" || a.work_dir == null) continue;
+      const district = this.projectOf(a);
+      const bld = this.buildingFor(district, a.work_dir);
+      if (!bld) continue;
+      const k = `${district}|${bld.key}`;
+      const o = this.occupancy.get(k) ?? { n: 0, hot: false };
+      o.n++;
+      o.hot ||= !!a.collision;
+      this.occupancy.set(k, o);
+    }
+    const nowMs = Date.now();
+    if (nowMs - this.lastPrune > 1000) {
+      this.lastPrune = nowMs;
+      this.updateBuildings(nowMs);
+    }
+
     for (const [id, b] of this.bodies) {
       const a = agents.get(id);
       if (!a) continue;
@@ -377,20 +498,32 @@ export class World {
     let alpha = 1;
     const isMain = a.kind === "main";
     switch (a.state) {
-      case "working":
+      case "working": {
+        // Heading for the building of the directory it works in, if it has one.
+        const bld = d && a.work_dir != null ? this.buildingFor(d.key, a.work_dir) : undefined;
+        if (d && bld && b.dir !== bld.key) {
+          b.dir = bld.key;
+          const s = this.doorSpot(d, bld);
+          b.tx = s.x;
+          b.ty = s.y;
+          b.dwell = rand(1.5, 3.5);
+        } else if (!bld) {
+          b.dir = "";
+        }
         if (d && near()) {
           b.dwell -= dt;
           if (!this.reduced && Math.random() < dt * 3) {
             this.sparks.push({ x: b.x + rand(-6, 6), y: b.y - 16, vx: rand(-10, 10), vy: rand(-32, -16), life: 0.6, color: this.pal.ok });
           }
           if (b.dwell <= 0) {
-            const s = this.spot(d);
+            const s = bld ? this.doorSpot(d, bld) : this.spot(d);
             b.tx = s.x;
             b.ty = s.y;
             b.dwell = rand(1.5, 3.5);
           }
         }
         break;
+      }
       case "spawning":
         if (d) {
           b.tx = d.x + d.w / 2;
@@ -422,7 +555,7 @@ export class World {
       case "ready_to_review": {
         const i = Math.max(0, ready.findIndex((x) => x.id === a.id));
         b.tx = this.dock.x + 30 + (i % 5) * 40;
-        b.ty = this.dock.y + 62 + Math.floor(i / 5) * 40;
+        b.ty = this.dock.y + 62 + Math.floor(i / 5) * DOCK_ROW;
         speed = 60;
         break;
       }
@@ -501,6 +634,18 @@ export class World {
     const g = this.actors;
     const agents = this.daemon.agents;
     g.clear();
+    this.drawBuildings(g);
+
+    // Edit collisions: a dashed line between the bots, whatever they are doing.
+    for (const [id, b] of this.bodies) {
+      const a = agents.get(id);
+      if (!a?.collision) continue;
+      for (const w of a.collision.with) {
+        const o = this.bodies.get(w);
+        if (!o || w < id) continue;
+        this.dashed(g, b.x, b.y - 4, o.x, o.y - 4, b.alpha * o.alpha);
+      }
+    }
 
     // Tethers from parents to their working subagents.
     for (const [id, b] of this.bodies) {
@@ -517,7 +662,7 @@ export class World {
     // Packages waiting on the dock.
     ready.forEach((_, i) => {
       const x = this.dock.x + 22 + (i % 5) * 40;
-      const y = this.dock.y + 74 + Math.floor(i / 5) * 40;
+      const y = this.dock.y + 74 + Math.floor(i / 5) * DOCK_ROW;
       g.roundRect(x, y, 16, 12, 2).fill({ color: this.pal.done });
       g.rect(x + 7, y, 2, 12).fill({ color: this.pal.plot });
     });
@@ -528,6 +673,54 @@ export class World {
       if (a) this.drawBot(g, a, b);
     }
     for (const s of this.sparks) g.rect(s.x - 1.5, s.y - 1.5, 3, 3).fill({ color: s.color, alpha: Math.max(0, s.life / 0.6) });
+  }
+
+  private drawBuildings(g: Graphics): void {
+    const p = this.pal;
+    const zoomedIn = this.cam.s > 0.55;
+    for (const [district, m] of this.buildings) {
+      const d = this.districts.get(district);
+      for (const bld of m.values()) {
+        if (!d) {
+          bld.label.visible = false;
+          continue;
+        }
+        const r = this.plot(d, bld.slot);
+        const occ = this.occupancy.get(`${district}|${bld.key}`);
+        const n = occ?.n ?? 0;
+        const hot = occ?.hot ?? false;
+        const fade = Math.max(0.45, 1 - (Date.now() - bld.seen) / BUILDING_TTL_MS);
+        g.poly([r.x - 4, r.y, r.x + r.w / 2, r.y - 10, r.x + r.w + 4, r.y]).fill({ color: d.color, alpha: 0.85 * fade });
+        g.roundRect(r.x, r.y, r.w, r.h, 2)
+          .fill({ color: d.color, alpha: (n > 0 ? 0.5 : 0.22) * fade })
+          .stroke({ width: hot ? 2 : 1.2, color: hot ? WARN : p.ink, alpha: hot ? 1 : 0.7 * fade });
+        g.rect(r.x + r.w / 2 - 4, r.y + r.h - 9, 8, 9).fill({ color: p.ink, alpha: 0.5 * fade });
+        // A lit window per bot working inside, up to three.
+        for (let i = 0; i < Math.min(3, n); i++) g.rect(r.x + 6 + i * 14, r.y + 5, 8, 6).fill({ color: p.ok });
+        if (hot) {
+          const tx = r.x + r.w + 2;
+          const ty = r.y - 14;
+          g.poly([tx, ty + 12, tx + 7, ty, tx + 14, ty + 12]).fill({ color: WARN }).stroke({ width: 1, color: p.ink });
+          g.rect(tx + 6.2, ty + 4, 1.6, 4).fill({ color: p.ink });
+          g.rect(tx + 6.2, ty + 9, 1.6, 1.6).fill({ color: p.ink });
+        }
+        bld.label.visible = zoomedIn;
+        bld.label.position.set(r.x + r.w / 2, r.y + r.h + 3);
+        bld.label.alpha = fade;
+      }
+    }
+  }
+
+  private dashed(g: Graphics, x1: number, y1: number, x2: number, y2: number, alpha: number): void {
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    if (len < 1) return;
+    const ux = (x2 - x1) / len;
+    const uy = (y2 - y1) / len;
+    for (let t = (this.reduced ? 0 : (this.t * 14) % 10); t < len; t += 10) {
+      const e = Math.min(len, t + 5);
+      g.moveTo(x1 + ux * t, y1 + uy * t).lineTo(x1 + ux * e, y1 + uy * e);
+    }
+    g.stroke({ width: 1.8, color: WARN, alpha: 0.9 * alpha });
   }
 
   private districtColor(a: Agent): number {
@@ -626,6 +819,14 @@ export class World {
       this.setGlyph(b, "", p.ink, x, oy, 0);
     }
 
+    // Edit collision: a small warning sign beside the head, whatever else it signals.
+    if (a.collision && !resting) {
+      const wx = x - r - 8;
+      const wy = oy - 2;
+      g.poly([wx - 6, wy + 6, wx, wy - 6, wx + 6, wy + 6]).fill({ color: WARN, alpha: al }).stroke({ width: 1, color: p.ink, alpha: al });
+      g.rect(wx - 0.7, wy - 2, 1.4, 4.5).fill({ color: p.ink, alpha: al });
+    }
+
     if (this.selected === a.id) g.circle(b.x, b.y - r * 0.2, r + 6).stroke({ width: 2, color: p.accent });
     this.placeLabel(a, b, r, al);
   }
@@ -642,6 +843,14 @@ export class World {
     b.label.visible = show;
     b.label.position.set(b.x, b.y + r + 4);
     b.label.alpha = alpha;
+    const ds = a.state === "ready_to_review" ? a.diff_stat : null;
+    if (ds) {
+      const text = `${ds.files}f +${ds.added} −${ds.removed}`;
+      if (b.diff.text !== text) b.diff.text = text;
+      b.diff.position.set(b.x, b.y + r + 16);
+      b.diff.alpha = alpha;
+    }
+    b.diff.visible = !!ds && show;
   }
 
   // ---- camera and input ------------------------------------------------------
