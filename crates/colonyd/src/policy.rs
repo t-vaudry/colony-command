@@ -68,6 +68,10 @@ pub fn suggested_rules(tool: &str, suggestions: &[Value]) -> Vec<Suggested> {
     if NEVER_RULED.contains(&tool) {
         return Vec::new();
     }
+    // A request that also asks for access to another folder is about more than the rule.
+    if suggestions.iter().any(|s| s.get("type").and_then(Value::as_str) == Some("addDirectories")) {
+        return Vec::new();
+    }
     let Some(s) = suggestions
         .iter()
         .find(|s| s.get("type").and_then(Value::as_str) == Some("addRules") && s.get("behavior").and_then(Value::as_str) == Some("allow"))
@@ -210,6 +214,13 @@ mod tests {
         assert!(suggested_rules("Edit", &[json!({"type": "setMode", "mode": "acceptEdits"})]).is_empty());
         assert!(suggested_rules("Bash", &[json!({"type": "addRules", "behavior": "deny", "rules": [{"toolName": "Bash"}]})]).is_empty());
         assert!(suggested_rules("Bash", &[json!({"type": "addRules", "behavior": "allow", "rules": [{"toolName": "Bash"}, {"ruleContent": "x"}]})]).is_empty());
+    }
+
+    #[test]
+    fn a_request_that_also_adds_a_folder_gets_no_rule() {
+        let mut s = bash("ls");
+        s.push(json!({"type": "addDirectories", "directories": ["C:/elsewhere"], "destination": "session"}));
+        assert!(suggested_rules("Bash", &s).is_empty());
     }
 
     #[test]

@@ -180,6 +180,7 @@ pub async fn resume(shared: &Shared, id: &str) -> Result<(), String> {
         isolate: false,
         cols: crate::pty::default_cols(),
         rows: crate::pty::default_rows(),
+        auto: false,
     };
     let spawned = crate::api::spawn_session(shared, req).await?;
     forget(&a.session_id);

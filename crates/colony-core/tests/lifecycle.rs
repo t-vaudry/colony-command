@@ -717,6 +717,7 @@ fn a_pause_can_be_cancelled_and_only_applies_to_sessions_colony_owns() {
     assert!(r.colony.agents[SID].pause_pending);
     term(&mut r, PauseCancelled);
     assert!(!r.colony.agents[SID].pause_pending);
+}
 
 // ---- where agents work ------------------------------------------------------
 
