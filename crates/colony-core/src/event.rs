@@ -79,6 +79,10 @@ pub enum DomainEvent {
         preview: String,
         #[serde(default)]
         synthetic: bool,
+        /// A `<task-notification>` that closes a background task (finished,
+        /// failed, stopped, stream ended), not a mid-run Monitor event.
+        #[serde(default)]
+        task_ended: bool,
     },
     ToolStarted {
         agent_id: Option<String>,
@@ -181,6 +185,13 @@ pub fn is_synthetic_prompt(prompt: &str) -> bool {
     name.starts_with(|c: char| c.is_ascii_alphabetic()) && rest[name.len()..].starts_with(['>', ' '])
 }
 
+/// Claude Code reports a background task's end as a `<task-notification>` with
+/// a `<status>`; a Monitor's mid-run events carry none and leave it running.
+pub fn ends_background_task(prompt: &str) -> bool {
+    let t = prompt.trim_start();
+    t.starts_with("<task-notification>") && t.contains("<task-id>") && t.contains("<status>")
+}
+
 impl Envelope {
     /// Normalize one hook payload. Returns `None` for events the map does not
     /// use, so new hook events in later Claude Code releases are ignored safely.
@@ -191,14 +202,19 @@ impl Envelope {
             "PostModelSwitch" => DomainEvent::ModelSet { model: p.model_id()? },
             "UserPromptSubmit" => {
                 let prompt = p.prompt.as_deref().unwrap_or("");
-                DomainEvent::PromptSubmitted { preview: preview(prompt), synthetic: is_synthetic_prompt(prompt) }
+                DomainEvent::PromptSubmitted {
+                    preview: preview(prompt),
+                    synthetic: is_synthetic_prompt(prompt),
+                    task_ended: ends_background_task(prompt),
+                }
             }
             "PreToolUse" => DomainEvent::ToolStarted {
                 agent_id: p.agent_id.clone(),
                 tool: tool(),
                 target: p.tool_target(),
                 tool_use_id: p.tool_use_id.clone(),
-                background: p.runs_in_background(),
+                // A Monitor keeps reporting after the turn ends, like a background run.
+                background: p.runs_in_background() || p.tool_name.as_deref() == Some("Monitor"),
             },
             "PostToolUse" => DomainEvent::ToolFinished {
                 agent_id: p.agent_id.clone(),
@@ -258,6 +274,17 @@ mod tests {
             assert_eq!(serde_json::from_str::<HostId>(&s).unwrap(), h);
         }
         assert_eq!(serde_json::to_string(&HostId::Wsl("Ubuntu".into())).unwrap(), "\"wsl:Ubuntu\"");
+    }
+
+    #[test]
+    fn task_notifications_that_end_a_task() {
+        let done = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Monitor \"x\" stream ended</summary>\n</task-notification>";
+        let event = "<task-notification>\n<task-id>b1</task-id>\n<summary>Monitor event: \"x\"</summary>\n<event>built</event>\n</task-notification>";
+        let other = "<task-notification>\n<task-type>artifact-auto-react</task-type>\n<summary>paused</summary>\n</task-notification>";
+        assert!(ends_background_task(done));
+        assert!(!ends_background_task(event));
+        assert!(!ends_background_task(other));
+        assert!(!ends_background_task("<task-id>b1</task-id><status>x</status>"));
     }
 
     #[test]
