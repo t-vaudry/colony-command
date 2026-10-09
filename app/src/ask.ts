@@ -3,7 +3,7 @@
 // question Claude asked at the end of a turn.
 
 import { md, mdInline } from "./markdown";
-import type { Agent } from "./types";
+import type { Agent, Offer } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -113,7 +113,7 @@ function questionCard(a: Agent, qs: Question[], picks: Pick[]): string {
 }
 
 /** The big card for whatever the agent is waiting on, or "" when nothing is. */
-export function askCard(a: Agent, picks: Pick[]): string {
+export function askCard(a: Agent, picks: Pick[], offer?: Offer, draft = "", elsewhere: string | null = null): string {
   const p = a.permission;
   if (p) {
     const qs = questionsOf(a);
@@ -125,6 +125,11 @@ export function askCard(a: Agent, picks: Pick[]): string {
       <div class="actions">
         <button type="button" class="primary" data-decide="allow" data-req="${req}">Allow</button>
         <button type="button" data-decide="allow_always" data-req="${req}" title="Allow, and add Claude Code's suggested rule so it won't ask again for this">Always allow</button>
+        ${
+          offer
+            ? `<button type="button" data-decide="allow_project" data-req="${req}" title="Allow, and let Colony allow ${esc(offer.rules.join(" and "))} in ${esc(offer.project ?? "this project")} from now on. Colony keeps the rule; Claude Code's own settings aren't changed. List and remove rules in the Saved rules panel.">Allow always for project</button>`
+            : ""
+        }
         <button type="button" class="danger" data-decide="deny" data-req="${req}">Deny</button>
       </div>
     </div>`;
@@ -133,10 +138,29 @@ export function askCard(a: Agent, picks: Pick[]): string {
     return `<div class="choice ask big" role="group" aria-label="Question from Claude">
       <p class="ask-title"><b>${esc(a.name)} asked</b></p>
       <div class="ask-message md">${md(a.last_message_full ?? a.last_message ?? "")}</div>
-      <p class="muted small">Answer in the box below.</p>
+      ${
+        a.terminal
+          ? `<p class="muted small">Answer in the box below.</p>`
+          : a.paused_at
+            ? `<p class="muted small">This session is paused. Resume it to answer.</p>`
+            : resumeToReply(a, draft, elsewhere)
+      }
     </div>`;
   }
   return "";
+}
+
+/** For a bot Colony didn't start: it can't type into the session, so offer to take it over. */
+function resumeToReply(a: Agent, draft: string, elsewhere: string | null): string {
+  const id = esc(a.id);
+  return `<p class="muted small">Colony didn't start this session, so it can't type into it. Resume it in Colony to answer from here${
+    elsewhere ? `. ${esc(elsewhere)} Colony ends that copy first, so only one writes to the conversation` : ""
+  }.</p>
+    <textarea class="resume-reply" rows="3" data-draft="reply:${id}" placeholder="Your answer. It is sent as the first message after resuming…">${esc(draft)}</textarea>
+    <div class="actions">
+      <button type="button" class="primary" data-resume-send="${id}" title="Resume the conversation in a Colony terminal and send this as its next message">Resume in Colony and send</button>
+      <button type="button" data-resume-now="${id}" title="Resume the conversation in a Colony terminal without sending anything">Resume in Colony</button>
+    </div>`;
 }
 
 /** Whether the inspector should open wide for this agent. */

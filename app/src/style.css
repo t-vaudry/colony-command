@@ -786,3 +786,34 @@ input.other {
   border: 0;
   background: none;
 }
+
+/* Reply for a bot Colony didn't start: typed here, sent after resuming it. */
+textarea.resume-reply {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 9px;
+  resize: vertical;
+}
+textarea.resume-reply:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Saved "allow always for project" rules. */
+.rule {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  column-gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.rule .k {
+  grid-column: 1 / -1;
+}

@@ -212,7 +212,8 @@ impl PtyHost {
             None => {}
         }
         if let Some(p) = req.prompt.as_ref().filter(|p| !p.trim().is_empty()) {
-            claude_args.push(p.clone());
+            // A message that starts with "-" would be read as a flag.
+            claude_args.push(if p.starts_with('-') { format!(" {p}") } else { p.clone() });
         }
 
         let (program, args, cwd): (String, Vec<String>, Option<String>) = match &req.host {
@@ -466,6 +467,8 @@ impl PtyHost {
         self.owned.lock().unwrap().insert(info.pid, info.term.clone());
         // A terminal that isn't a bot's (a login) has no session to attach to.
         if !info.session_id.is_empty() {
+            // Running again, so no longer "paused" if it was.
+            crate::pause::forget(&info.session_id);
             let _ = self.events.blocking_send(Envelope {
                 ts: now_ms(),
                 host: info.host.clone(),

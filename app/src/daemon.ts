@@ -2,7 +2,7 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type HostOption, type Leftover, type PermissionChoice, type ProjectSpend, type SpawnRequest } from "./types";
+import { severity, type Agent, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectSpend, type Rule, type SpawnRequest } from "./types";
 
 interface DaemonInfo {
   port: number;
@@ -10,7 +10,9 @@ interface DaemonInfo {
 }
 
 type Message =
-  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; spend?: Record<string, ProjectSpend> }
+  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; spend?: Record<string, ProjectSpend>; rules?: Rule[]; offers?: Record<string, Offer> }
+  | { type: "rules"; items: Rule[] }
+  | ({ type: "permission_offer"; request_id: string } & Offer)
   | { type: "spend"; projects: Record<string, ProjectSpend> }
   | { type: "leftovers"; items: Leftover[] }
   | { type: "upsert"; agent: Agent }
@@ -49,6 +51,10 @@ export class Daemon {
   spend = new Map<string, ProjectSpend>();
   /** Worktrees left behind for the user to decide on. */
   leftovers: Leftover[] = [];
+  /** Saved "allow always for project" rules. */
+  rules: Rule[] = [];
+  /** What each held permission request would save as a project rule, by request id. */
+  offers = new Map<string, Offer>();
   status: ConnectionStatus = "connecting";
   error: string | null = null;
   /** Daemon clock minus local clock, so durations match the daemon's timestamps. */
@@ -125,6 +131,8 @@ export class Daemon {
         this.hosts = m.hosts ?? this.hosts;
         this.spend = new Map(Object.entries(m.spend ?? {}));
         this.leftovers = m.leftovers ?? [];
+        this.rules = m.rules ?? [];
+        this.offers = new Map(Object.entries(m.offers ?? {}));
         this.skew = m.now - Date.now();
         this.status = "live";
         this.error = null;
@@ -132,6 +140,14 @@ export class Daemon {
         break;
       case "leftovers":
         this.leftovers = m.items;
+        break;
+      case "rules":
+        this.rules = m.items;
+        break;
+      case "permission_offer":
+        this.offers.set(m.request_id, { rules: m.rules, project: m.project });
+        // Requests are short-lived; keep the newest few hundred.
+        for (const k of [...this.offers.keys()].slice(0, Math.max(0, this.offers.size - 300))) this.offers.delete(k);
         break;
       case "spend":
         for (const [k, p] of Object.entries(m.projects)) this.spend.set(k, p);
@@ -242,6 +258,29 @@ export class Daemon {
   /** Switch a Colony-started session's model (types /model in it). */
   setModel(id: string, model: string): boolean {
     return this.send({ type: "set_model", id, model });
+  }
+
+  /** Reply to a bot waiting on one; the daemon finds its terminal. */
+  reply(id: string, text: string): boolean {
+    return this.send({ type: "reply", id, text });
+  }
+
+  /** Stop a Colony-started session at its next safe point, between turns. */
+  pause(id: string): boolean {
+    return this.send({ type: "pause", id });
+  }
+
+  cancelPause(id: string): boolean {
+    return this.send({ type: "cancel_pause", id });
+  }
+
+  /** Start a paused session again. */
+  resume(id: string): boolean {
+    return this.send({ type: "resume", id });
+  }
+
+  deleteRule(id: string): boolean {
+    return this.send({ type: "delete_rule", id });
   }
 
   /** Answer a permission request Colony is holding. */

@@ -825,6 +825,8 @@ export class World {
       this.setGlyph(b, "", p.ink, x, oy, 0);
     } else if (st === "working" && kids > 0) {
       this.setGlyph(b, `×${kids}`, p.ink, x, oy + 2, al);
+    } else if (a.paused_at) {
+      this.setGlyph(b, "⏸", p.muted, x + r, oy + 2, al);
     } else if (st === "idle" && !b.moving && !this.reduced) {
       this.setGlyph(b, "z", p.muted, x + r, oy + 2, (0.5 + 0.5 * Math.sin(this.t * 1.5 + b.phase)) * al);
     } else {

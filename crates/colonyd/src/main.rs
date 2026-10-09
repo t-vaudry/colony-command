@@ -9,9 +9,11 @@
 mod api;
 mod approvals;
 mod diffstat;
+mod needs;
+mod pause;
+mod policy;
 mod pty;
 mod resume;
-mod needs;
 mod worktree;
 #[cfg(windows)]
 mod wsl;
@@ -171,6 +173,15 @@ async fn main() {
         }
     });
 
+    // Paused sessions come back on the map, and pauses waiting for a turn to end happen.
+    pause::restore(&shared).await;
+    let pauser = shared.clone();
+    tokio::spawn(async move {
+        loop {
+            pause::sweep(&pauser).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
     // Files and lines changed, for work ready to review.
     tokio::spawn(diffstat::run(shared.clone()));
 
