@@ -246,7 +246,7 @@ fn windows_form(path: &str) -> Option<String> {
 /// unmerged commits, was kept.
 pub async fn remove(w: &Worktree) -> Result<bool, String> {
     if !w.folder_gone {
-        git(&w.host, &w.repo, &["worktree", "remove", &w.path]).await?;
+        remove_folder(w, false).await?;
         log(format!("removed worktree {}", w.path));
     }
     match git(&w.host, &w.repo, &["branch", "-d", &w.branch]).await {
@@ -270,14 +270,15 @@ pub async fn remove(w: &Worktree) -> Result<bool, String> {
 /// it, and the branch with whatever is unmerged on it.
 pub async fn discard(w: &Worktree) -> Result<(), String> {
     if !w.folder_gone {
-        match git(&w.host, &w.repo, &["worktree", "remove", "--force", &w.path]).await {
-            Ok(_) => {}
+        match remove_folder(w, true).await {
+            Ok(()) => {}
             // Already deleted by hand.
             Err(e) if e.contains("is not a working tree") || e.contains("No such file") => {}
             Err(e) => return Err(e),
         }
     }
     let _ = git(&w.host, &w.repo, &["worktree", "prune"]).await;
+    sweep_empty_folder(w).await;
     match git(&w.host, &w.repo, &["branch", "-D", &w.branch]).await {
         Ok(_) => {}
         Err(e) if e.contains("not found") => {}
@@ -287,10 +288,68 @@ pub async fn discard(w: &Worktree) -> Result<(), String> {
     Ok(())
 }
 
+/// Take the worktree folder away. Windows won't delete a folder some process
+/// still has open, and a bot that was just ended can hold on for a moment, so
+/// a refusal is retried; git may also have unregistered the worktree and
+/// emptied it by then, leaving only the empty folder to sweep.
+async fn remove_folder(w: &Worktree, force: bool) -> Result<(), String> {
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(&w.path);
+    let mut attempt = 0;
+    loop {
+        match git(&w.host, &w.repo, &args).await {
+            Ok(_) => return Ok(()),
+            Err(e) if e.contains("Permission denied") || e.contains("failed to delete") || e.contains("being used by another process") => {
+                if !is_registered(w).await {
+                    // Git is done with it; whatever is left is an empty folder.
+                    sweep_empty_folder(w).await;
+                    return Ok(());
+                }
+                attempt += 1;
+                if attempt >= 6 {
+                    return Err(e);
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+async fn is_registered(w: &Worktree) -> bool {
+    let want = w.path.trim_end_matches('/').to_lowercase();
+    git(&w.host, &w.repo, &["worktree", "list", "--porcelain"])
+        .await
+        .map(|out| out.lines().filter_map(|l| l.strip_prefix("worktree ")).any(|p| p.trim_end_matches('/').to_lowercase() == want))
+        .unwrap_or(true)
+}
+
+/// Delete what's left of a worktree folder once git no longer knows it, if
+/// Windows can reach it (best effort; only ever empty or already unregistered).
+async fn sweep_empty_folder(w: &Worktree) {
+    let folder = windows_folder(w);
+    if folder.starts_with("\\\\") {
+        return;
+    }
+    // The process holding it open may take a few seconds to let go.
+    for _ in 0..10 {
+        if std::fs::remove_dir_all(&folder).is_ok() || !std::path::Path::new(&folder).exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    log(format!("could not delete the empty folder {folder}"));
+}
+
 /// Why cleanup stopped, in words for the map.
 pub fn kept_reason(err: &str) -> String {
     if err.contains("modified or untracked") {
         "Has uncommitted changes".into()
+    } else if err.contains("Permission denied") || err.contains("failed to delete") || err.contains("another process") {
+        "A program still has files in it open".into()
     } else {
         err.lines().next().unwrap_or("Couldn't be removed").trim_start_matches("fatal: ").to_string()
     }
@@ -678,6 +737,26 @@ mod tests {
         rt().block_on(exercise(HostId::Wsl(distro.clone()), base.clone()));
         rt().block_on(exercise_sync(HostId::Wsl(distro.clone()), format!("{base}-sync")));
         let _ = std::process::Command::new("wsl.exe").args(["-d", &distro, "-e", "rm", "-rf", &base, &format!("{base}-sync")]).status();
+    }
+
+    /// A bot that was just ended can still hold its folder open for a moment,
+    /// which Windows answers with "Permission denied". Cleanup must ride it out.
+    #[test]
+    #[ignore]
+    fn removal_waits_out_a_process_still_inside_the_folder() {
+        let base = std::env::temp_dir().join(format!("colony-wtlock-{}", std::process::id()));
+        let base_s = base.display().to_string();
+        rt().block_on(async {
+            let clone = fixture(&HostId::Windows, &base_s).await;
+            let made = create(&HostId::Windows, &clone, "dddd4444", "locked").await.unwrap();
+            // Stands in for the ended bot: a process whose working directory is the worktree.
+            let mut holder = std::process::Command::new("cmd.exe").args(["/C", "ping -n 4 127.0.0.1 >nul"]).current_dir(&made.dir).spawn().unwrap();
+            let kept_branch = remove(&made.record).await.unwrap();
+            assert!(!kept_branch, "no commits of its own, so the branch goes too");
+            assert!(!std::path::Path::new(&made.dir).exists(), "the folder should be gone once the holder lets go");
+            let _ = holder.wait();
+        });
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// A Windows folder opened from WSL (`/mnt/c/...`), the usual way to share
