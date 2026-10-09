@@ -153,6 +153,12 @@ pub async fn speech_transcribe(app: AppHandle, request: Request<'_>) -> Result<S
         params.set_language(Some("en"));
         params.set_n_threads(std::thread::available_parallelism().map(|n| n.get().min(8) as i32).unwrap_or(4));
         params.set_translate(false);
+        // The encoder always works on a 30 s window; for shorter clips, only look at the audio
+        // we have (50 frames/s plus margin). This is the biggest speedup by far.
+        let secs = samples.len() as f32 / SAMPLE_RATE as f32;
+        if secs < 28.0 {
+            params.set_audio_ctx(((secs * 50.0) as i32 + 100).min(1500));
+        }
         params.set_no_timestamps(true);
         params.set_no_context(true);
         params.set_print_special(false);

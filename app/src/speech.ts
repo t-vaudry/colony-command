@@ -125,7 +125,7 @@ class Dictation {
     b.dataset.mode = this.mode;
     b.disabled = this.mode === "transcribing";
     if (this.mode === "downloading") return;
-    b.textContent = this.mode === "transcribing" ? "…" : "";
+    b.textContent = "";
     b.title =
       this.mode === "recording"
         ? "Stop and insert the text (Ctrl+Shift+M). Esc cancels."

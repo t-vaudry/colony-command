@@ -1392,3 +1392,23 @@ textarea.resume-reply {
 
 #tl-lanes { display: block; margin: 6px 0; }
 #tl-scrub { min-width: 0; }
+#mic[data-mode="transcribing"]::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  box-sizing: border-box;
+  animation: mic-spin 0.8s linear infinite;
+}
+@keyframes mic-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #mic[data-mode="transcribing"]::before {
+    animation-duration: 2.4s;
+  }
+}
