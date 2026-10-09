@@ -119,6 +119,15 @@ button:focus-visible {
   gap: 6px;
   font-variant-numeric: tabular-nums;
 }
+button.chip {
+  cursor: pointer;
+  padding: 2px 8px;
+  border: 1px solid var(--line, currentColor);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
 .dot {
   width: 9px;
   height: 9px;

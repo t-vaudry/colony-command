@@ -71,7 +71,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "hosts": hosts }).to_string()
+    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "hosts": hosts, "leftovers": crate::worktree::leftovers() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
@@ -148,6 +148,12 @@ enum Command {
     Terminate { id: String },
     /// Done with a session: end every copy of it and clear it off the map.
     Dismiss { id: String },
+    /// Show a leftover worktree's folder in the file manager.
+    OpenWorktree { session_id: String },
+    /// Delete a leftover worktree and its branch, uncommitted work and all.
+    DiscardWorktree { session_id: String },
+    /// Stop listing a leftover; its folder and branch stay as they are.
+    ForgetWorktree { session_id: String },
     /// Open the sign-in or install a stuck bot is waiting on, in a terminal for the user to finish.
     FixNeed {
         id: String,
@@ -240,6 +246,9 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         },
         Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
         Command::Dismiss { id } => dismiss(shared, &id).await.map(|_| None),
+        Command::OpenWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Open).await.map(|_| None),
+        Command::DiscardWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Discard).await.map(|_| None),
+        Command::ForgetWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Forget).await.map(|_| None),
         Command::SetModel { id, model } => set_model(shared, &id, &model).await.map(|_| None),
         Command::Permission { request_id, choice, message, answers } => shared.approvals.decide(&request_id, choice, message, answers).map(|_| None),
     };
@@ -320,8 +329,12 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket) {
 /// (the terminal closed, Claude exited, a crash). A worktree with uncommitted
 /// changes is never removed, and a branch is only deleted once merged, so this
 /// is safe to retry; a session resumed later gets its worktree back.
-pub async fn sweep_worktrees(shared: &Shared, reported: &mut std::collections::HashSet<String>) {
+pub async fn sweep_worktrees(shared: &Shared) {
     for w in crate::worktree::all() {
+        // Already waiting for the user to decide.
+        if w.kept.is_some() {
+            continue;
+        }
         let ended = {
             let colony = shared.colony.read().await;
             let mut mains = colony.agents.values().filter(|a| a.session_id == w.session_id && a.kind == colony_core::AgentKind::Main).peekable();
@@ -332,22 +345,52 @@ pub async fn sweep_worktrees(shared: &Shared, reported: &mut std::collections::H
                 mains.all(|a| a.terminal.is_none() && matches!(a.state, colony_core::AgentState::Ended | colony_core::AgentState::Crashed))
             }
         };
-        if !ended {
-            continue;
-        }
-        match crate::worktree::remove(&w).await {
-            Ok(()) => {
-                crate::worktree::forget(&w.session_id);
-                reported.remove(&w.path);
-            }
-            // Say so once, not every minute.
-            Err(e) => {
-                if reported.insert(w.path.clone()) {
-                    log(format!("left worktree {} of ended session {}: {e}", w.path, w.session_id));
-                }
-            }
+        if ended {
+            clean_up_worktree(shared, &w).await;
         }
     }
+}
+
+/// Remove a finished bot's worktree. Whatever can't go (uncommitted changes,
+/// unmerged commits) stays, recorded as a leftover the map lists for the user.
+async fn clean_up_worktree(shared: &Shared, w: &crate::worktree::Worktree) {
+    use crate::worktree::{forget, kept_reason, mark_kept, remove};
+    match remove(w).await {
+        Ok(false) => forget(&w.session_id),
+        Ok(true) => mark_kept(&w.session_id, format!("Unmerged commits on {}", w.branch), true),
+        Err(e) => {
+            log(format!("kept worktree {} of session {}: {e}", w.path, w.session_id));
+            mark_kept(&w.session_id, kept_reason(&e), false);
+        }
+    }
+    broadcast_leftovers(shared);
+}
+
+fn leftovers_message() -> String {
+    json!({ "type": "leftovers", "items": crate::worktree::leftovers() }).to_string()
+}
+
+fn broadcast_leftovers(shared: &Shared) {
+    let _ = shared.deltas.send(leftovers_message());
+}
+
+enum Leftover {
+    Open,
+    Discard,
+    Forget,
+}
+
+/// A command about one leftover worktree.
+async fn leftover_command(shared: &Shared, session_id: &str, what: Leftover) -> Result<(), String> {
+    let w = crate::worktree::find(session_id).filter(|w| w.kept.is_some()).ok_or("that leftover is already gone")?;
+    match what {
+        Leftover::Open => return crate::worktree::open_folder(&w),
+        Leftover::Discard => crate::worktree::discard(&w).await?,
+        Leftover::Forget => {}
+    }
+    crate::worktree::forget(session_id);
+    broadcast_leftovers(shared);
+    Ok(())
 }
 
 /// Start a session, first giving it its own git worktree when asked. If the
@@ -422,11 +465,8 @@ async fn dismiss(shared: &Shared, id: &str) -> Result<(), String> {
         shared.pty.closed(term, Duration::from_secs(10)).await;
     }
     if let Some(w) = crate::worktree::find(&c.session_id) {
-        match crate::worktree::remove(&w).await {
-            Ok(()) => crate::worktree::forget(&c.session_id),
-            // Uncommitted work: leave it where it is rather than lose it.
-            Err(e) => log(format!("dismiss {id}: kept worktree {}: {e}", w.path)),
-        }
+        // Uncommitted work stays where it is, and shows up in the map's leftovers.
+        clean_up_worktree(shared, &w).await;
     }
     let msgs = {
         let mut colony = shared.colony.write().await;

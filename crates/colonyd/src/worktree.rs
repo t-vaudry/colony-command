@@ -35,6 +35,13 @@ pub struct Worktree {
     /// history can still be cleaned up.
     #[serde(default)]
     pub created_at: u64,
+    /// Set when cleanup left something behind that the user should decide on:
+    /// why (uncommitted changes, unmerged commits). The map lists these.
+    #[serde(default)]
+    pub kept: Option<String>,
+    /// The folder is gone and only the branch (with unmerged commits) remains.
+    #[serde(default)]
+    pub folder_gone: bool,
 }
 
 pub struct Created {
@@ -75,7 +82,7 @@ pub async fn create(host: &HostId, dir: &str, session_id: &str, label: &str) -> 
     }
     let dir = if matches!(host, HostId::Windows) { start.replace('/', "\\") } else { start };
     log(format!("made worktree {path} on {branch} from {base} for session {session_id}"));
-    let record = Worktree { session_id: session_id.to_string(), host: host.clone(), repo, path, branch, created_at: colony_source::now_ms() };
+    let record = Worktree { session_id: session_id.to_string(), host: host.clone(), repo, path, branch, created_at: colony_source::now_ms(), kept: None, folder_gone: false };
     Ok(Created { dir, record })
 }
 
@@ -117,9 +124,15 @@ pub async fn restore(w: &Worktree) -> Result<(), String> {
         return Ok(());
     }
     let _ = git(&w.host, &w.repo, &["worktree", "prune"]).await;
-    worktree_add(&w.host, &w.repo, &[&w.path, &w.branch])
-        .await
-        .map_err(|e| format!("this session's worktree is gone and couldn't be restored: {e}"))
+    let branch_exists = git(&w.host, &w.repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", w.branch)]).await.is_ok();
+    let result = if branch_exists {
+        worktree_add(&w.host, &w.repo, &[&w.path, &w.branch]).await
+    } else {
+        // An untouched branch is deleted with its worktree; start it again.
+        let base = base_ref(&w.host, &w.repo).await;
+        worktree_add(&w.host, &w.repo, &["--no-track", "-b", &w.branch, &w.path, &base]).await
+    };
+    result.map_err(|e| format!("this session's worktree is gone and couldn't be restored: {e}"))
 }
 
 /// `git worktree add`. A repository on a Windows drive is used from both
@@ -149,16 +162,78 @@ fn windows_form(path: &str) -> Option<String> {
 }
 
 /// Remove a session's worktree and its branch. Fails, leaving both in place,
-/// if the worktree has uncommitted changes; the branch is only deleted once
-/// it's merged.
-pub async fn remove(w: &Worktree) -> Result<(), String> {
-    git(&w.host, &w.repo, &["worktree", "remove", &w.path]).await?;
-    // Unmerged commits keep their branch.
-    if let Err(e) = git(&w.host, &w.repo, &["branch", "-d", &w.branch]).await {
-        log(format!("kept branch {}: {e}", w.branch));
+/// if the worktree has uncommitted changes. The branch is only deleted once
+/// it's merged: `Ok(true)` means the folder is gone but the branch, holding
+/// unmerged commits, was kept.
+pub async fn remove(w: &Worktree) -> Result<bool, String> {
+    if !w.folder_gone {
+        git(&w.host, &w.repo, &["worktree", "remove", &w.path]).await?;
+        log(format!("removed worktree {}", w.path));
     }
-    log(format!("removed worktree {}", w.path));
+    match git(&w.host, &w.repo, &["branch", "-d", &w.branch]).await {
+        Ok(_) => Ok(false),
+        Err(e) if e.contains("not found") => Ok(false),
+        Err(e) => {
+            // `-d` compares with the local HEAD, but the branch was cut from
+            // origin/main, which may be ahead of it. What matters is whether
+            // the branch holds commits that exist nowhere else.
+            let own = git(&w.host, &w.repo, &["rev-list", "--count", &w.branch, "--not", "--remotes"]).await.ok().and_then(|s| s.trim().parse::<u32>().ok());
+            if own == Some(0) && git(&w.host, &w.repo, &["branch", "-D", &w.branch]).await.is_ok() {
+                return Ok(false);
+            }
+            log(format!("kept branch {}: {e}", w.branch));
+            Ok(true)
+        }
+    }
+}
+
+/// Throw a leftover away for good: the folder with whatever is uncommitted in
+/// it, and the branch with whatever is unmerged on it.
+pub async fn discard(w: &Worktree) -> Result<(), String> {
+    if !w.folder_gone {
+        match git(&w.host, &w.repo, &["worktree", "remove", "--force", &w.path]).await {
+            Ok(_) => {}
+            // Already deleted by hand.
+            Err(e) if e.contains("is not a working tree") || e.contains("No such file") => {}
+            Err(e) => return Err(e),
+        }
+    }
+    let _ = git(&w.host, &w.repo, &["worktree", "prune"]).await;
+    match git(&w.host, &w.repo, &["branch", "-D", &w.branch]).await {
+        Ok(_) => {}
+        Err(e) if e.contains("not found") => {}
+        Err(e) => return Err(e),
+    }
+    log(format!("discarded {} and branch {}", w.path, w.branch));
     Ok(())
+}
+
+/// Why cleanup stopped, in words for the map.
+pub fn kept_reason(err: &str) -> String {
+    if err.contains("modified or untracked") {
+        "Has uncommitted changes".into()
+    } else {
+        err.lines().next().unwrap_or("Couldn't be removed").trim_start_matches("fatal: ").to_string()
+    }
+}
+
+/// The folder as Windows' file manager spells it.
+pub fn windows_folder(w: &Worktree) -> String {
+    match &w.host {
+        HostId::Windows => w.path.replace('/', "\\"),
+        HostId::Wsl(distro) => match windows_form(&w.path) {
+            Some(win) => win.replace('/', "\\"),
+            None => format!("\\\\wsl.localhost\\{distro}{}", w.path.replace('/', "\\")),
+        },
+    }
+}
+
+/// Show the folder in the file manager.
+pub fn open_folder(w: &Worktree) -> Result<(), String> {
+    if w.folder_gone {
+        return Err("only the branch is left; there's no folder to open".into());
+    }
+    std::process::Command::new("explorer.exe").arg(windows_folder(w)).spawn().map(|_| ()).map_err(|e| format!("couldn't open the folder: {e}"))
 }
 
 /// Worktree and branch names: lowercase letters, digits and dashes.
@@ -287,6 +362,22 @@ pub fn find(session_id: &str) -> Option<Worktree> {
     load().into_iter().find(|w| w.session_id == session_id)
 }
 
+/// Leave a worktree (or its branch) where it is and tell the user.
+pub fn mark_kept(session_id: &str, reason: String, folder_gone: bool) {
+    let _g = STORE.lock().unwrap();
+    let mut all = load();
+    if let Some(w) = all.iter_mut().find(|w| w.session_id == session_id) {
+        w.kept = Some(reason);
+        w.folder_gone = folder_gone;
+        save(&all);
+    }
+}
+
+/// What cleanup left behind for the user to decide on.
+pub fn leftovers() -> Vec<Worktree> {
+    all().into_iter().filter(|w| w.kept.is_some()).collect()
+}
+
 pub fn forget(session_id: &str) {
     let _g = STORE.lock().unwrap();
     let mut all = load();
@@ -367,10 +458,23 @@ mod tests {
         assert_ne!(other.dir, made.dir);
 
         // Removing and restoring (a resumed session).
-        remove(&made.record).await.unwrap();
+        // No commits of its own, so even with origin ahead of local main the branch goes too.
+        assert!(!remove(&made.record).await.unwrap(), "an untouched branch should not be reported as holding work");
         assert!(git(&host, &made.dir, &["rev-parse", "--is-inside-work-tree"]).await.is_err());
+        assert!(git(&host, &clone, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", made.record.branch)]).await.is_err());
         restore(&made.record).await.unwrap();
         assert!(git(&host, &made.dir, &["rev-parse", "--is-inside-work-tree"]).await.is_ok());
+
+        // A commit of its own is work worth keeping: the folder goes, the branch stays.
+        let id = ["-c", "user.name=t", "-c", "user.email=t@t"];
+        git(&host, &made.dir, &[id[0], id[1], id[2], id[3], "commit", "-q", "--allow-empty", "-m", "mine"]).await.unwrap();
+        assert!(remove(&made.record).await.unwrap(), "unmerged commits must keep the branch");
+        let mut gone = made.record.clone();
+        gone.folder_gone = true;
+        // Discarding deletes the leftover branch outright.
+        discard(&gone).await.unwrap();
+        assert!(git(&host, &clone, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", made.record.branch)]).await.is_err());
+        restore(&made.record).await.unwrap();
 
         // Uncommitted work blocks removal and is left alone.
         let file = if matches!(host, HostId::Windows) { format!("{}\\scratch.txt", made.dir) } else { format!("{}/scratch.txt", made.dir) };
@@ -421,6 +525,24 @@ mod tests {
         let base = std::env::temp_dir().join(format!("colony-wtm-{}", std::process::id()));
         rt().block_on(exercise(HostId::Wsl(distro), base.display().to_string().replace('\\', "/")));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    fn record(host: HostId, path: &str) -> Worktree {
+        Worktree { session_id: "s".into(), host, repo: "r".into(), path: path.into(), branch: "colony/x".into(), created_at: 0, kept: None, folder_gone: false }
+    }
+
+    #[test]
+    fn folders_are_shown_the_way_windows_spells_them() {
+        assert_eq!(windows_folder(&record(HostId::Windows, "C:/code/api/.colony/worktrees/x")), r"C:\code\api\.colony\worktrees\x");
+        let wsl = HostId::Wsl("Ubuntu".into());
+        assert_eq!(windows_folder(&record(wsl.clone(), "/mnt/c/code/api/.colony/worktrees/x")), r"C:\code\api\.colony\worktrees\x");
+        assert_eq!(windows_folder(&record(wsl, "/home/t/api/.colony/worktrees/x")), r"\\wsl.localhost\Ubuntu\home\t\api\.colony\worktrees\x");
+    }
+
+    #[test]
+    fn kept_reasons_are_plain() {
+        assert_eq!(kept_reason("fatal: 'C:/x' contains modified or untracked files, use --force to delete it"), "Has uncommitted changes");
+        assert_eq!(kept_reason("fatal: something else broke\nmore"), "something else broke");
     }
 
     #[test]

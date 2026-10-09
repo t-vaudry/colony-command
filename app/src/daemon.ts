@@ -2,7 +2,7 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type HostOption, type PermissionChoice, type SpawnRequest } from "./types";
+import { severity, type Agent, type HostOption, type Leftover, type PermissionChoice, type SpawnRequest } from "./types";
 
 interface DaemonInfo {
   port: number;
@@ -10,7 +10,8 @@ interface DaemonInfo {
 }
 
 type Message =
-  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[] }
+  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[] }
+  | { type: "leftovers"; items: Leftover[] }
   | { type: "upsert"; agent: Agent }
   | { type: "remove"; id: string }
   | { type: "spawned"; term: string; session_id: string }
@@ -42,6 +43,8 @@ function decode(b64: string): Uint8Array {
 export class Daemon {
   agents = new Map<string, Agent>();
   hosts: HostOption[] = [];
+  /** Worktrees left behind for the user to decide on. */
+  leftovers: Leftover[] = [];
   status: ConnectionStatus = "connecting";
   error: string | null = null;
   /** Daemon clock minus local clock, so durations match the daemon's timestamps. */
@@ -110,10 +113,14 @@ export class Daemon {
       case "snapshot":
         this.agents = new Map(m.agents.map((a) => [a.id, a]));
         this.hosts = m.hosts ?? this.hosts;
+        this.leftovers = m.leftovers ?? [];
         this.skew = m.now - Date.now();
         this.status = "live";
         this.error = null;
         this.downSince = null;
+        break;
+      case "leftovers":
+        this.leftovers = m.items;
         break;
       case "upsert":
         this.agents.set(m.agent.id, m.agent);
@@ -228,6 +235,21 @@ export class Daemon {
   /** End a session Colony didn't start, so it can be resumed here. */
   terminate(id: string): boolean {
     return this.send({ type: "terminate", id });
+  }
+
+  /** Show a leftover worktree's folder in the file manager. */
+  openWorktree(sessionId: string): boolean {
+    return this.send({ type: "open_worktree", session_id: sessionId });
+  }
+
+  /** Delete a leftover worktree and its branch, uncommitted work included. */
+  discardWorktree(sessionId: string): boolean {
+    return this.send({ type: "discard_worktree", session_id: sessionId });
+  }
+
+  /** Stop listing a leftover; the folder and branch stay as they are. */
+  forgetWorktree(sessionId: string): boolean {
+    return this.send({ type: "forget_worktree", session_id: sessionId });
   }
 
   /** Done with a session: end every copy of it and clear it off the map. */

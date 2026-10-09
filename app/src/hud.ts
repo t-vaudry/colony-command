@@ -132,6 +132,12 @@ export class Hud {
       const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
       if (btn && a) btn.disabled = !answersFrom(questionsOf(a), this.picks.get(el.dataset.req) ?? []);
     });
+    this.counts.addEventListener("click", (e) => {
+      if (!(e.target as HTMLElement).closest("[data-show-leftovers]")) return;
+      // The list lives in the inspector when no bot is selected.
+      this.actions.select(null);
+      this.schedule();
+    });
     this.reply.addEventListener("input", () => {
       if (this.composeTarget) this.drafts.set(this.composeTarget, this.reply.value);
     });
@@ -293,7 +299,7 @@ export class Hud {
       ["idle", "idle", count("idle", "spawning")],
     ]
       .map(([c, label, n]) => `<span class="chip"><span class="dot ${c}"></span>${label} <b>${n}</b></span>`)
-      .join(""));
+      .join("") + this.leftoverChip());
     this.conn.className = `conn ${this.daemon.status}`;
     this.conn.textContent =
       this.daemon.status === "live"
@@ -331,6 +337,37 @@ export class Hud {
     }
   }
 
+  /** Header chip: worktrees Colony left for the user to decide on. */
+  private leftoverChip(): string {
+    const n = this.daemon.leftovers.length;
+    return n
+      ? `<button type="button" class="chip" data-show-leftovers title="Worktrees Colony kept because they hold work; click to review">⚠ <b>${n}</b> leftover worktree${n === 1 ? "" : "s"}</button>`
+      : "";
+  }
+
+  /** Worktrees kept after a bot was dismissed, with what to do about each. */
+  private leftoverList(): string {
+    const items = this.daemon.leftovers;
+    if (!items.length) return "";
+    const name = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? p;
+    const rows = items
+      .map((w) => {
+        const id = esc(w.session_id);
+        return `<div class="choice ask" role="group" aria-label="Leftover worktree">
+          <p><b>${esc(name(w.repo))}</b> · <span class="mono">${esc(w.branch)}</span> · ${esc(hostLabel(w.host))}</p>
+          <p class="muted">${esc(w.kept ?? "Kept")}${w.folder_gone ? " (the folder is gone; only the branch is left)" : ""}</p>
+          ${w.folder_gone ? "" : `<pre class="ask-target">${esc(w.path)}</pre>`}
+          <div class="actions">
+            ${w.folder_gone ? "" : `<button type="button" class="primary" data-wt-open="${id}">Open folder</button>`}
+            <button type="button" class="danger" data-wt-discard="${id}" title="Delete the folder and the branch, including anything uncommitted or unmerged">Discard</button>
+            <button type="button" data-wt-forget="${id}" title="Stop listing this; the folder and branch stay as they are">Keep &amp; hide</button>
+          </div>
+        </div>`;
+      })
+      .join("");
+    return `<div class="k">Leftover worktrees</div><p class="muted">These bots are done, but their worktrees hold work Colony won&#39;t delete on its own.</p>${rows}`;
+  }
+
   private renderPanel(): void {
     const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
     this.renderCompose(a);
@@ -341,6 +378,7 @@ export class Hud {
         <p class="muted">Bots on the front porch need you: red ones are stuck, yellow ones want a permission or an answer.
         Bots holding a blue package at the review dock have finished a turn.</p>
         <p class="muted">Drag to pan, scroll to zoom, double-click a bot to zoom to its project, <kbd>0</kbd> to fit everything.</p>
+        ${this.leftoverList()}
         ${
           idle
             ? `<div class="actions"><button type="button" data-dismiss-idle="1" title="End idle, ended, and crashed sessions and clear them off the map">Dismiss ${idle} idle bot${idle === 1 ? "" : "s"}</button></div>`
@@ -544,6 +582,13 @@ export class Hud {
       el.setAttribute("disabled", "");
       this.actions.select(null);
     }
+    if (el.dataset.wtOpen && !this.daemon.openWorktree(el.dataset.wtOpen)) this.toast("Not connected to colonyd.");
+    if (el.dataset.wtDiscard) {
+      if (!confirmed(el, "Click again: deletes uncommitted work")) return;
+      if (!this.daemon.discardWorktree(el.dataset.wtDiscard)) this.toast("Not connected to colonyd.");
+      else el.setAttribute("disabled", "");
+    }
+    if (el.dataset.wtForget && !this.daemon.forgetWorktree(el.dataset.wtForget)) this.toast("Not connected to colonyd.");
     if (el.dataset.dismissIdle) {
       const ids = this.idleSessions();
       if (!confirmed(el, `Click again to end ${ids.length} idle session${ids.length === 1 ? "" : "s"}`)) return;

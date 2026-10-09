@@ -152,3 +152,16 @@ export const STATE_LABEL: Record<AgentState, string> = {
   crashed: "crashed",
   ended: "ended",
 };
+
+/** A worktree (or just its branch) Colony couldn't clean up after its bot was done. */
+export interface Leftover {
+  session_id: string;
+  host: string;
+  repo: string;
+  path: string;
+  branch: string;
+  /** Why it was kept, e.g. "Has uncommitted changes". */
+  kept: string | null;
+  /** The folder is gone; only the branch, with unmerged commits, remains. */
+  folder_gone: boolean;
+}

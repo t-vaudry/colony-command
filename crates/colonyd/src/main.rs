@@ -163,11 +163,10 @@ async fn main() {
     // Worktrees of sessions that ended without being dismissed.
     let sweeper = shared.clone();
     tokio::spawn(async move {
-        let mut reported = std::collections::HashSet::new();
         // Let the first replay of history settle before judging anything ended.
         tokio::time::sleep(Duration::from_secs(60)).await;
         loop {
-            api::sweep_worktrees(&sweeper, &mut reported).await;
+            api::sweep_worktrees(&sweeper).await;
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
