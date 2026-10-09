@@ -65,6 +65,10 @@ export interface Agent {
   auth_need?: { kind: "sign_in" | "install"; provider: string; label: string } | null;
   /** Tokens used so far (subagents included on a main agent). Absent from older daemons. */
   tokens?: Tokens;
+  /** Colony stopped this session between turns; it shows idle until resumed. */
+  paused_at?: number | null;
+  /** A pause waits for the current turn to end. */
+  pause_pending?: boolean;
   /** Estimated cost in USD at list prices. */
   cost_usd?: number;
   /** Some tokens were from a model without a known price, so the cost is low. */
@@ -105,7 +109,34 @@ export interface PermissionAsk {
   asked_at: number;
 }
 
-export type PermissionChoice = "allow" | "allow_always" | "deny" | "pass";
+export type PermissionChoice = "allow" | "allow_always" | "allow_project" | "deny" | "pass";
+
+/** What "Allow always for project" would save for a held request. */
+export interface Offer {
+  /** Claude Code's own spelling, e.g. `Bash(npm test)`. */
+  rules: string[];
+  project: string | null;
+}
+
+/** A saved "allow always for project" rule. */
+export interface Rule {
+  id: string;
+  project_key: string;
+  project_name: string;
+  tool: string;
+  content?: string | null;
+  created_at: number;
+}
+
+/** `Bash(npm test)` for a rule that has a pattern, else just the tool. */
+export const ruleLabel = (r: Rule) => (r.content ? `${r.tool}(${r.content})` : r.tool);
+
+/** What the state pill says: pause overrides plain idle. */
+export function stateLabel(a: Agent): string {
+  if (a.paused_at) return "paused";
+  if (a.pause_pending) return `${STATE_LABEL[a.state]}, pausing after this turn`;
+  return STATE_LABEL[a.state];
+}
 
 /** Where Colony can start sessions. */
 export interface HostOption {

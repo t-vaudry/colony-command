@@ -40,19 +40,24 @@ async function fixNeed(a: Agent): Promise<void> {
   terminal.show(term, `${what} ${a.auth_need?.label ?? "the tool"} · ${a.name}`);
 }
 
-const hud = new Hud(daemon, { select, showTerminal, newSession, fixNeed });
-const dialog = new NewSessionDialog(
-  daemon,
-  ({ term, session_id }) => {
-    // Use the terminal id from the spawn reply: when resuming, the bot
-    // already exists and still carries its old (closed) terminal for a moment.
-    paneAgent = session_id;
-    const label = daemon.agents.get(session_id)?.name ?? "New session";
-    terminal.show(term, label);
-    select(session_id);
-  },
-  () => terminal.size(),
-);
+function started({ term, session_id }: { term: string; session_id: string }): void {
+  // Use the terminal id from the spawn reply: when resuming, the bot
+  // already exists and still carries its old (closed) terminal for a moment.
+  paneAgent = session_id;
+  const label = daemon.agents.get(session_id)?.name ?? "New session";
+  terminal.show(term, label);
+  select(session_id);
+}
+
+/** One-click "resume in Colony": same folder and host, no dialog. */
+async function resumeNow(a: Agent, prompt?: string): Promise<void> {
+  const dir = a.project_dir ?? a.cwd;
+  if (!dir) throw new Error("Colony doesn't know this session's folder; use New session to resume it.");
+  started(await daemon.spawn({ host: a.host, dir, resume: a.session_id, prompt, chrome: false, ...terminal.size() }));
+}
+
+const hud = new Hud(daemon, { select, showTerminal, newSession, fixNeed, resumeNow });
+const dialog = new NewSessionDialog(daemon, started, () => terminal.size());
 
 document.getElementById("new-session-btn")!.addEventListener("click", () => {
   const a = world.selected ? daemon.agents.get(world.selected) : undefined;

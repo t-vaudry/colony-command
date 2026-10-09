@@ -4,7 +4,7 @@
 import type { Daemon } from "./daemon";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { repoDir, resumeWarning, worktreeName, type Prefill } from "./dialog";
-import { compact, money, MODELS, modelLabel, severity, spentToday, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
+import { compact, money, MODELS, modelLabel, ruleLabel, severity, spentToday, STATE_LABEL, stateLabel, type Agent, type AgentState, type PermissionChoice } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -26,10 +26,11 @@ function setHtml(el: HTMLElement, html: string): void {
   if (el.dataset.html !== html) {
     // Keep the caret in an answer field the user is typing in.
     const f = document.activeElement as HTMLInputElement | null;
-    const typing = f && el.contains(f) && f.dataset.other ? { q: f.dataset.other, at: f.selectionStart } : null;
+    const sel = f && el.contains(f) ? (f.dataset.other ? `[data-other="${f.dataset.other}"]` : f.dataset.draft ? `[data-draft="${f.dataset.draft}"]` : null) : null;
+    const typing = sel && f ? { sel, at: f.selectionStart } : null;
     el.innerHTML = html;
     if (typing) {
-      const n = el.querySelector<HTMLInputElement>(`[data-other="${typing.q}"]`);
+      const n = el.querySelector<HTMLInputElement>(typing.sel);
       n?.focus();
       if (typing.at != null) n?.setSelectionRange(typing.at, typing.at);
     }
@@ -73,6 +74,8 @@ export interface HudActions {
   newSession: (prefill?: Prefill) => void;
   /** Open the sign-in or install terminal for a bot stuck on one. */
   fixNeed: (a: Agent) => Promise<void>;
+  /** Resume a session in a Colony terminal right away, optionally sending a first message. */
+  resumeNow: (a: Agent, prompt?: string) => Promise<void>;
 }
 
 /** Two-step confirm: the first click arms the button for a few seconds. */
@@ -102,6 +105,10 @@ export class Hud {
   private moveChoice: string | null = null;
   /** Model hints set aside with "Not now", by agent, until a different hint comes up. */
   private hintsDismissed = new Map<string, string>();
+  /** Replies typed for bots Colony didn't start, sent after resuming them. */
+  private resumeDrafts = new Map<string, string>();
+  /** Bots whose one-click resume is waiting on the other copy being dealt with, with the message to send. */
+  private quick = new Map<string, string>();
   /** Answers chosen so far for held questions, by request id. */
   private picks = new Map<string, Pick[]>();
   private scheduled = false;
@@ -126,6 +133,10 @@ export class Hud {
     this.panel.addEventListener("click", (e) => void this.action(e));
     this.panel.addEventListener("input", (e) => {
       const el = e.target as HTMLInputElement;
+      if (el.dataset.draft?.startsWith("reply:")) {
+        this.resumeDrafts.set(el.dataset.draft.slice(6), el.value);
+        return;
+      }
       if (!el.dataset.other || !el.dataset.req) return;
       this.pickFor(el.dataset.req, Number(el.dataset.other)).other = el.value;
       // Only the send button's enabled state changes, so the field keeps focus.
@@ -134,7 +145,7 @@ export class Hud {
       if (btn && a) btn.disabled = !answersFrom(questionsOf(a), this.picks.get(el.dataset.req) ?? []);
     });
     this.counts.addEventListener("click", (e) => {
-      if (!(e.target as HTMLElement).closest("[data-show-leftovers]")) return;
+      if (!(e.target as HTMLElement).closest("[data-show-leftovers], [data-show-rules]")) return;
       // The list lives in the inspector when no bot is selected.
       this.actions.select(null);
       this.schedule();
@@ -229,6 +240,23 @@ export class Hud {
       </div>`;
   }
 
+  /** Resume right away in a Colony terminal, sending `text` first if there is any. */
+  private async resumeQuick(a: Agent, text: string): Promise<void> {
+    this.quick.delete(a.id);
+    try {
+      await this.actions.resumeNow(a, text || undefined);
+      this.resumeDrafts.delete(a.id);
+    } catch (err) {
+      this.toast(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** After the other copy is dealt with: finish the resume the user started. */
+  private resumeFrom(a: Agent): void {
+    if (this.quick.has(a.id)) void this.resumeQuick(a, this.quick.get(a.id) ?? "");
+    else this.resumeHere(a);
+  }
+
   private resumeHere(a: Agent): void {
     this.actions.newSession({ dir: a.project_dir ?? a.cwd ?? undefined, host: a.host, resume: a.session_id, resumeLabel: a.name });
   }
@@ -237,7 +265,7 @@ export class Hud {
    *  waiting for review isn't included, so nothing unread gets cleared. */
   private idleSessions(): string[] {
     return [...this.daemon.agents.values()]
-      .filter((a) => a.kind === "main" && (a.state === "idle" || a.state === "ended" || a.state === "crashed"))
+      .filter((a) => a.kind === "main" && !a.paused_at && (a.state === "idle" || a.state === "ended" || a.state === "crashed"))
       .map((a) => a.id);
   }
 
@@ -249,7 +277,7 @@ export class Hud {
     const a = this.composeAgent();
     const text = this.reply.value.trim();
     if (!a?.terminal || !text) return;
-    if (!this.daemon.sendText(a.terminal, text)) {
+    if (!this.daemon.reply(a.id, text)) {
       this.toast("Not connected to colonyd; your message is still in the box.");
       return;
     }
@@ -300,7 +328,7 @@ export class Hud {
       ["idle", "idle", count("idle", "spawning")],
     ]
       .map(([c, label, n]) => `<span class="chip"><span class="dot ${c}"></span>${label} <b>${n}</b></span>`)
-      .join("") + this.leftoverChip() + this.spendChip());
+      .join("") + this.leftoverChip() + this.rulesChip() + this.spendChip());
     this.conn.className = `conn ${this.daemon.status}`;
     this.conn.textContent =
       this.daemon.status === "live"
@@ -318,7 +346,7 @@ export class Hud {
           .map(
             (a) =>
               `<button type="button" class="porch-item ${severity(a.state)}${a.id === this.selected ? " sel" : ""}" data-id="${esc(a.id)}">` +
-              `<b>${esc(a.name)}</b> ${esc(STATE_LABEL[a.state])} · ${since(a.state_since)}</button>` +
+              `<b>${esc(a.name)}</b> ${esc(stateLabel(a))} · ${since(a.state_since)}</button>` +
               (a.permission
                 ? `<span class="quick"><button type="button" class="primary" data-decide="allow" data-req="${esc(a.permission.request_id)}" title="Allow ${esc(a.permission.tool)}">Allow</button><button type="button" class="danger" data-decide="deny" data-req="${esc(a.permission.request_id)}">Deny</button></span>`
                 : ""),
@@ -346,6 +374,30 @@ export class Hud {
     const note = t.partial ? " · partial" : "";
     const why = "Estimate from list prices, since local midnight, all projects." + (t.partial ? " Some sessions ran a model without a known price: their tokens are counted but not their cost." : "");
     return `<span class="chip spend" title="${esc(why)}">${money(t.usd)} today${note} · ${compact(t.tokens)} tokens</span>`;
+  }
+
+  /** Header chip: saved "allow always for project" rules. */
+  private rulesChip(): string {
+    const n = this.daemon.rules.length;
+    return n
+      ? `<button type="button" class="chip" data-show-rules title="Permissions you allowed always for a project; click to review or remove">⚖ <b>${n}</b> saved rule${n === 1 ? "" : "s"}</button>`
+      : "";
+  }
+
+  /** The saved rules, each removable. Shown when no bot is selected. */
+  private rulesList(): string {
+    const rules = this.daemon.rules;
+    const when = (t: number) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const rows = rules
+      .map(
+        (r) => `<div class="rule row"><span class="k">${esc(r.project_name)}</span><span><b class="mono">${esc(ruleLabel(r))}</b> <span class="muted small">saved ${esc(when(r.created_at))}</span></span><button type="button" class="danger" data-del-rule="${esc(r.id)}" title="Remove this rule: ${esc(ruleLabel(r))} will ask again in ${esc(r.project_name)}">Remove</button></div>`,
+      )
+      .join("");
+    return `<div class="k">Saved rules</div>${
+      rules.length
+        ? `<p class="muted small">Colony allows these without asking, only in the project shown and only when Claude Code suggests exactly this rule. Remove one and it asks again.</p>${rows}`
+        : `<p class="muted small">None yet. Choose <b>Allow always for project</b> on a permission request to save one here.</p>`
+    }`;
   }
 
   private leftoverChip(): string {
@@ -389,6 +441,7 @@ export class Hud {
         Bots holding a blue package at the review dock have finished a turn.</p>
         <p class="muted">Drag to pan, scroll to zoom, double-click a bot to zoom to its project, <kbd>0</kbd> to fit everything.</p>
         ${this.leftoverList()}
+        ${this.rulesList()}
         ${
           idle
             ? `<div class="actions"><button type="button" data-dismiss-idle="1" title="End idle, ended, and crashed sessions and clear them off the map">Dismiss ${idle} idle bot${idle === 1 ? "" : "s"}</button></div>`
@@ -399,7 +452,13 @@ export class Hud {
     const parent = a.parent_id ? this.daemon.agents.get(a.parent_id) : undefined;
     const kids = a.children.map((c) => this.daemon.agents.get(c)).filter((k): k is Agent => !!k);
     const sev = severity(a.state);
-    const card = askCard(a, a.permission ? this.picks.get(a.permission.request_id) ?? [] : []);
+    const card = askCard(
+      a,
+      a.permission ? this.picks.get(a.permission.request_id) ?? [] : [],
+      a.permission ? this.daemon.offers.get(a.permission.request_id) : undefined,
+      this.resumeDrafts.get(a.id) ?? "",
+      resumeWarning(a),
+    );
     const row = (k: string, v: string | null | undefined, cls = "") =>
       v ? `<div class="row"><span class="k">${k}</span><span class="${cls}">${esc(v)}</span></div>` : "";
     const target = a.current_tool?.target?.replace(/\s+/g, " ");
@@ -414,7 +473,7 @@ export class Hud {
     setHtml(this.panel, `
       <div class="k">${a.kind === "subagent" ? `Subagent of ${esc(parent?.name ?? "?")}` : esc(a.project_name ?? "unknown project")}</div>
       <h2>${esc(a.name)}</h2>
-      <div><span class="pill ${sev ?? a.state}">${esc(STATE_LABEL[a.state])}</span> <span class="muted">for ${since(a.state_since)}</span></div>
+      <div><span class="pill ${sev ?? a.state}">${esc(stateLabel(a))}</span> <span class="muted">for ${since(a.state_since)}</span></div>
       ${card || row(REASON_LABEL[a.state] ?? "Note", a.reason, "reason")}
       ${
         a.auth_need
@@ -450,7 +509,15 @@ export class Hud {
       <div class="actions">
         ${a.state === "ready_to_review" ? `<button type="button" data-ack="${esc(a.id)}">Mark reviewed</button>` : ""}
         ${a.state === "crashed" ? `<button type="button" data-ack="${esc(a.id)}">Clear</button>` : ""}
-        ${a.kind === "main" && !a.terminal ? `<button type="button" class="primary" data-resume="${esc(a.id)}">Resume in Colony</button>` : ""}
+        ${a.kind === "main" && a.paused_at ? `<button type="button" class="primary" data-resume-paused="${esc(a.id)}" title="Start this session again with claude --resume; the conversation carries over">Resume</button>` : ""}
+        ${
+          a.kind === "main" && a.terminal && !a.paused_at
+            ? a.pause_pending
+              ? `<button type="button" data-cancel-pause="${esc(a.id)}">Cancel pause</button>`
+              : `<button type="button" data-pause="${esc(a.id)}" title="${esc(a.state === "working" ? "Waits for this turn to end, then stops the session. Resume carries on with the conversation intact." : "Stops the session now (it is between turns). Resume carries on with the conversation intact.")}">Pause</button>`
+            : ""
+        }
+        ${a.kind === "main" && !a.terminal && !a.paused_at ? `<button type="button" class="primary" data-resume="${esc(a.id)}">Resume in Colony</button>` : ""}
         ${a.kind === "main" ? `<button type="button" data-new-here="${esc(a.id)}">New session here</button>` : ""}
         ${a.kind === "main" && !a.terminal ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
         ${a.kind === "main" ? `<button type="button" class="danger" data-dismiss="${esc(a.id)}" title="End every copy of this session and clear it off the map. The conversation stays on disk and can still be resumed.">Dismiss</button>` : ""}
@@ -478,8 +545,15 @@ export class Hud {
           : ""
       }
       ${
-        a.kind === "main" && !a.terminal
-          ? `<p class="muted small">Colony didn't start this session, so it can't type into it. ${
+        a.kind === "main" && a.paused_at
+          ? `<p class="muted small">Paused: Colony stopped this session's process between turns. Nothing is lost; the conversation is on disk. Resume starts it again with <code>--resume</code>.</p>`
+          : a.pause_pending
+            ? `<p class="muted small">Pausing as soon as this turn ends, so no work is cut off.</p>`
+            : ""
+      }
+      ${
+        a.kind === "main" && !a.terminal && !a.paused_at
+          ? `<p class="muted small">Colony didn't start this session, so it can't type into it or pause it (it only stops sessions it owns). ${
               a.state === "ready_to_review" ? "Mark reviewed only moves it off the dock. " : ""
             }Resume it here to talk to it from the map, or reply in ${a.entrypoint === "claude-desktop" ? "the Claude desktop app" : "its terminal"}.</p>`
           : ""
@@ -544,6 +618,39 @@ export class Hud {
       if (!this.daemon.setModel(id, el.dataset.switchModel)) this.toast("Not connected to colonyd.");
       else this.toast(`Restarting on ${modelLabel(el.dataset.switchModel)}; the conversation carries over…`);
     }
+    if (el.dataset.pause) {
+      if (!this.daemon.pause(el.dataset.pause)) this.toast("Not connected to colonyd.");
+      else {
+        const a = this.daemon.agents.get(el.dataset.pause);
+        this.toast(a?.state === "working" ? "Pausing when this turn ends…" : "Pausing…");
+      }
+    }
+    if (el.dataset.cancelPause && !this.daemon.cancelPause(el.dataset.cancelPause)) this.toast("Not connected to colonyd.");
+    if (el.dataset.resumePaused) {
+      if (!this.daemon.resume(el.dataset.resumePaused)) this.toast("Not connected to colonyd.");
+      else {
+        el.setAttribute("disabled", "");
+        el.textContent = "Resuming…";
+      }
+    }
+    if (el.dataset.resumeSend || el.dataset.resumeNow) {
+      const a = this.daemon.agents.get((el.dataset.resumeSend ?? el.dataset.resumeNow)!);
+      if (!a) return;
+      const text = el.dataset.resumeSend ? (this.resumeDrafts.get(a.id) ?? "").trim() : "";
+      if (el.dataset.resumeSend && !text) {
+        this.toast("Type your answer first, or use Resume in Colony.");
+        return;
+      }
+      if (resumeWarning(a)) {
+        // Still running elsewhere: ask how to proceed, then carry on.
+        this.quick.set(a.id, text);
+        this.moveChoice = a.id;
+        this.schedule();
+        return;
+      }
+      void this.resumeQuick(a, text);
+    }
+    if (el.dataset.delRule && !this.daemon.deleteRule(el.dataset.delRule)) this.toast("Not connected to colonyd.");
     if (el.dataset.dismissHint) {
       this.hintsDismissed.set(el.dataset.agent!, el.dataset.dismissHint);
       this.schedule();
@@ -554,12 +661,13 @@ export class Hud {
     }
     if (el.dataset.cancelMove) {
       this.moveChoice = null;
+      this.quick.clear();
       this.schedule();
     }
     if (el.dataset.resumeAnyway) {
       const a = this.daemon.agents.get(el.dataset.resumeAnyway);
       this.moveChoice = null;
-      if (a) this.resumeHere(a);
+      if (a) this.resumeFrom(a);
     }
     if (el.dataset.move) {
       const id = el.dataset.move;
@@ -576,7 +684,7 @@ export class Hud {
         if (a && (a.state === "ended" || a.state === "crashed")) {
           clearInterval(wait);
           this.moveChoice = null;
-          this.resumeHere(a);
+          this.resumeFrom(a);
         } else if (Date.now() - started > 8000) {
           clearInterval(wait);
           this.moveChoice = null;
