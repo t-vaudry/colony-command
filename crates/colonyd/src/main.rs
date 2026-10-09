@@ -8,6 +8,7 @@
 
 mod api;
 mod approvals;
+mod diffstat;
 mod pty;
 mod needs;
 mod worktree;
@@ -168,6 +169,9 @@ async fn main() {
             }
         }
     });
+
+    // Files and lines changed, for work ready to review.
+    tokio::spawn(diffstat::run(shared.clone()));
 
     // Worktrees of sessions that ended without being dismissed.
     let sweeper = shared.clone();

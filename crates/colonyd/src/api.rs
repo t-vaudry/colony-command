@@ -818,7 +818,7 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
 
 /// Whether this daemon takes injected events. Off unless `COLONY_INGEST=1`, so
 /// a daemon running real sessions never mixes in made-up ones.
-fn ingest_enabled() -> bool {
+pub(crate) fn ingest_enabled() -> bool {
     std::env::var("COLONY_INGEST").is_ok_and(|v| v == "1")
 }
 
