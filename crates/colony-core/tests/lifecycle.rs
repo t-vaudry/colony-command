@@ -398,3 +398,41 @@ fn reattaching_after_a_daemon_restart_keeps_the_session() {
     assert_eq!(a.terminal_pid, Some(8748));
     assert!(a.other_pids().is_empty());
 }
+
+#[test]
+fn dismissed_sessions_leave_the_map_and_stay_gone() {
+    use colony_core::DomainEvent::{SessionGone, TerminalAttached, TerminalExited};
+    let mut r = Run::new(HostId::Windows);
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: "C:/x".into(), pid: Some(8748) });
+    r.hook(json!({"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}));
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Done."}));
+    seen(&mut r, 100);
+    let history_ts = r.t;
+
+    let removed = r.colony.dismiss(SID, r.t + 1);
+    assert!(removed.contains(&SID.to_string()) && removed.contains(&sub_id(SID, "a1")));
+    assert!(r.colony.agents.is_empty());
+
+    // The ended terminal, the vanished process, a late hook, and a replay of
+    // its history after a daemon restart don't bring it back.
+    term(&mut r, TerminalExited { term_id: "t1".into(), requested: true });
+    term(&mut r, SessionGone { pid: 100 });
+    seen(&mut r, 100);
+    r.hook(json!({"hook_event_name": "SessionEnd"}));
+    let p = HookPayload::parse(&json!({"session_id": SID, "hook_event_name": "UserPromptSubmit", "prompt": "old"}).to_string()).unwrap();
+    r.colony.apply(&Envelope::from_hook(HostId::Windows, history_ts, &p).unwrap());
+    assert!(r.colony.agents.is_empty());
+
+    // Resuming it later does.
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "resume"}));
+    assert_eq!(r.state(SID), AgentState::Spawning);
+    assert!(r.colony.dismissed.is_empty());
+}
+
+#[test]
+fn only_main_agents_can_be_dismissed() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}));
+    assert!(r.colony.dismiss(&sub_id(SID, "a1"), r.t).is_empty());
+    assert_eq!(r.colony.agents.len(), 2);
+}

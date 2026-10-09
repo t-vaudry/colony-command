@@ -166,6 +166,14 @@ export class Hud {
     this.actions.newSession({ dir: a.project_dir ?? a.cwd ?? undefined, host: a.host, resume: a.session_id, resumeLabel: a.name });
   }
 
+  /** Sessions with nothing going on: idle, ended, or crashed. Finished work
+   *  waiting for review isn't included, so nothing unread gets cleared. */
+  private idleSessions(): string[] {
+    return [...this.daemon.agents.values()]
+      .filter((a) => a.kind === "main" && (a.state === "idle" || a.state === "ended" || a.state === "crashed"))
+      .map((a) => a.id);
+  }
+
   private composeAgent(): Agent | undefined {
     return this.composeTarget ? this.daemon.agents.get(this.composeTarget) : undefined;
   }
@@ -267,10 +275,16 @@ export class Hud {
     const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
     this.renderCompose(a);
     if (!a) {
+      const idle = this.idleSessions().length;
       setHtml(this.panel, `<div class="k">Inspector</div><h2>Click a bot</h2>
         <p class="muted">Bots on the front porch need you: red ones are stuck, yellow ones want a permission or an answer.
         Bots holding a blue package at the review dock have finished a turn.</p>
-        <p class="muted">Drag to pan, scroll to zoom, double-click a bot to zoom to its project, <kbd>0</kbd> to fit everything.</p>`);
+        <p class="muted">Drag to pan, scroll to zoom, double-click a bot to zoom to its project, <kbd>0</kbd> to fit everything.</p>
+        ${
+          idle
+            ? `<div class="actions"><button type="button" data-dismiss-idle="1" title="End idle, ended, and crashed sessions and clear them off the map">Dismiss ${idle} idle bot${idle === 1 ? "" : "s"}</button></div>`
+            : ""
+        }`);
       return;
     }
     const parent = a.parent_id ? this.daemon.agents.get(a.parent_id) : undefined;
@@ -323,6 +337,7 @@ export class Hud {
         ${a.kind === "main" && !a.terminal ? `<button type="button" class="primary" data-resume="${esc(a.id)}">Resume in Colony</button>` : ""}
         ${a.kind === "main" ? `<button type="button" data-new-here="${esc(a.id)}">New session here</button>` : ""}
         ${a.kind === "main" && !a.terminal ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
+        ${a.kind === "main" ? `<button type="button" class="danger" data-dismiss="${esc(a.id)}" title="End every copy of this session and clear it off the map. The conversation stays on disk and can still be resumed.">Dismiss</button>` : ""}
       </div>
       ${
         a.kind === "main" && a.terminal && resumeWarning(a)
@@ -411,6 +426,23 @@ export class Hud {
           this.toast("The other copy didn't stop. Close it from the Claude desktop app's tray menu, then try again.");
         }
       }, 150);
+    }
+    if (el.dataset.dismiss) {
+      const a = this.daemon.agents.get(el.dataset.dismiss);
+      const busy = a && (a.state === "working" || a.state === "needs_input" || a.state === "awaiting_reply");
+      if (!confirmed(el, busy ? "Still in use. Click again to end it" : "Click again to end and clear")) return;
+      if (!this.daemon.dismiss(el.dataset.dismiss)) {
+        this.toast("Not connected to colonyd.");
+        return;
+      }
+      el.setAttribute("disabled", "");
+      this.actions.select(null);
+    }
+    if (el.dataset.dismissIdle) {
+      const ids = this.idleSessions();
+      if (!confirmed(el, `Click again to end ${ids.length} idle session${ids.length === 1 ? "" : "s"}`)) return;
+      if (!ids.every((id) => this.daemon.dismiss(id))) this.toast("Not connected to colonyd.");
+      el.setAttribute("disabled", "");
     }
     if (el.dataset.ack && !this.daemon.ack(el.dataset.ack)) el.textContent = "Not connected; try again";
     if (el.dataset.copy) {

@@ -29,6 +29,9 @@ pub const FAILURES_TO_BLOCK: u32 = 3;
 /// Ended main agents stay visible this long, returned subagents this long.
 pub const ENDED_TTL_MS: u64 = 10 * 60_000;
 pub const SUB_ENDED_TTL_MS: u64 = 60_000;
+/// How long a dismissal is remembered. Longer than colonyd's history replay,
+/// so a restart doesn't bring dismissed sessions back.
+pub const DISMISSED_KEEP_MS: u64 = 24 * 60 * 60_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -226,9 +229,35 @@ impl Agent {
     }
 }
 
+/// A session the user cleared off the map.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Dismissed {
+    pub at: u64,
+    /// Its processes when dismissed, so their late registry sightings don't
+    /// count as the session coming back.
+    pub pids: Vec<u32>,
+}
+
+impl Dismissed {
+    /// Whether this event means the session is in use again (resumed), rather
+    /// than the tail of the one that was dismissed or a replay of its history.
+    fn revived_by(&self, e: &Envelope) -> bool {
+        e.ts > self.at
+            && match &e.event {
+                DomainEvent::SessionStarted { source } => source.as_deref() != Some("compact"),
+                DomainEvent::PromptSubmitted { .. } | DomainEvent::TerminalAttached { .. } => true,
+                DomainEvent::SessionSeen { record } => !self.pids.contains(&record.pid),
+                _ => false,
+            }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Colony {
     pub agents: BTreeMap<String, Agent>,
+    /// Sessions the user dismissed, by session id.
+    #[serde(default)]
+    pub dismissed: BTreeMap<String, Dismissed>,
 }
 
 pub fn sub_id(session_id: &str, agent_id: &str) -> String {
@@ -245,6 +274,12 @@ impl Colony {
     pub fn apply(&mut self, e: &Envelope) -> Vec<String> {
         let mut changed = Vec::new();
         let sid = e.session_id.clone();
+        if let Some(d) = self.dismissed.get(&sid) {
+            if !d.revived_by(e) {
+                return changed;
+            }
+            self.dismissed.remove(&sid);
+        }
         if !self.agents.contains_key(&sid) {
             let mut a = Agent::new_main(e);
             a.name = self.unique_name(&a.name);
@@ -572,6 +607,23 @@ impl Colony {
             self.agents.remove(&id);
             changed.push(id);
         }
+        self.dismissed.retain(|_, d| now.saturating_sub(d.at) <= DISMISSED_KEEP_MS);
+        changed
+    }
+
+    /// The user is done with a session: take it and its subagents off the map
+    /// now, and ignore what it sends from here on unless it's resumed. Ending
+    /// its processes is the caller's job.
+    pub fn dismiss(&mut self, id: &str, now: u64) -> Vec<String> {
+        let Some(a) = self.agents.get(id).filter(|a| a.kind == AgentKind::Main) else { return Vec::new() };
+        let mut pids = a.pids.clone();
+        pids.extend(a.pid.into_iter().chain(a.terminal_pid).filter(|p| !a.pids.contains(p)));
+        let mut changed = a.children.clone();
+        changed.push(id.to_string());
+        for c in &changed {
+            self.agents.remove(c);
+        }
+        self.dismissed.insert(id.to_string(), Dismissed { at: now, pids });
         changed
     }
 

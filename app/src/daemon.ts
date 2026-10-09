@@ -213,4 +213,9 @@ export class Daemon {
   terminate(id: string): boolean {
     return this.send({ type: "terminate", id });
   }
+
+  /** Done with a session: end every copy of it and clear it off the map. */
+  dismiss(id: string): boolean {
+    return this.send({ type: "dismiss", id });
+  }
 }

@@ -136,6 +136,8 @@ enum Command {
     /// End a session Colony did not start (e.g. one the Claude desktop app
     /// keeps running in the background), so it can be resumed here.
     Terminate { id: String },
+    /// Done with a session: end every copy of it and clear it off the map.
+    Dismiss { id: String },
 }
 
 /// What one map connection is looking at.
@@ -204,6 +206,7 @@ async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<
         Command::Resize { term, cols, rows } => pty.resize(&term, cols, rows).map(|_| None),
         Command::Kill { term } => pty.kill(&term).map(|_| None),
         Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
+        Command::Dismiss { id } => dismiss(shared, &id).await.map(|_| None),
         Command::Permission { request_id, choice, message } => shared.approvals.decide(&request_id, choice, message).map(|_| None),
     };
     match result {
@@ -285,41 +288,112 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket) {
 /// against its registry file first, so a reused pid is never touched. A
 /// Colony terminal for the session is left alone; End session handles that.
 async fn terminate(shared: &Shared, id: &str) -> Result<(), String> {
-    let (session_id, pids, host, terminal) = {
-        let colony = shared.colony.read().await;
-        let a = colony.agents.get(id).ok_or("no such session")?;
-        // Only copies running outside Colony's own terminal.
-        let mut pids = a.other_pids();
-        if pids.is_empty() && a.terminal.is_none() {
-            pids.extend(a.pid);
-        }
-        (a.session_id.clone(), pids, a.host.clone(), a.terminal.clone())
-    };
-    if pids.is_empty() {
+    let c = copies(shared, id).await?;
+    if c.others.is_empty() {
         return Err("Colony doesn't know of another running copy of this session".into());
     }
+    end_others(shared, &c).await?;
+    if c.terminal.is_none() {
+        // A forced exit skips Claude Code's SessionEnd hook; record the end here.
+        let _ = shared
+            .events
+            .send(Envelope { ts: now_ms(), host: c.host, session_id: c.session_id, cwd: None, event: DomainEvent::SessionEnded })
+            .await;
+    }
+    Ok(())
+}
+
+/// The user is done with a session: end every copy of it (Colony's terminal
+/// and any outside one) and take it off the map, so its context isn't picked
+/// up again by accident. The conversation stays on disk and can be resumed.
+async fn dismiss(shared: &Shared, id: &str) -> Result<(), String> {
+    let c = copies(shared, id).await?;
+    if c.main_id.as_deref() != Some(id) {
+        return Err("only a session's main bot can be dismissed".into());
+    }
+    end_others(shared, &c).await?;
+    if let Some(term) = &c.terminal {
+        // Already closed is fine: there's nothing left to end.
+        if let Err(e) = shared.pty.kill(term) {
+            log(format!("dismiss {id}: terminal {term}: {e}"));
+        }
+    }
+    let msgs = {
+        let mut colony = shared.colony.write().await;
+        let changed = colony.dismiss(id, now_ms());
+        save_dismissed(&colony);
+        delta_messages(&colony, &changed)
+    };
+    log(format!("dismissed session {} at the user's request", c.session_id));
+    for m in msgs {
+        let _ = shared.deltas.send(m);
+    }
+    Ok(())
+}
+
+/// Where a session is running.
+struct Copies {
+    /// Set when `id` named a main agent.
+    main_id: Option<String>,
+    session_id: String,
+    host: HostId,
+    terminal: Option<String>,
+    /// Processes outside Colony's own terminal.
+    others: Vec<u32>,
+}
+
+async fn copies(shared: &Shared, id: &str) -> Result<Copies, String> {
+    let colony = shared.colony.read().await;
+    let a = colony.agents.get(id).ok_or("no such session")?;
+    let mut others = a.other_pids();
+    if others.is_empty() && a.terminal.is_none() {
+        others.extend(a.pid);
+    }
+    Ok(Copies {
+        main_id: (a.kind == colony_core::AgentKind::Main).then(|| a.id.clone()),
+        session_id: a.session_id.clone(),
+        host: a.host.clone(),
+        terminal: a.terminal.clone(),
+        others,
+    })
+}
+
+/// End the copies of a session that Colony didn't start. Each pid is
+/// re-checked against its registry file first, so a reused pid is never
+/// touched.
+async fn end_others(shared: &Shared, c: &Copies) -> Result<(), String> {
     let owned = shared.pty.owned.lock().unwrap().clone();
-    for pid in &pids {
+    for pid in &c.others {
         // Never a process Colony started, whatever the registry says.
         if colony_source::process::lineage(*pid).iter().any(|p| owned.contains_key(p)) {
             log(format!("not ending pid {pid}: it runs in a Colony terminal"));
             continue;
         }
-        end_process(&session_id, *pid, &host).await?;
-        log(format!("ended session {session_id} (pid {pid} on {host}) at the user's request"));
+        end_process(&c.session_id, *pid, &c.host).await?;
+        log(format!("ended session {} (pid {pid} on {}) at the user's request", c.session_id, c.host));
         let _ = shared
             .events
-            .send(Envelope { ts: now_ms(), host: host.clone(), session_id: session_id.clone(), cwd: None, event: DomainEvent::SessionGone { pid: *pid } })
-            .await;
-    }
-    if terminal.is_none() {
-        // A forced exit skips Claude Code's SessionEnd hook; record the end here.
-        let _ = shared
-            .events
-            .send(Envelope { ts: now_ms(), host, session_id, cwd: None, event: DomainEvent::SessionEnded })
+            .send(Envelope { ts: now_ms(), host: c.host.clone(), session_id: c.session_id.clone(), cwd: None, event: DomainEvent::SessionGone { pid: *pid } })
             .await;
     }
     Ok(())
+}
+
+fn dismissed_path() -> std::path::PathBuf {
+    colony_source::colony_home().join("dismissed.json")
+}
+
+/// Dismissals are kept on disk so a colonyd restart, which replays recent
+/// history, doesn't put dismissed sessions back on the map.
+fn save_dismissed(colony: &colony_core::Colony) {
+    let body = serde_json::to_vec_pretty(&colony.dismissed).expect("serializes");
+    if let Err(e) = std::fs::write(dismissed_path(), body) {
+        log(format!("could not save dismissed sessions: {e}"));
+    }
+}
+
+pub fn load_dismissed() -> std::collections::BTreeMap<String, colony_core::state::Dismissed> {
+    std::fs::read(dismissed_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 async fn end_process(session_id: &str, pid: u32, host: &HostId) -> Result<(), String> {

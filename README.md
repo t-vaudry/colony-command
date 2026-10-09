@@ -55,6 +55,15 @@ which ends its sessions.
 Set `COLONY_HOME` (and `COLONY_PORT` / `COLONY_PTYD_PORT`) to run an isolated
 second Colony, e.g. for tests.
 
+## Dismissing sessions
+
+**Dismiss** in a bot's inspector ends every copy of that session (Colony's
+terminal and any outside one) and takes it off the map right away. With no bot
+selected, **Dismiss N idle bots** does the same for every idle, ended, or
+crashed session; ones waiting for review are left alone. Dismissals are kept in
+`~/.colony/dismissed.json` for a day, so a daemon restart doesn't bring them
+back. The conversation stays on disk, and resuming it brings the bot back.
+
 ## Run the daemon by hand
 
     wsl -d Ubuntu -- bash scripts/install-probe.sh   # once per distro

@@ -95,7 +95,7 @@ async fn main() {
     let (deltas, _) = broadcast::channel(4096);
     let (ev_tx, mut ev_rx) = mpsc::channel::<Envelope>(8192);
     let shared = Arc::new(Shared {
-        colony: RwLock::new(Colony::new()),
+        colony: RwLock::new(Colony { dismissed: api::load_dismissed(), ..Colony::new() }),
         deltas,
         token: token.clone(),
         pty: PtyHost::new(ev_tx.clone()),
