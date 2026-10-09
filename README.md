@@ -110,9 +110,33 @@ Register `hooks/colony-approve.sh` for Claude Code's `PermissionRequest` event
     { "type": "command", "command": "sh \"$HOME/.colony/bin/colony-approve.sh\"", "timeout": 600 }
 
 While the map is open, permission requests show on the porch and in the
-inspector with Allow, Always allow (adds Claude Code's suggested rule), and
-Deny. The session's own prompt stays up too; whichever is answered first wins.
-With colonyd stopped or no map open, the hook steps aside.
+inspector with Allow, Always allow (adds Claude Code's suggested rule), Allow
+always for project (see below), and Deny. The session's own prompt stays up
+too; whichever is answered first wins. With colonyd stopped or no map open, the
+hook steps aside.
+
+### Allow always for project
+
+Shown when Claude Code suggested an allow rule for the request (for example
+`Bash(npm test)`). Clicking it allows this request and saves a rule in
+`~/.colony/policy.json`, scoped to that project. Unlike Always allow, it does
+not change Claude Code's own settings. A later request is allowed without
+asking only when all of these hold:
+
+- it comes from a session in the same project,
+- it is the same tool, and Claude Code suggests exactly the same rule content
+  for it (Colony never interprets or widens a pattern: `npm test` does not
+  cover `npm test:*` or `npm run build`),
+- it is not a question (`AskUserQuestion`) or plan approval.
+
+Rules are only ever created by that click; Allow, Always allow, Deny, timeouts
+and everything else write nothing. Rules apply even when no map is open (they
+were your explicit choice); with no matching rule and no map the hook still
+steps aside. A missing or unreadable `policy.json` means no rules.
+
+The **saved rules** chip in the top bar, or the inspector with no bot selected,
+lists every rule with the project it applies to and a Remove button. A removed
+rule asks again.
 
 This works for Windows and WSL sessions. In WSL, `scripts/install-probe.sh`
 installs the hook next to the probe (`~/.colony/bin/colony-approve.sh`); add
@@ -122,6 +146,40 @@ owner-only), and the probe relays the request to colonyd over the channel
 colonyd already has to it, so colonyd's token never enters the distro. Restart
 colonyd (or the distro's probe) after re-running the installer. To check the
 hook's fail-open behaviour: `sh scripts/test-approve-hook.sh`.
+
+## Pause and resume
+
+**Pause** in the inspector of a bot Colony started stops the session at a safe
+point between turns: if it is working, it waits for the turn to end (shown as
+"pausing after this turn", with Cancel pause); if it is already between turns,
+it stops at once. Colony then ends the session's process; the conversation is
+on disk, so **Resume** starts it again with `claude --resume` in a new Colony
+terminal, on the same model and permission mode. Nothing is paused mid-tool,
+while a permission request is open, or while a subagent or background run is
+out.
+
+A paused bot stays on the map, idle, with a pause mark (and "paused" in the
+inspector) instead of ending or counting as crashed. Paused sessions are kept in
+`~/.colony/paused.json`, so they survive a colonyd restart; they are forgotten
+after 14 days or when dismissed.
+
+Colony only pauses sessions it owns. For a session started in a terminal or the
+Claude desktop app the inspector says why: stopping that process isn't Colony's
+to do. Resume it in Colony to get Pause.
+
+## Replying from the map
+
+A bot with a question shows it in full in the inspector. For sessions Colony
+started, the reply box pastes your answer into the session's terminal and
+presses Enter; it finds the terminal by bot, so it keeps working after a colonyd
+restart (the terminals live in `colony-ptyd`).
+
+For a session Colony didn't start Colony can't type into it, so the question
+card has a reply field and **Resume in Colony and send**: one click resumes the
+conversation in a Colony terminal (no dialog) with your answer as its next
+message, or **Resume in Colony** to resume without one. If the session is still
+running in another terminal or the Claude desktop app, Colony first asks whether
+to end that copy, so two copies never write to one conversation.
 
 ## Hook capture
 
