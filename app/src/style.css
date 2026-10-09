@@ -785,7 +785,8 @@ input.other {
   padding: 0;
   border: 0;
   background: none;
-
+  background: none;
+}
 /* Set up Colony: a button over the map's corner, and its dialog. */
 .map-col {
   position: relative;
