@@ -22,6 +22,9 @@ use crate::{delta_messages, worktree, Shared};
 
 const POLL: Duration = Duration::from_secs(2);
 const GIT_TIMEOUT: Duration = Duration::from_secs(8);
+/// One count in all, however many git calls it takes, so a slow repository or a
+/// cold WSL distro can't hold up the agents queued behind it.
+const COUNT_DEADLINE: Duration = Duration::from_secs(15);
 /// Counted per pass, so a fleet turning ready together doesn't flood git.
 const PER_PASS: usize = 3;
 /// More untracked files than this and their lines aren't counted one by one.
@@ -49,7 +52,7 @@ pub async fn run(shared: Arc<Shared>) {
         };
         for (id, since, host, cwd) in todo {
             tried.insert(id.clone(), since);
-            let stat = if synthetic { Some(fake(&id)) } else { count(&host, &cwd, worktree::find(&id).is_some()).await };
+            let stat = if synthetic { Some(fake(&id)) } else { tokio::time::timeout(COUNT_DEADLINE, count(&host, &cwd, worktree::find(&id).is_some())).await.ok().flatten() };
             let Some(stat) = stat else { continue };
             let mut colony = shared.colony.write().await;
             let changed = colony.set_diff_stat(&id, since, stat);
@@ -80,14 +83,21 @@ pub async fn count(host: &HostId, dir: &str, isolated: bool) -> Option<DiffStat>
     // where it left the default branch. Otherwise, from the last commit.
     let mut base = "HEAD".to_string();
     if isolated {
-        let default = git(host, top, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], &[0]).await;
-        if let Some(def) = default.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        // Without a known default branch the branch's own commits can't be told
+        // apart, and counting only the working tree would understate the work.
+        let mut found = None;
+        let head = git(host, top, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], &[0]).await;
+        let mut candidates: Vec<String> = head.into_iter().map(|s| s.trim().to_string()).collect();
+        candidates.extend(["origin/main", "origin/master"].map(String::from));
+        for def in candidates.into_iter().filter(|s| !s.is_empty()) {
             if let Some(mb) = git(host, top, &["merge-base", "HEAD", &def], &[0]).await {
                 if !mb.trim().is_empty() {
-                    base = mb.trim().to_string();
+                    found = Some(mb.trim().to_string());
+                    break;
                 }
             }
         }
+        base = found?;
     }
     let tracked = git(host, top, &["diff", "--numstat", "--no-ext-diff", "--no-renames", &base, "--"], &[0]).await?;
     let mut stat = parse_numstat(&tracked);

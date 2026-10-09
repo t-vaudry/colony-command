@@ -260,9 +260,13 @@ export class World {
         // Over the limit, fold into the top folder so a project stays a handful of buildings.
         let key = a.work_dir;
         if (m.size >= MAX_BUILDINGS) {
-          key = a.work_dir.split("/")[0];
+          // Close one nobody is using; if all are busy, fold into the top folder.
+          const idle = [...m.values()].filter((x) => now - x.seen > 5000).sort((x, y) => x.seen - y.seen)[0];
+          const top = a.work_dir.split("/")[0];
+          if (idle) this.closeBuilding(m, idle);
+          else if (m.has(top)) key = top;
+          else this.closeBuilding(m, [...m.values()].sort((x, y) => x.seen - y.seen)[0]);
           b = m.get(key);
-          if (!b) this.closeBuilding(m, [...m.values()].sort((x, y) => x.seen - y.seen)[0]);
         }
         b ??= this.openBuilding(m, key, now);
       }
@@ -638,14 +642,19 @@ export class World {
     g.clear();
     this.drawBuildings(g);
 
+    const drawn = new Set<string>();
     // Edit collisions: a dashed line between the bots, whatever they are doing.
     for (const [id, b] of this.bodies) {
       const a = agents.get(id);
       if (!a?.collision || !EDITING.includes(a.state)) continue;
       for (const w of a.collision.with) {
         const o = this.bodies.get(w);
+        // From either side (the two lists can differ), once per pair.
+        const pair = id < w ? `${id}|${w}` : `${w}|${id}`;
+        if (drawn.has(pair)) continue;
+        drawn.add(pair);
         // Only while both are still at it, in one district: stale warnings stay off the map.
-        if (!o || w < id || !EDITING.includes(agents.get(w)?.state ?? "ended") || this.projectOf(agents.get(w)!) !== this.projectOf(a)) continue;
+        if (!o || !EDITING.includes(agents.get(w)?.state ?? "ended") || this.projectOf(agents.get(w)!) !== this.projectOf(a)) continue;
         this.dashed(g, b.x, b.y - 4, o.x, o.y - 4, b.alpha * o.alpha);
       }
     }

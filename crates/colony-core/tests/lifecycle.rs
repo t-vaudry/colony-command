@@ -650,9 +650,12 @@ fn agents_from_older_daemons_parse_without_usage_fields() {
 const SID2: &str = "8f1c2d3e-0000-4000-8000-000000000002";
 const REPO: &str = "/mnt/c/Users/thoma/code/bingosync";
 
+/// A tool call that starts and, for the edit tools, finishes successfully.
 fn edit(r: &mut Run, sid: &str, tool: &str, rel: &str) {
-    r.hook(json!({"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": tool,
-                  "tool_input": {"file_path": format!("{REPO}/{rel}")}, "tool_use_id": format!("t{}", r.t)}));
+    let id = format!("t{}", r.t);
+    let input = json!({"file_path": format!("{REPO}/{rel}")});
+    r.hook(json!({"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": tool, "tool_input": input, "tool_use_id": id}));
+    r.hook(json!({"hook_event_name": "PostToolUse", "session_id": sid, "tool_name": tool, "tool_input": input, "tool_use_id": id}));
 }
 
 fn two_sessions() -> Run {
@@ -735,8 +738,10 @@ fn a_main_agent_and_its_subagent_do_not_collide() {
     let mut r = two_sessions();
     r.hook(json!({"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"}));
     edit(&mut r, SID, "Edit", "src/a.ts");
-    r.hook(json!({"hook_event_name": "PreToolUse", "agent_id": "a1", "tool_name": "Edit",
-                  "tool_input": {"file_path": format!("{REPO}/src/a.ts")}}));
+    let input = json!({"file_path": format!("{REPO}/src/a.ts")});
+    for ev in ["PreToolUse", "PostToolUse"] {
+        r.hook(json!({"hook_event_name": ev, "agent_id": "a1", "tool_name": "Edit", "tool_input": input, "tool_use_id": "u1"}));
+    }
     assert!(r.colony.agents[SID].collision.is_none());
     assert!(r.colony.agents[&sub_id(SID, "a1")].collision.is_none());
 }
@@ -779,4 +784,37 @@ fn agents_from_older_daemons_parse_without_work_fields() {
     }
     let a: colony_core::Agent = serde_json::from_value(v).unwrap();
     assert!(a.work_dir.is_none() && a.collision.is_none() && a.diff_stat.is_none());
+}
+
+#[test]
+fn denied_or_failed_edits_do_not_collide() {
+    let mut r = two_sessions();
+    edit(&mut r, SID, "Edit", "src/a.ts");
+    let input = json!({"file_path": format!("{REPO}/src/a.ts")});
+    r.hook(json!({"hook_event_name": "PreToolUse", "session_id": SID2, "tool_name": "Edit", "tool_input": input, "tool_use_id": "x1"}));
+    r.hook(json!({"hook_event_name": "PostToolUseFailure", "session_id": SID2, "tool_name": "Edit", "tool_input": input, "tool_use_id": "x1", "error": "denied"}));
+    assert!(r.colony.agents[SID].collision.is_none());
+    assert!(r.colony.agents[SID2].collision.is_none());
+    // A started edit that hasn't finished yet isn't one either.
+    r.hook(json!({"hook_event_name": "PreToolUse", "session_id": SID2, "tool_name": "Edit", "tool_input": input, "tool_use_id": "x2"}));
+    assert!(r.colony.agents[SID].collision.is_none());
+}
+
+#[test]
+fn sibling_subagents_in_one_folder_do_not_warn_but_one_file_does() {
+    let mut r = two_sessions();
+    for a in ["a1", "a2"] {
+        r.hook(json!({"hook_event_name": "SubagentStart", "agent_id": a, "agent_type": "general-purpose"}));
+    }
+    let go = |r: &mut Run, a: &str, f: &str| {
+        let input = json!({"file_path": format!("{REPO}/src/{f}")});
+        for ev in ["PreToolUse", "PostToolUse"] {
+            r.hook(json!({"hook_event_name": ev, "agent_id": a, "tool_name": "Edit", "tool_input": input, "tool_use_id": format!("{a}{f}")}));
+        }
+    };
+    go(&mut r, "a1", "x.ts");
+    go(&mut r, "a2", "y.ts");
+    assert!(r.colony.agents[&sub_id(SID, "a1")].collision.is_none());
+    go(&mut r, "a2", "x.ts");
+    assert!(r.colony.agents[&sub_id(SID, "a1")].collision.is_some());
 }

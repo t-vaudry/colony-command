@@ -540,6 +540,11 @@ impl Colony {
                     (Some(x), Some(y)) => x == y,
                     _ => &t.name == tool,
                 });
+                let edited = if same && *ok && workdir::is_editing_tool(tool) {
+                    a.current_tool.as_ref().and_then(|t| t.target.clone())
+                } else {
+                    None
+                };
                 if same {
                     a.current_tool = None;
                 }
@@ -566,6 +571,10 @@ impl Colony {
                         // A denied permission comes back as a failure.
                         a.set_state(AgentState::Working, None, e.ts);
                     }
+                }
+                if let Some(t) = edited {
+                    let id = agent_id.as_deref().map_or_else(|| sid.clone(), |x| sub_id(&sid, x));
+                    self.track_edit(e, &id, &t, &mut changed);
                 }
             }
             DomainEvent::PermissionRequested { agent_id, tool, target } => {
@@ -862,9 +871,12 @@ impl Colony {
                 changed.push(id.to_string());
             }
         }
-        if !workdir::is_editing_tool(tool) {
-            return;
-        }
+    }
+
+    /// Record a finished, successful edit and warn if another agent is on the
+    /// same file or folder. Counted at the finish, not the start, so an edit
+    /// that was denied or failed never raises a warning.
+    fn track_edit(&mut self, e: &Envelope, id: &str, target: &str, changed: &mut Vec<String>) {
         let Some((file, dir, shown_dir)) = workdir::edit_keys(&e.host, target) else { return };
         let ts = e.ts;
         // Others' recent edits of this file, and of other files in its folder.
@@ -887,7 +899,8 @@ impl Colony {
         mine.push(Touch { agent: id.to_string(), file, ts });
 
         same_file.retain(|o| self.collidable(id, o));
-        same_dir.retain(|o| self.collidable(id, o));
+        // Sibling subagents splitting work in one folder are expected, not a collision.
+        same_dir.retain(|o| self.collidable(id, o) && !self.sibling_subagents(id, o));
         same_file.sort();
         same_file.dedup();
         same_dir.sort();
@@ -914,6 +927,13 @@ impl Colony {
                     && !y.is_finished()
                     && !(x.session_id == y.session_id && (x.kind == AgentKind::Main || y.kind == AgentKind::Main))
             }
+            _ => false,
+        }
+    }
+
+    fn sibling_subagents(&self, a: &str, b: &str) -> bool {
+        match (self.agents.get(a), self.agents.get(b)) {
+            (Some(x), Some(y)) => x.session_id == y.session_id && x.kind == AgentKind::Subagent && y.kind == AgentKind::Subagent,
             _ => false,
         }
     }

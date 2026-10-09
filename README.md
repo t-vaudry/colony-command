@@ -195,7 +195,10 @@ appears on the bots and the building, a dashed line joins the bots, and both
 inspectors show an **Overlap** row. Only editing tools count (Edit, MultiEdit,
 Write, NotebookEdit); reads never do, and a main agent and its own subagent are
 never flagged against each other. It is only a warning: nothing is blocked and no
-agent's state changes. It fades by itself once the editing stops.
+agent's state changes. It fades by itself once the editing stops. An edit counts once it has
+succeeded (a denied or failed one never warns). Paths are compared as written, so
+bots in separate worktrees of one repository are not compared with each other:
+only bots sharing a checkout are.
 
 **Changes on the dock.** For work ready to review, colonyd runs git (8 s timeout,
 off the reducer's path, read-only, no index locks) in the session's folder,

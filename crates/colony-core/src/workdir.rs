@@ -97,7 +97,8 @@ impl Parts {
 
     fn same(&self, other: &str, mine: &str) -> bool {
         if self.ci {
-            mine.eq_ignore_ascii_case(other)
+            // The same fold `key` uses, so the two always agree.
+            mine.to_lowercase() == other.to_lowercase()
         } else {
             mine == other
         }
@@ -126,7 +127,7 @@ impl Parts {
 
 /// Whether the tool's target names a directory rather than a file.
 fn names_dir(tool: &str, last: &str) -> bool {
-    matches!(tool, "Grep" | "Glob" | "LS") && !last.contains('.')
+    matches!(tool, "Grep" | "Glob" | "LS") && (!last.contains('.') || (last.starts_with('.') && !last[1..].contains('.')))
 }
 
 /// Tools whose target is a path worth placing on the map.
