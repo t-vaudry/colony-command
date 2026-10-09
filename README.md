@@ -19,10 +19,9 @@ Design spec: [`docs/design-spec.html`](docs/design-spec.html)
 | `app/src-tauri` | Desktop app: the map in a window; starts colonyd if it isn't running |
 | `tools/synth`, `tools/replay` | Synthetic fleet generator and event-log replay, for load and visual tests |
 | `hooks/colony-approve.sh` | Approval hook (Windows and WSL): hands permission requests to colonyd for Allow/Deny on the map |
-| `spikes/capture` | Hook that records raw Claude Code hook payloads, for schema checks |
+| `crates/colony-hook` | Claude Code hook: records each hook payload for colonyd (spooling while it is away), keeps fixtures per Claude Code version |
+| `spikes/capture` | Superseded by `colony-hook`: shell hook that records raw payloads |
 | `docs/` | Design spec |
-
-Planned: `crates/colony-hook` (replaces the capture spike).
 
 ## Test
 
@@ -123,6 +122,28 @@ owner-only), and the probe relays the request to colonyd over the channel
 colonyd already has to it, so colonyd's token never enters the distro. Restart
 colonyd (or the distro's probe) after re-running the installer. To check the
 hook's fail-open behaviour: `sh scripts/test-approve-hook.sh`.
+
+## Hook capture
+
+`colony-hook` replaces the capture spike. Build it
+(`cargo build --release -p colony-hook`), copy `target/release/colony-hook` to
+`~/.colony/bin/`, and register it like the spike did: one
+`{ "type": "command", "command": "<path>/colony-hook", "timeout": 5 }` entry for
+each of SessionStart, SessionEnd, UserPromptSubmit, PreToolUse, PermissionRequest,
+PostToolUse, PostToolUseFailure, Notification, SubagentStart, SubagentStop, Stop,
+StopFailure, PreCompact, and PostCompact. For PermissionRequest use the longer
+timeout from the approvals section; there it also stands in for
+`colony-approve.sh` on Windows.
+
+Each payload is written to `~/.colony/capture/` for colonyd. If colonyd isn't
+running it goes to `~/.colony/spool/` instead, and the next colonyd start moves it
+into `capture/`. The hook never blocks or breaks a session: any failure is
+swallowed, it exits 0, and it returns within about 50 ms unless it is holding a
+permission request for the map.
+
+It also keeps the first payload of each event per Claude Code version in
+`~/.colony/fixtures/<version>/` (unscrubbed; scrub before copying any into
+`crates/colony-hook/tests/fixtures/`, which the contract tests read).
 
 ## Models
 

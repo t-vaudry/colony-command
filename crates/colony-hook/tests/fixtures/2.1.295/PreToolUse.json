@@ -1,0 +1,1 @@
+{"session_id":"00000000-0000-4000-8000-000000000001","transcript_path":"/home/user/.claude/projects/p/s.jsonl","cwd":"/home/user/code/demo","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/home/user/code/demo/src/lib.rs","old_string":"a","new_string":"b"},"tool_use_id":"toolu_01"}

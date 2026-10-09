@@ -402,6 +402,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "colony-hook"
+version = "0.1.0"
+dependencies = [
+ "colony-core",
+ "colony-source",
+ "serde_json",
+]
+
+[[package]]
 name = "colony-probe"
 version = "0.1.0"
 dependencies = [

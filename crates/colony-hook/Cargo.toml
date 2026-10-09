@@ -1,0 +1,13 @@
+[package]
+name = "colony-hook"
+description = "Claude Code hook: records hook payloads for colonyd, spools them when it is away, and relays permission requests."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+colony-source.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+colony-core.workspace = true
