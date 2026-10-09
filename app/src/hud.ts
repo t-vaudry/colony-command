@@ -474,7 +474,7 @@ export class Hud {
     const fact = (k: string, v: string | null | undefined, cls = "") =>
       v ? `<div class="fact"><span class="k">${k}</span><span class="${cls}">${esc(v)}</span></div>` : "";
     const field = (k: string, key: string, html: string, cls = "") =>
-      html ? `<div class="field"><span class="k">${k}</span><div class="scrollbox ${cls}" data-scroll="${key}" tabindex="0">${html}</div></div>` : "";
+      html ? `<div class="field"><span class="k">${k}</span><div class="scrollbox ${cls}" data-scroll="${esc(a.id)}:${key}" tabindex="0">${html}</div></div>` : "";
     const text = (s: string | null | undefined) => (s ? esc(s) : "");
 
     const target = a.current_tool?.target?.replace(/\s+/g, " ");
@@ -545,7 +545,7 @@ export class Hud {
       }
       ${nowRow}
       ${field("Objective", "objective", text(a.objective_full ?? a.objective), "short")}
-      ${showReply ? field(a.state === "ready_to_review" ? "Result" : "Latest reply", "reply", `<div class="md">${md(reply!)}</div>`) : ""}
+      ${showReply ? field(a.state === "ready_to_review" ? "Result" : "Latest reply", "reply", `<div class="md">${this.mdCached(reply!)}</div>`) : ""}
       <div class="facts">
         ${diffRow}${collisionRow}${usageRow}
       </div>
@@ -608,6 +608,19 @@ export class Hud {
       }`);
   }
 
+  /** Rendered Markdown by source text: the panel re-renders on every event, and replies don't change. */
+  private mdCache = new Map<string, string>();
+  private mdCached(text: string): string {
+    let html = this.mdCache.get(text);
+    if (html === undefined) {
+      html = md(text);
+      // Oldest out first, so it stays a few dozen replies.
+      if (this.mdCache.size >= 64) this.mdCache.delete(this.mdCache.keys().next().value!);
+      this.mdCache.set(text, html);
+    }
+    return html;
+  }
+
   /** What the bot has been doing, newest first, so the panel answers "what is it up to?" without the terminal. */
   private feed(a: Agent): string {
     const items = [...(a.activity ?? [])].reverse();
@@ -628,7 +641,7 @@ export class Hud {
             break;
           case "reply":
             mark = "Claude";
-            body = `<div class="act-text md">${md(x.text)}</div>`;
+            body = `<div class="act-text md">${this.mdCached(x.text)}</div>`;
             break;
           case "problem":
             mark = "!";
@@ -642,7 +655,7 @@ export class Hud {
         return `<li class="act ${x.kind} ${state}"><time>${clock(x.at)}</time><span class="act-mark">${mark}</span>${body}</li>`;
       })
       .join("");
-    return `<div class="field"><span class="k">Activity</span><ol class="feed" data-scroll="feed" tabindex="0">${rows}</ol></div>`;
+    return `<div class="field"><span class="k">Activity</span><ol class="feed" data-scroll="${esc(a.id)}:feed" tabindex="0">${rows}</ol></div>`;
   }
 
   private async action(e: Event): Promise<void> {
@@ -814,11 +827,18 @@ export class Hud {
     }
     if (el.dataset.ack && !this.daemon.ack(el.dataset.ack)) el.textContent = "Not connected; try again";
     if (el.dataset.copy) {
+      const menu = el.closest(".menu") !== null;
       try {
         await navigator.clipboard.writeText(el.dataset.copy);
-        el.textContent = "Copied";
+        if (menu) this.toast("Resume command copied.");
+        else el.textContent = "Copied";
       } catch {
-        el.textContent = "Copy failed; select the text below";
+        if (menu) this.toast("Copy failed. The command is claude --resume " + this.selected);
+        else el.textContent = "Copy failed; select the text below";
+      }
+      if (menu) {
+        this.openSecs.delete("more");
+        this.schedule();
       }
     }
   }

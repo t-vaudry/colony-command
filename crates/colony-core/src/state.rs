@@ -126,6 +126,9 @@ pub struct Activity {
 pub const ACTIVITY_KEEP: usize = 40;
 /// Longest tool target or error kept in an entry.
 const ACTIVITY_TEXT_CHARS: usize = 600;
+/// Longest prompt or reply kept in the activity feed. The whole text is in
+/// `objective_full`, `last_prompt_full` and `last_message_full`.
+const ACTIVITY_MESSAGE_CHARS: usize = 800;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CurrentTool {
@@ -570,7 +573,7 @@ impl Colony {
                         main.objective_full = Some(whole.clone());
                     }
                     main.last_prompt = Some(preview.clone());
-                    main.log(e.ts, ActivityKind::Prompt, whole.clone(), None, None);
+                    main.log(e.ts, ActivityKind::Prompt, trim_text(&whole, ACTIVITY_MESSAGE_CHARS), None, None);
                     main.last_prompt_full = Some(whole);
                 }
                 // Claude Code announces a finished background call or Monitor this way.
@@ -644,7 +647,7 @@ impl Colony {
                         && x.ok.is_none()
                         && match (&x.tool_use_id, tool_use_id) {
                             (Some(p), Some(q)) => p == q,
-                            _ => x.text.split(':').next() == Some(tool.as_str()),
+                            _ => x.text.strip_prefix(tool.as_str()).is_some_and(|r| r.is_empty() || r.starts_with(": ")),
                         }
                 });
                 if let Some(x) = open {
@@ -723,7 +726,7 @@ impl Colony {
                 main.last_message = last_message.as_deref().map(preview);
                 main.last_message_full = last_message.as_deref().map(|m| trim_text(m, FULL_TEXT_CHARS));
                 if let Some(m) = main.last_message_full.clone().filter(|m| !m.trim().is_empty()) {
-                    main.log(e.ts, ActivityKind::Reply, m, None, None);
+                    main.log(e.ts, ActivityKind::Reply, trim_text(&m, ACTIVITY_MESSAGE_CHARS), None, None);
                 }
                 match last_message.as_deref().and_then(question_in) {
                     Some(q) => main.set_state(AgentState::AwaitingReply, Some(q), e.ts),
