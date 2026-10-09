@@ -8,10 +8,12 @@
 
 mod api;
 mod approvals;
+mod diffstat;
 mod needs;
 mod pause;
 mod policy;
 mod pty;
+mod resume;
 mod worktree;
 #[cfg(windows)]
 mod wsl;
@@ -180,6 +182,8 @@ async fn main() {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
+    // Files and lines changed, for work ready to review.
+    tokio::spawn(diffstat::run(shared.clone()));
 
     // Worktrees of sessions that ended without being dismissed.
     let sweeper = shared.clone();
@@ -191,6 +195,9 @@ async fn main() {
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
+
+    // Restart sessions that were cut off, a few times with growing pauses.
+    tokio::spawn(resume::supervise(shared.clone()));
 
     // Keep bots' branches current as origin/main moves.
     let syncer = shared.clone();

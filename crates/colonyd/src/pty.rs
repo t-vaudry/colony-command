@@ -34,9 +34,9 @@ const PERMISSION_MODES: &[&str] = &["default", "acceptEdits", "plan", "auto"];
 /// newlines included, instead of each line being submitted.
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
-const NOT_CONNECTED: &str = "Colony's terminal host isn't running; try again in a moment";
+pub const NOT_CONNECTED: &str = "Colony's terminal host isn't running; try again in a moment";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpawnRequest {
     pub host: HostId,
     /// Folder to start in, as given by the map (Windows or Linux form).
@@ -69,6 +69,10 @@ pub struct SpawnRequest {
     pub cols: u16,
     #[serde(default = "default_rows")]
     pub rows: u16,
+    /// A restart by colonyd's supervisor, not the user: it must not bring back
+    /// a record that was removed meanwhile (the session was dismissed).
+    #[serde(skip)]
+    pub auto: bool,
 }
 
 pub fn default_cols() -> u16 {
@@ -229,8 +233,14 @@ impl PtyHost {
             }
         };
 
+        if req.auto && !crate::resume::still_wanted(&session_id) {
+            return Err("that session was dismissed or ended; not restarting it".into());
+        }
         let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows).await?;
         log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
+        if !req.auto {
+            crate::resume::remember(&session_id, &req);
+        }
         self.requests.lock().unwrap().insert(term_id.clone(), req);
         Ok(Spawned { term_id, session_id })
     }
@@ -525,6 +535,7 @@ fn start_ptyd() -> Result<(), String> {
         return Err(format!("{} is missing", path.display()));
     }
     std::fs::create_dir_all(colony_home()).map_err(|e| e.to_string())?;
+    colony_source::rotate_log(&colony_home().join("ptyd.log"));
     let spawn = |flags: u32| {
         let log = std::fs::OpenOptions::new().create(true).append(true).open(colony_home().join("ptyd.log")).map_err(|e| e.to_string())?;
         let mut cmd = std::process::Command::new(&path);

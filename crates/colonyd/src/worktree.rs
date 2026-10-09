@@ -455,7 +455,7 @@ async fn git(host: &HostId, dir: &str, args: &[&str]) -> Result<String, String> 
 }
 
 /// A command that won't flash a console window.
-fn quiet(program: &str) -> Command {
+pub(crate) fn quiet(program: &str) -> Command {
     #[allow(unused_mut)]
     let mut cmd = Command::new(program);
     #[cfg(windows)]

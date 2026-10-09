@@ -354,9 +354,12 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket) {
 }
 
 /// Remove the worktrees of sessions that have ended without being dismissed
-/// (the terminal closed, Claude exited, a crash). A worktree with uncommitted
-/// changes is never removed, and a branch is only deleted once merged, so this
-/// is safe to retry; a session resumed later gets its worktree back.
+/// (the terminal closed, Claude exited). A crashed session is not ended: it was
+/// cut off (terminal host killed, machine restarted) and is resumed, so its
+/// worktree stays until it ends or the user deals with it. A worktree with
+/// uncommitted changes is never removed, and a branch is only deleted once
+/// merged, so this is safe to retry; a session resumed later gets its worktree
+/// back.
 pub async fn sweep_worktrees(shared: &Shared) {
     for w in crate::worktree::all() {
         // Already waiting for the user to decide.
@@ -370,7 +373,7 @@ pub async fn sweep_worktrees(shared: &Shared) {
                 // Left the map's history: ended long ago.
                 now_ms().saturating_sub(w.created_at) > crate::REPLAY_MS
             } else {
-                mains.all(|a| a.terminal.is_none() && matches!(a.state, colony_core::AgentState::Ended | colony_core::AgentState::Crashed))
+                mains.all(|a| a.terminal.is_none() && a.state == colony_core::AgentState::Ended)
             }
         };
         if ended {
@@ -480,7 +483,7 @@ pub async fn sync_worktrees(shared: &Shared, st: &mut SyncState) {
 }
 
 /// A short message for the map to show as a toast.
-fn notice(shared: &Shared, message: String) {
+pub fn notice(shared: &Shared, message: String) {
     let _ = shared.deltas.send(json!({ "type": "notice", "message": message }).to_string());
 }
 
@@ -521,6 +524,7 @@ async fn leftover_command(shared: &Shared, session_id: &str, what: Leftover) -> 
         Leftover::Discard => crate::worktree::discard(&w).await?,
         Leftover::Forget => {}
     }
+    crate::resume::forget(session_id);
     crate::worktree::forget(session_id);
     broadcast_leftovers(shared);
     Ok(())
@@ -554,6 +558,10 @@ async fn reply(shared: &Shared, id: &str, text: &str) -> Result<(), String> {
 /// terminal can't start, the worktree made for it is removed again.
 pub async fn spawn_session(shared: &Shared, mut req: SpawnRequest) -> Result<crate::pty::Spawned, String> {
     let mut made = None;
+    // Before its worktree is restored, not after.
+    if req.auto && req.resume.as_deref().is_some_and(|sid| !crate::resume::still_wanted(sid)) {
+        return Err("that session was dismissed or ended; not restarting it".into());
+    }
     // Resuming a bot whose worktree was cleaned up while it was ended.
     if let Some(w) = req.resume.as_deref().and_then(crate::worktree::find) {
         crate::worktree::restore(&w).await?;
@@ -612,6 +620,8 @@ async fn dismiss(shared: &Shared, id: &str) -> Result<(), String> {
     if c.main_id.as_deref() != Some(id) {
         return Err("only a session's main bot can be dismissed".into());
     }
+    // First, so a restart already on its way can't bring it back.
+    crate::resume::forget(&c.session_id);
     end_others(shared, &c).await?;
     crate::pause::forget(&c.session_id);
     if let Some(term) = &c.terminal {
@@ -873,6 +883,7 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
         isolate: false,
         cols: 120,
         rows: 32,
+        auto: false,
     });
     if has_conversation {
         req.resume = Some(session_id.clone());
@@ -882,6 +893,7 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
         req.session_id = Some(session_id.clone());
     }
     req.prompt = prompt;
+    req.auto = false;
     req.name = None;
     if model.is_some() {
         req.model = model.clone();
@@ -901,7 +913,7 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
 
 /// Whether this daemon takes injected events. Off unless `COLONY_INGEST=1`, so
 /// a daemon running real sessions never mixes in made-up ones.
-fn ingest_enabled() -> bool {
+pub(crate) fn ingest_enabled() -> bool {
     std::env::var("COLONY_INGEST").is_ok_and(|v| v == "1")
 }
 

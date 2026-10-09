@@ -73,6 +73,32 @@ export interface Agent {
   cost_usd?: number;
   /** Some tokens were from a model without a known price, so the cost is low. */
   cost_partial?: boolean;
+  /** Folder it is working in, relative to its project folder, rolled up (`src/auth`; "" is the project folder). */
+  work_dir?: string | null;
+  /** Another agent is editing the same file or folder. A warning only; fades on its own. */
+  collision?: Collision | null;
+  /** Files and lines changed, once ready to review and counted. Absent when git couldn't say. */
+  diff_stat?: DiffStat | null;
+}
+
+export interface Collision {
+  scope: "file" | "dir";
+  /** The file, or the folder, as the tool call named it. */
+  path: string;
+  /** The other agents' ids. */
+  with: string[];
+  at: number;
+}
+
+export interface DiffStat {
+  files: number;
+  added: number;
+  removed: number;
+}
+
+/** "3 files · +40 −7" */
+export function diffText(d: DiffStat): string {
+  return `${d.files} file${d.files === 1 ? "" : "s"} · +${d.added} −${d.removed}`;
 }
 
 export interface ModelHint {
