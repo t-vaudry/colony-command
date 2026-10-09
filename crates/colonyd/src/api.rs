@@ -330,7 +330,26 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket) {
     loop {
         let out: Option<String> = tokio::select! {
             msg = rx.recv() => match msg {
-                Ok(m) => Some(m),
+                Ok(first) => {
+                    // Fold whatever is already queued into one frame: fewer sends and parses on the map.
+                    let mut batch = vec![first];
+                    let mut lagged = false;
+                    while batch.len() < MAX_BATCH {
+                        match rx.try_recv() {
+                            Ok(m) => batch.push(m),
+                            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                                lagged = true;
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    if lagged {
+                        Some(snapshot(&shared).await)
+                    } else {
+                        Some(batch_frame(batch))
+                    }
+                }
                 // Fell behind: resync with a fresh snapshot.
                 Err(RecvError::Lagged(n)) => {
                     log(format!("map client lagged by {n} messages; resending snapshot"));
@@ -1084,5 +1103,30 @@ mod end_tests {
         assert!(!is_claude_cmdline(&["vim", "claude.md"]));
         assert!(!is_claude_cmdline(&["node", "server.js", "--name", "claude-helper"]));
         assert!(!is_claude_cmdline(&[]));
+    }
+}
+
+/// Most queued delta messages folded into one WebSocket frame.
+const MAX_BATCH: usize = 512;
+
+/// One message as is, several as `{"type":"batch","msgs":[...]}` (each already JSON).
+fn batch_frame(mut msgs: Vec<String>) -> String {
+    if msgs.len() == 1 {
+        return msgs.pop().unwrap();
+    }
+    format!("{{\"type\":\"batch\",\"msgs\":[{}]}}", msgs.join(","))
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::batch_frame;
+
+    #[test]
+    fn one_message_is_unchanged_and_several_become_a_batch() {
+        assert_eq!(batch_frame(vec![r#"{"type":"remove","id":"a"}"#.into()]), r#"{"type":"remove","id":"a"}"#);
+        let b = batch_frame(vec![r#"{"type":"remove","id":"a"}"#.into(), r#"{"type":"remove","id":"b"}"#.into()]);
+        let v: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(v["type"], "batch");
+        assert_eq!(v["msgs"].as_array().unwrap().len(), 2);
     }
 }

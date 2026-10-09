@@ -17,6 +17,7 @@ type Message =
   | { type: "latency"; projects: Record<string, ProjectLatency> }
   | ({ type: "replay" } & Replay)
   | { type: "leftovers"; items: Leftover[] }
+  | { type: "batch"; msgs: Message[] }
   | { type: "upsert"; agent: Agent }
   | { type: "remove"; id: string }
   | { type: "spawned"; term: string; session_id: string }
@@ -96,7 +97,11 @@ export class Daemon {
     return Date.now() + this.skew;
   }
 
+  /** Inside a batch, listeners hear once at the end rather than per message. */
+  private batching = false;
+
   private emit(): void {
+    if (this.batching) return;
     for (const fn of this.listeners) fn();
   }
 
@@ -144,6 +149,14 @@ export class Daemon {
         this.status = "live";
         this.error = null;
         this.downSince = null;
+        break;
+      case "batch":
+        this.batching = true;
+        try {
+          for (const sub of m.msgs) this.handle(sub);
+        } finally {
+          this.batching = false;
+        }
         break;
       case "leftovers":
         this.leftovers = m.items;

@@ -8,6 +8,7 @@ sessions, hooks or daemon were involved.
     cargo build --release -p colonyd -p colony-hook -p colony-synth
     (cd app && npm install)               # only for the fps check
     node scripts/acceptance.mjs all       # or: latency | failopen | load | fps
+    AGENTS=200 node scripts/acceptance.mjs fps   # scale: see section 7
     TRIALS=30 node scripts/acceptance.mjs latency
 
 Machine: Windows 11, i7-1280P (20 logical cores), 32 GB, Intel Iris Xe, release
@@ -138,6 +139,75 @@ with a map connected:
 
 0.46 % of one core is 0.02 % of the machine's 20 cores, so the target holds
 whichever way "1 % CPU" is read. The idle cost is the 200 ms source poll.
+
+### 7. Scale: 200 and 500 sessions (`fps`, `AGENTS=n`)
+
+    AGENTS=200 node scripts/acceptance.mjs fps      # also 500; SPEED=, FPS_SECS= to tune
+    PROFILE=1 AGENTS=500 node scripts/acceptance.mjs fps   # adds the top self-time functions
+
+`AGENTS` is the number of main sessions synth keeps alive (65-70 % more bots
+with subagents: 200 gives about 300, 500 about 700). The step also reports the
+page's CPU per frame (CDP `Performance.getMetrics`: task and script time, not
+capped by vsync, so it shows headroom that "60 fps" hides), colonyd CPU and
+working set, and WebSocket messages/s and KB/s as a second map sees them.
+Headless Chrome, 1600x900, 15 s window, 1 shared machine (other builds were
+running, so the 50-session rows are noisier than section 5).
+
+| Sessions | | fps | frame p99 | page task / script per frame | colonyd CPU / RAM | WebSocket |
+|---|---|---|---|---|---|---|
+| 50 | before | 45-51 | 66 ms | 20-24 ms / 17-21 ms | 3.1 % / 12 MB | 19 msgs/s, 37 KB/s |
+| 50 | after | 46-54 | 50-67 ms | 16-20 ms / 14-17 ms | 2.8-4.2 % / 12 MB | 12 msgs/s, 40 KB/s |
+| 200 | before | 8.1 | 500 ms | 245 ms / 214 ms | 6.9 % / 13.6 MB | 95 msgs/s, 194 KB/s |
+| 200 | after | 58.7 | 33 ms | 8.8 ms / 5.8 ms | 6.9 % / 14.5 MB | 20 msgs/s, 172 KB/s |
+| 500 | before | 3.1-4.6 | 283-633 ms | 253-438 ms / 226-401 ms | 6.3-8.3 % / 22-25 MB | 173-187 msgs/s, 330-363 KB/s |
+| 500 | after | 30.7 | 133 ms | 31 ms / 17 ms | 7.2 % / 16 MB | 20 msgs/s, 373 KB/s |
+
+What was slow and what changed (`app/src/world.ts`, `app/src/daemon.ts`,
+`crates/colonyd/src/api.rs`):
+
+- **Graphics rebuilt every frame.** Pixi re-tessellates the whole `Graphics`
+  each frame, and strokes (arms, outlines, tethers, dashed collision lines)
+  dominated: 200+ ms of script per frame at 300 bots. Now there are three
+  levels of detail, chosen from how many bots are on screen (100 to enter,
+  85 to leave, so it doesn't flicker) and the zoom: full bots; plain bodies
+  (no arms, eyes or outlines, from zoom 0.75 down with many bots); and far-zoom
+  dots, two tinted particles per bot in one `ParticleContainer` (a single draw
+  call). Alarm states stay legible at every level: the ring keeps the state
+  colour, blocked and crashed bots keep their glyph, and an edit collision turns
+  the ring orange where the dashed line is dropped. Bots outside the view are not
+  drawn. The 50-session map is still drawn at full detail.
+- **Buildings** are redrawn at most every 250 ms (they only fade slowly), not
+  every frame; arms use butt caps (round caps tessellate arcs).
+- **Text.** Every bot made three `Text` objects up front (about 2000 canvas
+  textures at 700 bots). They are now created on first use and hidden off
+  screen or at far zoom; district header text is only assigned when it changes.
+- **Per-frame allocation and O(n^2) work.** Porch and dock rows used
+  `findIndex` per bot per frame, live-subagent counts filtered `children` per
+  bot, the draw order was a fresh sorted array, home spots re-hashed ids, and
+  `prefs.reduced` asked the browser each call. Rows, slots and counts are now
+  built once per daemon change, order is kept with an insertion sort, homes
+  are cached, and the motion preference is read once per frame.
+- **Daemon messages.** The map did a full `sync` (buildings, labels, bodies) and
+  a JSON parse per message, 95-190 times a second. colonyd now folds whatever
+  is already queued for a map into one `{"type":"batch","msgs":[...]}` frame
+  (no added delay: only messages that are waiting), and the map notifies its
+  listeners once per batch and syncs the world once per frame. Messages/s fell
+  5-9x. Bytes did not: each upsert carries the whole agent record (about
+  1.9 KB with `activity`), so 500 sessions is ~370 KB/s; sending only changed
+  fields is the next step if that matters.
+- **Layout cost.** `layout.ts` is only the draggable dividers (nothing per
+  frame). The world's own `layout()` runs only when the set of projects changes,
+  and only touches homes that moved; it was never a measurable cost.
+- The attention-budget motion ceiling (`HEALTHY`) and reduced-motion behaviour
+  are unchanged; far-zoom dots do not move any differently.
+
+Still open at 500 sessions: 31 fps and a 133 ms p99. The "needs you" tray in the
+HUD grows with the number of waiting sessions (132 chips at 500) until it fills
+the window, leaving the map about 100 px tall, and rebuilds its HTML on each
+update (`setHtml` in `hud.ts` shows in the profile). It should cap its height and
+scroll, and render only when the set changes. That is outside this change's
+files. The remaining per-frame cost is mostly pixi's own per-element work for
+about 1400 particles plus the HUD's DOM updates.
 
 ## Gaps
 

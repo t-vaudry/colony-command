@@ -6,6 +6,11 @@
 //     node scripts/acceptance.mjs fps       # 50 synthetic sessions in headless Chrome (needs app/node_modules)
 //     node scripts/acceptance.mjs all
 //
+// Scale: AGENTS=200 node scripts/acceptance.mjs fps   (also SPEED=, default 1;
+// FPS_SECS=, default 15, for the measuring window). `load` uses AGENTS too.
+// `fps` also reports daemon CPU/RAM, WebSocket messages/s and KB/s, and the
+// page's script and task time per frame (CDP Performance.getMetrics).
+//
 // Needs release binaries: cargo build --release -p colonyd -p colony-hook -p colony-synth
 // Everything runs against a throwaway colonyd with its own COLONY_HOME and
 // USERPROFILE in a temp folder, on a free port, started with COLONY_INGEST=1.
@@ -74,17 +79,26 @@ async function startDaemon() {
   };
 }
 
+const AGENTS = Number(process.env.AGENTS ?? 50);
+const SPEED = process.env.SPEED ?? "1";
+
 /** A map: WebSocket client keeping the agent table and the time of each change. */
 async function connectMap(d) {
   const ws = new WebSocket(`ws://127.0.0.1:${d.port}/ws?token=${d.token}`);
-  const map = { agents: new Map(), waiters: [], ws };
-  ws.onmessage = (m) => {
-    const msg = JSON.parse(m.data);
+  const map = { agents: new Map(), waiters: [], ws, stats: { msgs: 0, bytes: 0 } };
+  /** Applies one message; true when it changed the agent table. A "batch" carries several. */
+  const apply = (msg) => {
+    if (msg.type === "batch") return msg.msgs.map(apply).some(Boolean);
     if (msg.type === "snapshot") msg.agents.forEach((a) => map.agents.set(a.id, a));
     else if (msg.type === "upsert") map.agents.set(msg.agent.id, msg.agent);
     else if (msg.type === "remove") map.agents.delete(msg.id);
-    else return;
-    map.waiters = map.waiters.filter((w) => !w());
+    else return false;
+    return true;
+  };
+  ws.onmessage = (m) => {
+    map.stats.msgs++;
+    map.stats.bytes += Buffer.byteLength(String(m.data));
+    if (apply(JSON.parse(m.data))) map.waiters = map.waiters.filter((w) => !w());
   };
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error("websocket failed")); });
   await sleep(200);
@@ -281,7 +295,7 @@ async function load() {
   try {
     row("empty daemon, map connected, 30 s", await sample(d, 30));
     // Feed 50 synthetic sessions at human pace, then let them sit.
-    const synth = spawn(bin("colony-synth"), ["--home", d.home, "--agents", "50", "--speed", "1", "--duration", "120"], { stdio: "ignore" });
+    const synth = spawn(bin("colony-synth"), ["--home", d.home, "--agents", String(AGENTS), "--speed", SPEED, "--duration", "120"], { stdio: "ignore" });
     await sleep(2000);
     row("50 sessions at human pace (synth --speed 1), 60 s", await sample(d, 60));
     await new Promise((r) => synth.on("close", r));
@@ -289,7 +303,7 @@ async function load() {
     const idle = await sample(d, 60);
     row("50 sessions on the map, nothing happening, 60 s", idle);
     report("daemon idle: < 1% CPU and < 80 MB RAM", idle.core < 1 && idle.ws < 80, `${idle.core.toFixed(2)}% of a core, ${idle.ws.toFixed(1)} MB`);
-    const synth5 = spawn(bin("colony-synth"), ["--home", d.home, "--agents", "50", "--speed", "5", "--duration", "40"], { stdio: "ignore" });
+    const synth5 = spawn(bin("colony-synth"), ["--home", d.home, "--agents", String(AGENTS), "--speed", "5", "--duration", "40"], { stdio: "ignore" });
     await sleep(2000);
     row("50 sessions at 5x pace (stress), 30 s", await sample(d, 30));
     synth5.kill();
@@ -309,7 +323,8 @@ async function fps() {
   const vite = spawn(process.execPath, [join(appDir, "node_modules", "vite", "bin", "vite.js"), "--port", String(vitePort), "--strictPort", "--host", "127.0.0.1"], { cwd: appDir, env: d.env, stdio: "ignore" });
   const profile = mkdtempSync(join(tmpdir(), "colony-chrome-"));
   const browser = spawn(chrome, [`--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, "--headless=new", "--window-size=1600,900", "--no-first-run", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "about:blank"], { stdio: "ignore" });
-  const synth = spawn(bin("colony-synth"), ["--home", d.home, "--agents", "50", "--speed", "1"], { stdio: "ignore" });
+  const map = await connectMap(d); // a second map, to count what the daemon sends
+  const synth = spawn(bin("colony-synth"), ["--home", d.home, "--agents", String(AGENTS), "--speed", SPEED], { stdio: "ignore" });
   try {
     let target;
     for (let i = 0; i < 100 && !target; i++) {
@@ -320,15 +335,39 @@ async function fps() {
     const ws = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((r) => (ws.onopen = r));
     let id = 0; const pending = new Map();
-    ws.onmessage = (m) => { const x = JSON.parse(m.data); pending.get(x.id)?.(x); };
+    ws.onmessage = (m) => { const x = JSON.parse(m.data); pending.get(x.id)?.(x); if (process.env.DEBUG && x.method && /exception|crash|consoleAPI|loadingFailed/i.test(x.method)) console.log(x.method, JSON.stringify(x.params).slice(0, 400)); };
     const cdp = (method, params = {}) => new Promise((res) => { const i = ++id; pending.set(i, res); ws.send(JSON.stringify({ id: i, method, params })); });
     await cdp("Page.enable");
+    await cdp("Performance.enable");
+    await cdp("Runtime.enable");
+    await cdp("Inspector.enable");
     await cdp("Page.navigate", { url: `http://127.0.0.1:${vitePort}/` });
     // Wait for 50 bots on the map (the HUD counts them), then measure.
     const ev = async (expression) => (await cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true })).result?.result?.value;
-    await sleep(15000);
-    const meter = `new Promise(res=>{const t=[];let last=performance.now(),end=last+15000;function f(n){t.push(n-last);last=n;if(n<end)requestAnimationFrame(f);else res(t)}requestAnimationFrame(f)})`;
+    // Vite's first request builds the dependency cache, which can take a while: wait for the canvas, then let the load settle.
+    const hasCanvas = async () => {
+      for (let i = 0; i < 120 && !(await ev(`!!document.querySelector('canvas')`)); i++) {
+        await sleep(500);
+        if (i % 20 === 19) await cdp("Page.reload");
+      }
+    };
+    await hasCanvas();
+    await sleep(Math.max(15000, AGENTS * 40));
+    await hasCanvas(); // Vite can reload the page once after optimizing dependencies
+    const secs = Number(process.env.FPS_SECS ?? 15);
+    const metrics = async () => Object.fromEntries(((await cdp("Performance.getMetrics")).result?.metrics ?? []).map((m) => [m.name, m.value]));
+    const meter = `new Promise(res=>{const t=[];let last=performance.now(),end=last+${secs * 1000};function f(n){t.push(n-last);last=n;if(n<end)requestAnimationFrame(f);else res(t)}requestAnimationFrame(f)})`;
+    if (process.env.PROFILE) await cdp("Profiler.enable"), await cdp("Profiler.start");
+    const m0 = await metrics(), p0 = proc(d.pid), w0 = { ...map.stats }, t0 = now();
     const times = await ev(meter);
+    if (process.env.PROFILE) {
+      const prof = (await cdp("Profiler.stop")).result.profile;
+      const dt = prof.timeDeltas, self = new Map(), byId = new Map(prof.nodes.map((n) => [n.id, n]));
+      prof.samples.forEach((sid, i) => { const cf = byId.get(sid).callFrame, k = `${cf.functionName || "(anon)"} ${cf.url.split("/").slice(-2).join("/")}:${cf.lineNumber}`; self.set(k, (self.get(k) ?? 0) + (dt[i] ?? 0)); });
+      const top = [...self].sort((a, b) => b[1] - a[1]).slice(0, 14).map(([k, v]) => `  ${(v / 1000).toFixed(0).padStart(6)}  ${k}`);
+      console.log(["top self time (ms):", ...top].join("\n"));
+    }
+    const m1 = await metrics(), p1 = proc(d.pid), w1 = { ...map.stats }, wall = (now() - t0) / 1000;
     const canvas = await ev(`(()=>{const c=document.querySelector('canvas');return c?c.width+'x'+c.height:'no canvas'})()`);
     const agents = [...(await (await fetch(`http://127.0.0.1:${d.port}/api/agents`, { headers: { authorization: `Bearer ${d.token}` } })).json()).agents ?? []].length;
     if (process.env.SHOT) writeFileSync(process.env.SHOT, Buffer.from((await cdp("Page.captureScreenshot")).result.data, "base64"));
@@ -340,10 +379,14 @@ async function fps() {
     const slow = frames.filter((f) => f > 20).length;
     console.log(`canvas ${canvas}, ${agents} agents on daemon, ${frames.length} frames over ${(total / 1000).toFixed(1)} s`);
     console.log(`frame time ms: median ${sorted[Math.floor(sorted.length / 2)].toFixed(1)}, p99 ${p99.toFixed(1)}, max ${sorted[sorted.length - 1].toFixed(1)}; frames over 20 ms: ${slow} (${((slow / frames.length) * 100).toFixed(1)}%)`);
-    report("50 sessions render at 60 fps", avg >= 58, `${avg.toFixed(1)} fps average`);
+    const per = (k) => ((m1[k] - m0[k]) * 1000) / frames.length;
+    console.log(`page per frame: task ${per("TaskDuration").toFixed(2)} ms, script ${per("ScriptDuration").toFixed(2)} ms, layout+style ${(per("LayoutDuration") + per("RecalcStyleDuration")).toFixed(2)} ms, JS heap ${(m1.JSHeapUsedSize / 1048576).toFixed(1)} MB`);
+    console.log(`daemon: CPU ${(((p1.cpu - p0.cpu) / wall) * 100).toFixed(2)}% of one core, working set ${(p1.ws / 1048576).toFixed(1)} MB`);
+    console.log(`websocket: ${((w1.msgs - w0.msgs) / wall).toFixed(1)} msgs/s, ${((w1.bytes - w0.bytes) / 1024 / wall).toFixed(1)} KB/s, snapshot-inclusive total ${(w1.bytes / 1024).toFixed(0)} KB in ${w1.msgs} msgs`);
+    report(`${AGENTS} sessions render at 60 fps`, avg >= 58, `${avg.toFixed(1)} fps average`);
     ws.close();
   } finally {
-    synth.kill(); browser.kill(); vite.kill(); d.stop();
+    map.ws.close(); synth.kill(); browser.kill(); vite.kill(); d.stop();
     try { rmSync(profile, { recursive: true, force: true }); } catch {}
   }
 }
