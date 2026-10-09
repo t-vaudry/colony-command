@@ -192,7 +192,9 @@ export class World {
     if (this.projectOrder.join("|") !== before || this.districts.size === 0) this.layout();
 
     for (const a of agents.values()) {
-      if (!this.bodies.has(a.id)) this.bodies.set(a.id, this.newBody(a));
+      const b = this.bodies.get(a.id);
+      if (!b) this.bodies.set(a.id, this.newBody(a));
+      else if (b.label.text !== a.name) b.label.text = a.name;
     }
     for (const [id, b] of this.bodies) {
       if (!agents.has(id)) {

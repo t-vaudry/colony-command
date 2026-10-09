@@ -416,7 +416,7 @@ export class Hud {
             </div>`
           : ""
       }
-      ${row("Session", a.title)}
+      ${a.title !== a.name ? row("Session", a.title) : ""}
       ${row("Objective", a.objective)}
       ${a.last_prompt !== a.objective ? row("Last prompt", a.last_prompt) : ""}
       ${toolRow}

@@ -502,3 +502,21 @@ fn a_name_chosen_at_spawn_replaces_the_drawn_one() {
     term(&mut r, Renamed { name: "Ada".into() });
     assert_eq!(r.colony.agents[SID].name, "Ada");
 }
+
+#[test]
+fn subagents_follow_a_renamed_parent() {
+    use colony_core::DomainEvent::{Renamed, TerminalAttached};
+    let mut r = Run::new(HostId::Windows);
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: "C:/x".into(), pid: None });
+    let old = r.colony.agents[SID].name.clone();
+    let id = colony_core::state::sub_id(SID, "a1");
+    r.colony.agents.insert(id.clone(), {
+        let mut c = r.colony.agents[SID].clone();
+        c.id = id.clone();
+        c.name = format!("{old} · Explore 1");
+        c
+    });
+    r.colony.agents.get_mut(SID).unwrap().children.push(id.clone());
+    term(&mut r, Renamed { name: "Ada".into() });
+    assert_eq!(r.colony.agents[&id].name, "Ada · Explore 1");
+}

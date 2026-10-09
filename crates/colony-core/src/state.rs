@@ -313,7 +313,16 @@ impl Colony {
         // A name the user chose when starting the session replaces the drawn one.
         if let DomainEvent::Renamed { name } = &e.event {
             let name = self.unique_name_except(name.trim(), &sid);
-            self.agents.get_mut(&sid).expect("inserted above").name = name;
+            let main = self.agents.get_mut(&sid).expect("inserted above");
+            let old = std::mem::replace(&mut main.name, name.clone());
+            let children = main.children.clone();
+            // Subagents are named after their parent, so they follow it.
+            for id in children {
+                if let Some(rest) = self.agents.get(&id).and_then(|c| c.name.strip_prefix(&format!("{old} · ")).map(str::to_string)) {
+                    self.agents.get_mut(&id).expect("child exists").name = format!("{name} · {rest}");
+                    changed.push(id);
+                }
+            }
         }
         let main = self.agents.get_mut(&sid).expect("inserted above");
         match (&e.event, &e.cwd) {
