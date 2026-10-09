@@ -9,6 +9,8 @@
 #
 # Fails open: if colonyd isn't running, nobody has the map open, or no answer
 # comes, it prints nothing and Claude Code's own permission prompt decides.
+# The TCP connect gives up after 0.1 s: a dead port on Windows loopback otherwise
+# takes about 2 s to be refused, and that would be a visible pause.
 sock="$HOME/.colony/hook.sock"
 if [ -S "$sock" ]; then
   curl -s --connect-timeout 2 --max-time 590 --unix-socket "$sock" \
@@ -21,6 +23,6 @@ info="$HOME/.colony/daemon.json"
 port=$(sed -n 's/.*"port": *\([0-9][0-9]*\).*/\1/p' "$info")
 token=$(sed -n 's/.*"token": *"\([0-9a-f]*\)".*/\1/p' "$info")
 [ -n "$port" ] && [ -n "$token" ] || exit 0
-curl -s --max-time 590 -H "content-type: application/json" --data-binary @- \
+curl -s --connect-timeout 0.1 --max-time 590 -H "content-type: application/json" --data-binary @- \
   "http://127.0.0.1:$port/api/permission?token=$token" 2>/dev/null
 exit 0

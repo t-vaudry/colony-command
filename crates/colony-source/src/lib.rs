@@ -26,8 +26,9 @@ pub mod usage;
 /// A capture file that still fails to parse after this long is skipped; before
 /// that it may simply be half-written.
 const PARTIAL_WRITE_GRACE_MS: u64 = 5_000;
-/// Polls between checks that registered processes are still running.
-const ALIVE_CHECK_EVERY: u64 = 10;
+/// Polls between checks that registered processes are still running (400 ms at
+/// colonyd's poll rate; a killed terminal must show as crashed within 5 s).
+const ALIVE_CHECK_EVERY: u64 = 2;
 /// Transcripts last written longer ago than this are not read for usage: it
 /// covers "today" in any time zone, plus slack.
 const USAGE_WINDOW_MS: u64 = 48 * 60 * 60 * 1000;
