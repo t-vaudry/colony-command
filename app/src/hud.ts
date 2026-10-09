@@ -4,6 +4,7 @@
 import type { Daemon } from "./daemon";
 import { costChart } from "./costchart";
 import { latencyChart } from "./latencychart";
+import { daySummary } from "./daysummary";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { md } from "./markdown";
 import { repoDir, resumeWarning, worktreeName, type Prefill } from "./dialog";
@@ -486,6 +487,7 @@ export class Hud {
         <p class="muted">Bots on the front porch need you: red ones are stuck, yellow ones want a permission or an answer.
         Bots holding a blue package at the review dock have finished a turn.</p>
         <p class="muted">Drag to pan, scroll to zoom, double-click a bot to zoom to its project, <kbd>0</kbd> to fit everything.</p>
+        ${daySummary(this.daemon.spend, this.daemon.latency, this.daemon.now())?.html ?? ""}
         ${costChart(this.daemon.spend, this.daemon.now())}
         ${latencyChart(this.daemon.latency, this.daemon.now())}
         ${this.leftoverList()}
