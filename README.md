@@ -139,6 +139,19 @@ colony-ptyd also keeps Windows from sleeping on idle.
 Set `COLONY_HOME` (and `COLONY_PORT` / `COLONY_PTYD_PORT`) to run an isolated
 second Colony, e.g. for tests.
 
+## Notifications
+
+A bot that has waited on you past its patience budget gets one OS notification
+(*Notifications* button in the top bar). Budgets are per kind: **permission 5 min**,
+**question 15 min** (blocked and crashed bots count as questions), **review 60 min**;
+set one to 0 to turn that kind off, or switch notifications off altogether. They are
+stored per machine in the app. Nothing is sent while the Colony window is focused (the
+porch always shows what is waiting); an item still overdue when you look away is announced
+then. Each wait is announced once, however long it lasts, and again only if the bot is
+answered and later waits anew. Many at once collapse into one summary. Windows toasts can't
+report a click, so coming back to the window within 10 minutes of a notification selects
+that bot. The decision logic is `colony-core/src/patience.rs`; the app only shows it.
+
 ## Load and visual testing: `tools/synth` and `tools/replay`
 
 Both feed a **test** colonyd through `POST /api/ingest`, which the daemon only
