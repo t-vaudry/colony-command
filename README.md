@@ -44,11 +44,21 @@ never exit with the code that blocks a tool call.
 
 ### Updating
 
-For now updating is manual: download the new installer and run it over the old
-one. It keeps your settings, replaces the app files (a running `colonyd` is
-stopped and restarts with the app; sessions in `colony-ptyd` keep running), and
-Set up Colony re-offers to refresh the hooks and probe. See the TODO under
-*Release and CI* for automatic updates.
+An installed Colony checks GitHub Releases for a newer version when it starts
+(and every few hours), and shows a small notice over the map's bottom-right
+corner: *Colony X.Y.Z is available* with **Install** and **Later**. Nothing is
+installed until you click Install, so running sessions are never interrupted.
+The download is verified against the updater key, then the same installer runs in
+passive mode: it stops this install's `colonyd` (the app restarts it), moves a
+running `colony-ptyd` aside so the sessions in it keep running, and relaunches
+Colony. Set up Colony re-offers to refresh the hooks and probe afterwards.
+Development builds never check; set `COLONY_NO_UPDATE_CHECK=1` to switch checking
+off in an installed one. You can also still download the installer and run it
+over the old one by hand.
+
+For development, `scripts/update.ps1` rebuilds and relaunches from source without
+ending your sessions.
+
 
 ### Uninstalling
 
@@ -500,10 +510,17 @@ every distro), `COLONY_HOME=<dir>/.colony`, then start the app or run
 `.github/workflows/ci.yml` runs `cargo test` on Windows and Linux (and the app's
 `npm run build`) for every push and pull request. Pushing a tag `vX.Y.Z` (it
 must match the version in `Cargo.toml` and `tauri.conf.json`) also builds the
-static Linux probe and the installer and keeps them as the `colony-linux-x86_64`
-and `colony-installer` artifacts. No secrets are used, so nothing is signed or
-published.
+static Linux probe and the installer, keeps them as the `colony-linux-x86_64`
+and `colony-installer` artifacts, and publishes a GitHub Release with the
+installer, its `.sig` and `latest.json` (the file installed apps poll for updates).
 
-TODO (needs the owner's decisions, see the pull request that added this):
-automatic updates with the Tauri updater, code signing, and an aarch64 Linux
-probe for WSL on ARM.
+Two repository secrets sign the updater artifacts: `TAURI_SIGNING_PRIVATE_KEY`
+(the contents of the key made by `tauri signer generate`) and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The matching public key is in
+`app/src-tauri/tauri.conf.json`; losing the private key means installed apps can
+no longer be updated. Locally, `scripts/build-installer.ps1` only makes the
+updater artifacts when `TAURI_SIGNING_PRIVATE_KEY` is set. The installer itself
+is not code-signed yet.
+
+TODO (needs the owner's decisions): code signing, and an aarch64 Linux probe for
+WSL on ARM.
