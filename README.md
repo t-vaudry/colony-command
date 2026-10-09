@@ -13,8 +13,8 @@ be installed (on Windows, in WSL, or both).
 
 1. Download `Colony Command_<version>_x64-setup.exe` (from the repository's
    Releases page, or the `colony-installer` artifact of a tagged CI run).
-   Windows SmartScreen will say the publisher is unknown: the installer isn't
-   code-signed yet. *More info → Run anyway*.
+   Windows SmartScreen will likely say "Windows protected your PC" and show the
+   publisher as unknown (see *About SmartScreen* below). *More info → Run anyway*.
 2. Run it. It installs for your user only (no administrator prompt) under
    `%LOCALAPPDATA%\Colony Command` and adds a Start menu entry.
 3. Start **Colony Command**. On first launch the **Set up Colony** window opens
@@ -41,6 +41,19 @@ command, which is how it finds, repairs, upgrades and removes them. They are
 written so a broken or missing Colony can't get in Claude Code's way: if the
 binary isn't there the command does nothing and exits 0, and Colony's binaries
 never exit with the code that blocks a tool call.
+
+#### About SmartScreen
+
+Colony is deliberately **not code-signed** for now: a certificate costs money every
+month, and a newly signed file gets the same warning until it earns reputation
+anyway. So SmartScreen warns about the installer, and the warning may stay for some
+time: reputation builds as many people download and run the same file, and each
+release is a new file. What you can check instead: the installer comes from this
+repository's Releases page, the Release notes are `CHANGELOG.md`, and the file is
+built by the public CI workflow from the tagged commit. In-app updates are verified
+against the updater key built into the app, and are downloaded by Colony itself
+rather than a browser, so they should not show the warning. Signing may be added
+later (tracked in #14); the update path won't need to change when it is.
 
 ### Updating
 
@@ -552,7 +565,28 @@ Two repository secrets sign the updater artifacts: `TAURI_SIGNING_PRIVATE_KEY`
 `app/src-tauri/tauri.conf.json`; losing the private key means installed apps can
 no longer be updated. Locally, `scripts/build-installer.ps1` only makes the
 updater artifacts when `TAURI_SIGNING_PRIVATE_KEY` is set. The installer itself
-is not code-signed yet.
+is not code-signed (a decision, see *About SmartScreen* above).
 
-TODO (needs the owner's decisions): code signing, and an aarch64 Linux probe for
-WSL on ARM.
+`scripts/check-release-version.sh [vX.Y.Z]` is the guard: `Cargo.toml`,
+`app/src-tauri/tauri.conf.json`, `app/package.json` and `Cargo.lock` must carry the
+same version (CI runs it on every push), and given a tag, the tag must match and
+`CHANGELOG.md` must have a `## [X.Y.Z]` section, which becomes the Release notes.
+
+### Cutting a release
+
+1. Pick `X.Y.Z`. Set it in `Cargo.toml` (`[workspace.package]`),
+   `app/src-tauri/tauri.conf.json` and `app/package.json` / `package-lock.json`;
+   run `cargo metadata` once so `Cargo.lock` follows; add a `## [X.Y.Z]` section to
+   `CHANGELOG.md`; run `scripts/check-release-version.sh vX.Y.Z`.
+2. Merge that to `main` by pull request and wait for CI to pass on `main`.
+3. Tag the merge commit and push the tag: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+4. CI builds the Linux probe and the installer and publishes the Release. Check it
+   has three assets (`colony-command_X.Y.Z_x64-setup.exe`, `.exe.sig`,
+   `latest.json`) and that
+   `https://github.com/t-vaudry/colony-command/releases/latest/download/latest.json`
+   shows `X.Y.Z`. Installed apps pick it up within a few hours.
+
+A failed tag build publishes nothing; fix forward with the next patch number.
+Don't delete and re-push a tag that apps may already have seen.
+
+TODO (needs the owner's decisions): an aarch64 Linux probe for WSL on ARM.
