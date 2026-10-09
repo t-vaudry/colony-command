@@ -91,11 +91,13 @@ export class SetupDialog {
       return;
     }
     this.btn.addEventListener("click", () => void this.open());
-    this.dlg.addEventListener("close", () => {
+    // Esc while files are being written would hide the window mid-apply.
+    this.dlg.addEventListener("cancel", (e) => {
+      if (this.busy) e.preventDefault();
       // Asked once per app version; the button stays for later.
-      if (this.status) store(DISMISSED_KEY, this.status.version);
-      void this.refresh();
+      else if (this.status) store(DISMISSED_KEY, this.status.version);
     });
+    this.dlg.addEventListener("close", () => void this.refresh());
     this.body.addEventListener("click", (e) => this.click(e));
     this.body.addEventListener("change", (e) => this.change(e));
     // First launch, and again after an update: offer once per app version.
@@ -124,8 +126,14 @@ export class SetupDialog {
     this.plans.clear();
     for (const t of this.status.targets) {
       if (t.target.running) this.include.add(t.target.id);
-      // Everything on by default; an installed item that is unticked is removed.
-      this.sel.set(t.target.id, { hooks: true, probe: t.target.kind === "wsl", approval: true });
+      // Start from what is installed: on a fresh target everything is ticked; on one that has
+      // Colony, an item that isn't installed stays unticked (someone may have chosen that).
+      const any = t.components.some((c) => c.state !== "missing");
+      const on = (id: keyof Sel) => {
+        const c = t.components.find((x) => x.id === id);
+        return !!c && (!any || c.state !== "missing");
+      };
+      this.sel.set(t.target.id, { hooks: on("hooks"), probe: on("probe"), approval: on("approval") });
     }
     this.renderChoose();
     if (!this.dlg.open) this.dlg.showModal();
@@ -245,6 +253,7 @@ export class SetupDialog {
           <div class="su-head"><b>${esc(label(p.target))}</b></div>
           ${files.length ? `<div class="k">Files</div><ul class="su-files mono">${files.map((f) => `<li><span class="su-act ${f.action}">${f.action}</span> ${esc(f.path)}</li>`).join("")}</ul>` : ""}
           ${p.diff ? `<div class="k">${esc(p.settings_path)}</div><pre class="su-diff">${diffHtml(p.diff)}</pre>` : ""}
+          ${p.diff ? `<p class="muted small">Colony entries you registered by hand (a command running colony-hook or colony-approve.sh) are adopted: their command is replaced, so any extra arguments are dropped. Your other hooks are not touched.</p>` : ""}
           ${p.backup_path ? `<p class="muted small">Backup first: <span class="mono">${esc(p.backup_path)}</span></p>` : ""}
         </section>`;
       })
@@ -266,7 +275,12 @@ export class SetupDialog {
     this.body.innerHTML = `<h2>Applying…</h2><p class="muted">Writing files. WSL distros can take a few seconds.</p>`;
     const results: Applied[] = [];
     for (const p of this.plans.values()) {
-      if (p.error || p.nothing) continue;
+      if (p.nothing && !p.error) continue;
+      // A target whose plan failed is part of the result, not silently dropped.
+      if (p.error) {
+        results.push({ target: p.target, ok: false, steps: [{ what: "Not changed", ok: false, detail: p.error }] });
+        continue;
+      }
       try {
         results.push(await this.invoke!<Applied>("setup_apply", { target: p.target, selection: this.selection(p.target), token: p.token }));
       } catch (e) {
@@ -277,6 +291,7 @@ export class SetupDialog {
     await this.refresh();
     const label = (id: string) => this.status?.targets.find((t) => t.target.id === id)?.target.label ?? id;
     const allOk = results.every((r) => r.ok);
+    // Only a fully successful run counts as done for this version.
     if (allOk) store(DISMISSED_KEY, this.status?.version ?? "");
     this.body.innerHTML = `
       <h2>${allOk ? "Done" : "Finished with errors"}</h2>

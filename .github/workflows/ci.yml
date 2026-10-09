@@ -68,7 +68,7 @@ jobs:
       - name: Tag matches the app version
         shell: bash
         run: |
-          v=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          v=$(awk '/^\[workspace.package\]/{f=1} f && /^version/{gsub(/^[^"]*"|".*$/,""); print; exit}' Cargo.toml)
           [ "${GITHUB_REF_NAME#v}" = "$v" ] || { echo "tag $GITHUB_REF_NAME doesn't match Cargo.toml version $v"; exit 1; }
           t=$(sed -n 's/.*"version": "\(.*\)".*/\1/p' app/src-tauri/tauri.conf.json | head -1)
           [ "$t" = "$v" ] || { echo "tauri.conf.json version $t doesn't match $v"; exit 1; }

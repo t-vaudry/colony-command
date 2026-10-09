@@ -36,7 +36,7 @@ be installed (on Windows, in WSL, or both).
 4. The window re-opens after an update when installed hooks or the probe are older
    than the app. **Not now** hides it until the next version; the button stays.
 
-Colony's entries are tagged with a `# colony-setup v=<version>` comment in their
+Windows hooks are POSIX shell commands, so they need Claude Code's default shell on Windows (Git Bash, which Claude Code requires). Colony's entries are tagged with a `# colony-setup v=<version>` comment in their
 command, which is how it finds, repairs, upgrades and removes them. They are
 written so a broken or missing Colony can't get in Claude Code's way: if the
 binary isn't there the command does nothing and exits 0, and Colony's binaries

@@ -96,7 +96,8 @@ fn install_status_uninstall_keeps_the_users_settings() {
     assert!(un.ok, "{:?}", un.steps);
     assert_eq!(fs::read_to_string(s.settings()).unwrap(), USER);
     assert!(!s.bin("colony-hook.exe").exists());
-    assert!(!s.bin("colony-setup.exe").exists());
+    // The running uninstaller can't delete itself; the installer removes it afterwards.
+    assert!(s.bin("colony-setup.exe").exists());
     assert!(!s.bin("VERSION").exists());
     let end = status(&s.opts, &windows);
     assert!(end.components.iter().all(|c| c.state == State::Missing));
@@ -168,4 +169,28 @@ fn custom_colony_home_is_named_absolutely_in_commands() {
     let text = fs::read_to_string(s.settings()).unwrap();
     assert!(text.contains("elsewhere/bin/colony-hook.exe"), "{text}");
     assert!(s.root.join("elsewhere/bin/colony-hook.exe").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_settings_are_written_through_and_modes_kept() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let s = scratch("symlink");
+    let real = s.root.join("dotfiles/claude-settings.json");
+    fs::create_dir_all(real.parent().unwrap()).unwrap();
+    fs::write(&real, "{\"model\":\"x\"}\n").unwrap();
+    fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::create_dir_all(s.settings().parent().unwrap()).unwrap();
+    symlink(&real, s.settings()).unwrap();
+
+    assert!(apply(&s.opts, "windows", Selection::ALL, None).ok);
+    assert!(fs::symlink_metadata(s.settings()).unwrap().file_type().is_symlink(), "the link was replaced by a file");
+    assert!(fs::read_to_string(&real).unwrap().contains("colony-hook"));
+    assert_eq!(fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
+    for b in backups(s.settings().parent().unwrap()) {
+        assert_eq!(fs::metadata(&b).unwrap().permissions().mode() & 0o777, 0o600, "backup is wider than the original");
+    }
+    assert!(apply(&s.opts, "windows", Selection::NONE, None).ok);
+    assert_eq!(fs::read_to_string(&real).unwrap(), "{\"model\":\"x\"}\n");
+    assert!(fs::symlink_metadata(s.settings()).unwrap().file_type().is_symlink());
 }

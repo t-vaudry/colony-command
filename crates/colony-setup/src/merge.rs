@@ -617,8 +617,32 @@ fn patch_hook(text: &str, h: &Node, w: &Wanted, st: &Style) -> String {
     rebuild(text, h, &edits, &appends, st)
 }
 
-/// Compares dotted versions numerically (`0.10.0` > `0.9.0`).
+/// Compares dotted versions numerically (`0.10.0` > `0.9.0`). A pre-release
+/// suffix (`0.2.0-beta`) sorts before the release it leads up to.
 pub fn classify_version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let parse = |s: &str| -> Vec<u64> { s.split(['.', '-']).map(|p| p.parse().unwrap_or(0)).collect() };
-    parse(a).cmp(&parse(b))
+    let split = |s: &str| -> (Vec<u64>, bool) {
+        let (core, pre) = match s.split_once('-') {
+            Some((c, _)) => (c, true),
+            None => (s, false),
+        };
+        (core.split('.').map(|p| p.parse().unwrap_or(0)).collect(), pre)
+    };
+    let ((ac, ap), (bc, bp)) = (split(a), split(b));
+    // No suffix is the later of two equal cores, hence the reversed flags.
+    ac.cmp(&bc).then(bp.cmp(&ap))
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::classify_version_cmp as cmp;
+    use std::cmp::Ordering::*;
+
+    #[test]
+    fn versions() {
+        assert_eq!(cmp("0.10.0", "0.9.0"), Greater);
+        assert_eq!(cmp("0.2.0-beta", "0.2.0"), Less);
+        assert_eq!(cmp("0.2.0", "0.2.0-beta"), Greater);
+        assert_eq!(cmp("0.2.0", "0.2.0"), Equal);
+        assert_eq!(cmp("0.2.1-rc1", "0.2.0"), Greater);
+    }
 }

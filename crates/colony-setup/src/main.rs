@@ -48,9 +48,11 @@ fn run(args: &[String]) -> Result<i32, String> {
     let json = flag("--json");
 
     let mut chosen: Vec<TargetInfo> = targets(&opts);
+    let mut skipped: Vec<String> = Vec::new();
     match value("--target").as_deref() {
         None | Some("all") => {
             if !flag("--include-stopped") {
+                skipped = chosen.iter().filter(|t| !t.running).map(|t| t.id.clone()).collect();
                 chosen.retain(|t| t.running);
             }
         }
@@ -130,6 +132,12 @@ fn run(args: &[String]) -> Result<i32, String> {
                     println!("  {} {}{}", if s.ok { "ok  " } else { "FAIL" }, s.what, s.detail.as_deref().map(|d| format!(": {d}")).unwrap_or_default());
                 }
                 failed |= !done.ok;
+            }
+            if !skipped.is_empty() && !json {
+                println!(
+                    "Not touched (stopped, so not started): {}. Anything Colony installed there stays; run again with --include-stopped to include them.",
+                    skipped.join(", ")
+                );
             }
             Ok(i32::from(failed))
         }

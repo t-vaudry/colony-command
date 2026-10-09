@@ -73,6 +73,11 @@ pub fn run(input: &str, ctx: &Ctx) -> Option<String> {
     // map's timeline, and a failure later must not lose it.
     let dir = if daemon.is_some() { "capture" } else { "spool" };
     let _ = write_unique(&ctx.colony_home.join(dir), input.as_bytes());
+    // Nobody may be reading the spool (the app was uninstalled, or just isn't running), so it
+    // can't be allowed to grow forever. Sampled by pid to keep the hook fast.
+    if dir == "spool" && std::process::id() % 8 == 0 {
+        prune_spool(&ctx.colony_home.join("spool"), unix_nanos(), SPOOL_MAX_FILES, SPOOL_MAX_AGE);
+    }
     if let Some(event) = &event {
         let _ = keep_fixture(ctx, event, input);
     }
@@ -80,6 +85,35 @@ pub fn run(input: &str, ctx: &Ctx) -> Option<String> {
         return daemon?.permission(input);
     }
     None
+}
+
+/// The spool keeps at most this many payloads, and none older than `SPOOL_MAX_AGE`.
+const SPOOL_MAX_FILES: usize = 2000;
+const SPOOL_MAX_AGE: Duration = Duration::from_secs(3 * 24 * 3600);
+
+fn unix_nanos() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+}
+
+/// Deletes spooled payloads older than `max_age`, then the oldest beyond `max_files`.
+/// Names are `<nanotime>-<pid>.json`, so age comes from the name. Best effort.
+pub fn prune_spool(dir: &Path, now_nanos: u128, max_files: usize, max_age: Duration) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    let mut files: Vec<(u128, PathBuf)> = rd
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let stamp = name.strip_suffix(".json")?.split('-').next()?.parse::<u128>().ok()?;
+            Some((stamp, e.path()))
+        })
+        .collect();
+    files.sort();
+    let cutoff = now_nanos.saturating_sub(max_age.as_nanos());
+    let fresh = files.partition_point(|(t, _)| *t < cutoff);
+    let excess = (files.len() - fresh).saturating_sub(max_files);
+    for (_, p) in files.iter().take(fresh + excess) {
+        let _ = fs::remove_file(p);
+    }
 }
 
 /// Writes `<nanotime>-<pid>.json` atomically (a temp name colony-source
@@ -177,5 +211,33 @@ impl Daemon {
         }
         let out = rest.trim();
         (!out.is_empty()).then(|| out.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spool_is_capped_and_aged_out() {
+        let dir = std::env::temp_dir().join(format!("colony-hook-spool-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let day = Duration::from_secs(24 * 3600).as_nanos();
+        let now = 100 * day;
+        // Two old payloads, five fresh ones, and files that aren't payloads.
+        for (i, t) in [now - 5 * day, now - 4 * day, now - 100, now - 90, now - 80, now - 70, now - 60].iter().enumerate() {
+            fs::write(dir.join(format!("{t}-{i}.json")), "{}").unwrap();
+        }
+        fs::write(dir.join("notes.txt"), "keep").unwrap();
+        fs::write(dir.join("1-2.tmp"), "keep").unwrap();
+        prune_spool(&dir, now, 3, Duration::from_secs(3 * 24 * 3600));
+        let mut left: Vec<String> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left.len(), 5, "{left:?}");
+        assert!(left.contains(&"notes.txt".to_string()) && left.contains(&"1-2.tmp".to_string()));
+        assert!(left.iter().any(|n| n.starts_with(&format!("{}-", now - 60))), "newest payload kept");
+        assert!(!left.iter().any(|n| n.starts_with(&format!("{}-", now - 90))), "oldest beyond the cap removed");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

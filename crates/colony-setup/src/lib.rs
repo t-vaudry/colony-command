@@ -21,7 +21,7 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use fs::{LocalFs, TargetFs, WslFs};
+use fs::{Kind, LocalFs, TargetFs, WslFs};
 use merge::{classify_version_cmp, EntryKind, Found, Wanted, EVENTS};
 
 /// The version this build installs. Entries and the bin folder carry it so
@@ -278,8 +278,10 @@ impl Bundle {
             dirs.push(exe_dir.clone());
             dirs.push(exe_dir.join("resources"));
             dirs.push(exe_dir.join("..").join("resources"));
-            // A development tree: target/<profile>/ inside the repository.
-            for anc in exe_dir.ancestors().skip(1).take(4) {
+            // A development tree: target/<profile>/ inside the repository. Only then; an
+            // installed copy must not pick up files from folders above it.
+            let in_build_tree = exe_dir.components().any(|c| c.as_os_str() == "target");
+            for anc in exe_dir.ancestors().skip(1).take(4).filter(|_| in_build_tree) {
                 dirs.push(anc.join("hooks"));
                 for t in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
                     dirs.push(anc.join("target").join(t).join("release"));
@@ -466,7 +468,8 @@ fn status_inner(opts: &Options, target: &TargetInfo, st: &mut TargetStatus) -> R
             (TargetKind::Windows, _) => Vec::new(),
             _ => files_for(l.kind, sel),
         };
-        for f in file_ids {
+        // colony-setup.exe is a convenience copy; whether it is there says nothing about the install.
+        for f in file_ids.into_iter().filter(|f| *f != FileId::Setup) {
             let have = fs.read(&format!("{}/{}", l.bin_dir, f.dest_name(l.kind))).map_err(|e| e.to_string())?;
             let want = bundle.find(f, l.kind, &l.arch).and_then(|p| std::fs::read(p).ok());
             items.push(match (have, want) {
@@ -517,10 +520,11 @@ pub struct Plan {
 struct Prepared {
     plan: Plan,
     new_settings: Option<String>,
-    /// (dest, bytes, executable)
-    writes: Vec<(String, Vec<u8>, bool)>,
+    /// (dest, bytes, kind)
+    writes: Vec<(String, Vec<u8>, Kind)>,
     removes: Vec<String>,
-    settings_existed: bool,
+    /// settings.json as read when planning; the write is refused if it has changed since.
+    base: Option<String>,
 }
 
 fn prepare(opts: &Options, id: &str, sel: Selection) -> Result<(Box<dyn TargetFs>, Prepared), String> {
@@ -572,11 +576,12 @@ fn prepare(opts: &Options, id: &str, sel: Selection) -> Result<(Box<dyn TargetFs
         };
         plan.files.push(FileOp { path: dest.clone(), action });
         if action != "same" {
-            writes.push((dest, bytes, f.executable()));
+            writes.push((dest, bytes, if f.executable() { Kind::Executable } else { Kind::Data }));
         }
     }
     let mut removes = Vec::new();
-    for f in ALL_FILES.into_iter().filter(|f| f.applies(l.kind) && !needed.contains(f)) {
+    // colony-setup.exe is never removed by itself (it may be the one running); the uninstaller deletes it.
+    for f in ALL_FILES.into_iter().filter(|f| f.applies(l.kind) && !needed.contains(f) && *f != FileId::Setup) {
         let dest = format!("{}/{}", l.bin_dir, f.dest_name(l.kind));
         if fs.read(&dest).map_err(|e| e.to_string())?.is_some() {
             plan.files.push(FileOp { path: dest.clone(), action: "remove" });
@@ -585,7 +590,7 @@ fn prepare(opts: &Options, id: &str, sel: Selection) -> Result<(Box<dyn TargetFs
     }
     let version_file = format!("{}/VERSION", l.bin_dir);
     if !needed.is_empty() && fs.read(&version_file).ok().flatten().as_deref() != Some(format!("{VERSION}\n").as_bytes()) {
-        writes.push((version_file, format!("{VERSION}\n").into_bytes(), false));
+        writes.push((version_file, format!("{VERSION}\n").into_bytes(), Kind::Data));
     }
     plan.nothing = plan.diff.is_empty() && writes.is_empty() && removes.is_empty();
     let mut h = Sha256::new();
@@ -598,8 +603,8 @@ fn prepare(opts: &Options, id: &str, sel: Selection) -> Result<(Box<dyn TargetFs
         h.update(r.as_bytes());
     }
     plan.token = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    let settings_existed = read.settings_text.is_some();
-    Ok((fs, Prepared { plan, new_settings, writes, removes, settings_existed }))
+    let base = read.settings_text.clone();
+    Ok((fs, Prepared { plan, new_settings, writes, removes, base }))
 }
 
 /// What installing `sel` on `target` would do. An error in the plan itself
@@ -665,8 +670,8 @@ pub fn apply(opts: &Options, target: &str, sel: Selection, expect: Option<&str>)
     let uninstalling = p.new_settings.is_some() && p.writes.is_empty();
     let write_files = |steps: &mut Vec<Step>| -> bool {
         let mut ok = true;
-        for (dest, bytes, exec) in &p.writes {
-            let r = fs.write(dest, bytes, *exec).map_err(|e| e.to_string());
+        for (dest, bytes, kind) in &p.writes {
+            let r = fs.write(dest, bytes, *kind, None).map_err(|e| e.to_string());
             let good = r.is_ok();
             steps.push(Step { what: format!("Write {dest}"), ok: good, detail: r.err() });
             ok &= good;
@@ -675,21 +680,35 @@ pub fn apply(opts: &Options, target: &str, sel: Selection, expect: Option<&str>)
     };
     let write_settings = |steps: &mut Vec<Step>| -> bool {
         let Some(new) = &p.new_settings else { return true };
-        // Back up what is on disk right now, not what the preview read.
-        if p.settings_existed {
-            let backup = p.plan.backup_path.clone().expect("set when the file exists");
-            let r = fs
-                .read(&p.plan.settings_path)
-                .map_err(|e| e.to_string())
-                .and_then(|b| b.ok_or_else(|| "settings.json disappeared".to_string()))
-                .and_then(|b| fs.write(&backup, &b, false).map_err(|e| e.to_string()));
+        let path = p.plan.settings_path.as_str();
+        // Compare-and-swap: Claude Code (or the user) may have saved the file since it was
+        // read for the plan; writing over that would lose their change. (A save in the few
+        // milliseconds between this check and the rename can't be ruled out.)
+        let now = match fs.read(path) {
+            Ok(b) => b.map(|b| String::from_utf8_lossy(&b).into_owned()),
+            Err(e) => {
+                steps.push(Step { what: "Re-read settings.json".into(), ok: false, detail: Some(e.to_string()) });
+                return false;
+            }
+        };
+        if now != p.base {
+            steps.push(Step {
+                what: "Check settings.json".into(),
+                ok: false,
+                detail: Some("settings.json changed while Colony was working; nothing was written to it. Review the preview again".into()),
+            });
+            return false;
+        }
+        // The backup is the bytes just checked, with the original's permissions.
+        if let Some(backup) = &p.plan.backup_path {
+            let r = fs.write(backup, p.base.as_deref().unwrap_or("").as_bytes(), Kind::Config, Some(path)).map_err(|e| e.to_string());
             let good = r.is_ok();
             steps.push(Step { what: format!("Back up settings.json to {backup}"), ok: good, detail: r.err() });
             if !good {
                 return false;
             }
         }
-        let r = fs.write(&p.plan.settings_path, new.as_bytes(), false).map_err(|e| e.to_string());
+        let r = fs.write(path, new.as_bytes(), Kind::Config, Some(path)).map_err(|e| e.to_string());
         let good = r.is_ok();
         steps.push(Step { what: format!("Update {}", p.plan.settings_path), ok: good, detail: r.err() });
         good
