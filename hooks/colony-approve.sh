@@ -20,6 +20,9 @@ if [ -S "$sock" ]; then
 fi
 info="$HOME/.colony/daemon.json"
 [ -f "$info" ] || exit 0
+# Kill switch from the tray ("Pause approvals gating"): step aside.
+[ -e "$HOME/.colony/gating-paused" ] && exit 0
+[ -n "$COLONY_HOME" ] && [ -e "$COLONY_HOME/gating-paused" ] && exit 0
 port=$(sed -n 's/.*"port": *\([0-9][0-9]*\).*/\1/p' "$info")
 token=$(sed -n 's/.*"token": *"\([0-9a-f]*\)".*/\1/p' "$info")
 [ -n "$port" ] && [ -n "$token" ] || exit 0

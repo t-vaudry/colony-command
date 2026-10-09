@@ -84,6 +84,7 @@ export class SetupDialog {
   private stoppedRead = new Set<string>();
   private plans = new Map<string, Plan>();
   private busy = false;
+  private autostart = false;
 
   constructor() {
     if (!this.invoke) {
@@ -120,6 +121,7 @@ export class SetupDialog {
 
   async open(): Promise<void> {
     await this.refresh();
+    this.autostart = await this.invoke!<boolean>("autostart_enabled").catch(() => false);
     if (!this.status) return;
     this.include.clear();
     this.sel.clear();
@@ -181,6 +183,11 @@ export class SetupDialog {
       <p class="muted">Colony learns about your Claude Code sessions through hooks in <span class="mono">~/.claude/settings.json</span>, and sees WSL sessions through a small probe in each distro. Nothing is changed until you have reviewed the exact edits on the next step. Your other settings are left as they are, and a timestamped backup is made first.</p>
       <div class="su-targets">${targets || `<p class="muted">No Windows or WSL targets found.</p>`}</div>
       <p class="muted small">Unchecking something that is already installed removes it.</p>
+      <label class="su-comp" title="Starts Colony hidden in the tray when you sign in to Windows">
+        <input type="checkbox" data-autostart ${this.autostart ? "checked" : ""} />
+        <span class="su-name">Start at login</span>
+        <span class="muted small su-what">Colony starts in the tray when you sign in. Applies right away, not part of Review changes.</span>
+      </label>
       <div class="actions">
         <button type="button" class="primary" data-act="review">Review changes</button>
         <button type="button" data-act="later">Not now</button>
@@ -189,7 +196,12 @@ export class SetupDialog {
 
   private change(e: Event): void {
     const el = e.target as HTMLInputElement;
-    if (el.dataset.inc) {
+    if ("autostart" in el.dataset) {
+      void this.invoke!<boolean>("autostart_set", { on: el.checked })
+        .then((on) => (this.autostart = on))
+        .catch(() => (this.autostart = !el.checked))
+        .finally(() => this.renderChoose());
+    } else if (el.dataset.inc) {
       const id = el.dataset.inc;
       if (el.checked) {
         this.include.add(id);

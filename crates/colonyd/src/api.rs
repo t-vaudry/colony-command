@@ -774,6 +774,11 @@ pub async fn hold_permission(shared: &Arc<Shared>, host: HostId, body: &str) -> 
     if p.hook_event_name != "PermissionRequest" {
         return None;
     }
+    // The tray's kill switch also covers saved rules and WSL hooks, which
+    // can't see this folder.
+    if colony_source::gating::paused(&colony_source::colony_home()) {
+        return None;
+    }
     let tool = p.tool_name.clone().unwrap_or_else(|| "tool".into());
     let suggestions = p.extra.get("permission_suggestions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
     let project = project_of(shared, &host, &p).await;

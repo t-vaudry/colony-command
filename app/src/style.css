@@ -119,6 +119,10 @@ button:focus-visible {
   gap: 6px;
   font-variant-numeric: tabular-nums;
 }
+button.chip.warn {
+  color: var(--warn, #e8a33d);
+  border-color: currentColor;
+}
 button.chip {
   cursor: pointer;
   padding: 2px 8px;
