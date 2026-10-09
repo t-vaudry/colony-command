@@ -30,7 +30,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::approvals::{Choice, Decision, Hold, MAX_WAIT};
+use crate::approvals::{Choice, Decision, Held, Hold, MAX_WAIT};
 use crate::pty::SpawnRequest;
 use crate::{delta_messages, log, Shared};
 
@@ -74,7 +74,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "hosts": hosts, "leftovers": crate::worktree::leftovers() }).to_string()
+    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "hosts": hosts, "leftovers": crate::worktree::leftovers(), "rules": shared.approvals.policy.list(), "offers": shared.approvals.offers() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
@@ -136,6 +136,18 @@ enum Command {
     Kill { term: String },
     /// Switch a Colony-started session's model (types `/model <name>`).
     SetModel { id: String, model: String },
+    /// A reply typed for a bot waiting on one: pasted into its terminal and
+    /// submitted. Looks the terminal up by bot, so a stale terminal id in the
+    /// map can't send it to the wrong place.
+    Reply { id: String, text: String },
+    /// Stop a session Colony started at its next safe point, between turns.
+    Pause { id: String },
+    /// Take back a pause still waiting for the turn to end.
+    CancelPause { id: String },
+    /// Start a paused session again.
+    Resume { id: String },
+    /// Delete a saved "allow always for project" rule.
+    DeleteRule { id: String },
     /// Answer a held permission request.
     Permission {
         request_id: String,
@@ -253,7 +265,20 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         Command::DiscardWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Discard).await.map(|_| None),
         Command::ForgetWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Forget).await.map(|_| None),
         Command::SetModel { id, model } => set_model(shared, &id, &model).await.map(|_| None),
-        Command::Permission { request_id, choice, message, answers } => shared.approvals.decide(&request_id, choice, message, answers).map(|_| None),
+        Command::Permission { request_id, choice, message, answers } => shared.approvals.decide(&request_id, choice, message, answers).map(|saved| {
+            if saved {
+                broadcast_rules(shared);
+            }
+            None
+        }),
+        Command::Reply { id, text } => reply(shared, &id, &text).await.map(|_| None),
+        Command::Pause { id } => crate::pause::request(shared, &id).await.map(|_| None),
+        Command::CancelPause { id } => crate::pause::cancel(shared, &id).await.map(|_| None),
+        Command::Resume { id } => crate::pause::resume(shared, &id).await.map(|_| None),
+        Command::DeleteRule { id } => shared.approvals.policy.remove(&id).map(|_| {
+            broadcast_rules(shared);
+            None
+        }),
     };
     match result {
         Ok(reply) => reply,
@@ -501,9 +526,33 @@ async fn leftover_command(shared: &Shared, session_id: &str, what: Leftover) -> 
     Ok(())
 }
 
+fn broadcast_rules(shared: &Shared) {
+    let _ = shared.deltas.send(json!({ "type": "rules", "items": shared.approvals.policy.list() }).to_string());
+}
+
+/// A reply from the map's reply box, for a session in a Colony terminal.
+async fn reply(shared: &Shared, id: &str, text: &str) -> Result<(), String> {
+    let term = {
+        let colony = shared.colony.read().await;
+        let a = colony.agents.get(id).ok_or("no such session")?;
+        match (&a.terminal, a.paused_at) {
+            (Some(t), _) => t.clone(),
+            (None, Some(_)) => return Err("This session is paused. Resume it to reply.".into()),
+            (None, None) => return Err("Colony didn't start this session, so it can't type into it. Resume it in Colony first.".into()),
+        }
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(());
+    }
+    shared.pty.paste(&term, text)?;
+    tokio::time::sleep(PASTE_SETTLE).await;
+    shared.pty.input(&term, b"\r")
+}
+
 /// Start a session, first giving it its own git worktree when asked. If the
 /// terminal can't start, the worktree made for it is removed again.
-async fn spawn_session(shared: &Shared, mut req: SpawnRequest) -> Result<crate::pty::Spawned, String> {
+pub async fn spawn_session(shared: &Shared, mut req: SpawnRequest) -> Result<crate::pty::Spawned, String> {
     let mut made = None;
     // Resuming a bot whose worktree was cleaned up while it was ended.
     if let Some(w) = req.resume.as_deref().and_then(crate::worktree::find) {
@@ -564,6 +613,7 @@ async fn dismiss(shared: &Shared, id: &str) -> Result<(), String> {
         return Err("only a session's main bot can be dismissed".into());
     }
     end_others(shared, &c).await?;
+    crate::pause::forget(&c.session_id);
     if let Some(term) = &c.terminal {
         // Already closed is fine: there's nothing left to end.
         if let Err(e) = shared.pty.kill(term) {
@@ -711,7 +761,22 @@ async fn permission(State(shared): State<Arc<Shared>>, Query(params): Params, he
 /// WSL probes' stdio channel.
 pub async fn hold_permission(shared: &Arc<Shared>, host: HostId, body: &str) -> Option<String> {
     let Ok(p) = colony_core::HookPayload::parse(body) else { return None };
-    if p.hook_event_name != "PermissionRequest" || !shared.approvals.anyone_watching() {
+    if p.hook_event_name != "PermissionRequest" {
+        return None;
+    }
+    let tool = p.tool_name.clone().unwrap_or_else(|| "tool".into());
+    let suggestions = p.extra.get("permission_suggestions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let project = project_of(shared, &host, &p).await;
+    // A rule the user saved for this project with "Allow always for project".
+    // Checked even with no map open: it was their explicit choice.
+    if let Some((key, name)) = &project {
+        if let Some(rules) = shared.approvals.policy.allows(key, &tool, &suggestions) {
+            let what = rules.iter().map(|r| r.label()).collect::<Vec<_>>().join(", ");
+            log(format!("allowed {what} for {name} from {} by a saved project rule", p.session_id));
+            return Decision::Allow { rule: None, updated_input: None }.hook_output();
+        }
+    }
+    if !shared.approvals.anyone_watching() {
         return None;
     }
     let request_id = uuid::Uuid::new_v4().simple().to_string();
@@ -719,9 +784,15 @@ pub async fn hold_permission(shared: &Arc<Shared>, host: HostId, body: &str) -> 
         Some(a) => colony_core::state::sub_id(&p.session_id, a),
         None => p.session_id.clone(),
     };
-    let suggestions = p.extra.get("permission_suggestions").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let rx = shared.approvals.hold(&request_id, agent_id, suggestions, p.tool_input.clone());
-    let tool = p.tool_name.clone().unwrap_or_else(|| "tool".into());
+    let rx = shared.approvals.hold(&request_id, Held { agent_id, tool: tool.clone(), suggestions, input: p.tool_input.clone(), project: project.clone() });
+    // Tell the maps what "Allow always for project" would save, before the request shows.
+    let offer = shared.approvals.offer(&request_id);
+    if !offer.is_empty() {
+        let mut m = crate::approvals::offer_json(&offer, project.as_ref().map(|(_, n)| n.as_str()));
+        m["type"] = "permission_offer".into();
+        m["request_id"] = request_id.clone().into();
+        let _ = shared.deltas.send(m.to_string());
+    }
     log(format!("holding permission request {request_id} from {}: {tool}", p.session_id));
     let _ = shared
         .events
@@ -750,6 +821,18 @@ pub async fn hold_permission(shared: &Arc<Shared>, host: HostId, body: &str) -> 
     };
     log(format!("permission request {request_id}: {decision:?}"));
     decision.hook_output()
+}
+
+/// The project (key and name) a hook payload's session belongs to: the one the
+/// colony already has for it, else worked out from the payload's folder.
+async fn project_of(shared: &Shared, host: &HostId, p: &colony_core::HookPayload) -> Option<(String, String)> {
+    if let Some(a) = shared.colony.read().await.agents.get(&p.session_id) {
+        if let (Some(k), Some(n)) = (&a.project_key, &a.project_name) {
+            return Some((k.clone(), n.clone()));
+        }
+    }
+    let cwd = p.cwd.as_deref()?;
+    Some((colony_core::paths::project_key(host, cwd), colony_core::paths::project_name(cwd)))
 }
 
 /// Switch a session Colony started to another model by restarting it on that

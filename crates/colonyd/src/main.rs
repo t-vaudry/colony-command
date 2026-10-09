@@ -8,8 +8,10 @@
 
 mod api;
 mod approvals;
-mod pty;
 mod needs;
+mod pause;
+mod policy;
+mod pty;
 mod worktree;
 #[cfg(windows)]
 mod wsl;
@@ -166,6 +168,16 @@ async fn main() {
                 // No connected maps is fine.
                 let _ = reducer.deltas.send(msg);
             }
+        }
+    });
+
+    // Paused sessions come back on the map, and pauses waiting for a turn to end happen.
+    pause::restore(&shared).await;
+    let pauser = shared.clone();
+    tokio::spawn(async move {
+        loop {
+            pause::sweep(&pauser).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
 
