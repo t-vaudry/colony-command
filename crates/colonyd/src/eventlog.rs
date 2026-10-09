@@ -127,7 +127,7 @@ fn trim(path: &Path, now_ms: u64) -> u64 {
     let mut kept: Vec<String> = Vec::new();
     let mut changed = false;
     let mut floor = 0;
-    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+    for line in lines_of(file) {
         match serde_json::from_str::<Envelope>(&line) {
             Ok(e) if e.ts >= oldest => {
                 floor = floor.max(e.ts);
@@ -157,12 +157,17 @@ fn trim(path: &Path, now_ms: u64) -> u64 {
     floor
 }
 
+/// The lines of a log. A line that is not valid UTF-8 (disk damage, a torn
+/// multi-byte write) is read lossily and fails to parse later, instead of
+/// ending the iteration and taking every good line after it along.
+fn lines_of(file: std::fs::File) -> impl Iterator<Item = String> {
+    std::io::BufReader::new(file).split(b'\n').map_while(Result::ok).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
 /// The logged events with `from <= ts <= to`, oldest first.
 pub fn read_window(path: &Path, from: u64, to: u64) -> Vec<Envelope> {
     let Ok(file) = std::fs::File::open(path) else { return Vec::new() };
-    let mut events: Vec<Envelope> = std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
+    let mut events: Vec<Envelope> = lines_of(file)
         .filter_map(|l| serde_json::from_str::<Envelope>(&l).ok())
         .filter(|e| e.ts >= from && e.ts <= to)
         .collect();
@@ -260,6 +265,83 @@ mod tests {
         log.flush();
         assert_eq!(read_window(&p, 0, u64::MAX).len(), 2);
     }
+    #[test]
+    fn a_torn_tail_and_damaged_lines_cost_only_themselves() {
+        let p = tmp();
+        let now = 10 * RETAIN_MS;
+        let good = |ts| serde_json::to_string(&ev(ts, started())).unwrap();
+        let mut body: Vec<u8> = Vec::new();
+        body.extend(format!("{}\n", good(now - 5_000)).as_bytes());
+        body.extend(b"\xff\xfe not utf-8 \x80\n");
+        body.extend(b"{\"ts\": 1, \"half\n");
+        body.extend(b"\n");
+        body.extend(format!("{}\n", good(now - 4_000)).as_bytes());
+        // The daemon was killed mid-write: no newline at the end.
+        body.extend(&good(now - 3_000).as_bytes()[..20]);
+        std::fs::write(&p, body).unwrap();
+
+        let mut log = EventLog::open(&p, now);
+        log.record(&ev(now + 1_000, started()));
+        log.flush();
+        let ts: Vec<u64> = read_window(&p, 0, u64::MAX).iter().map(|e| e.ts).collect();
+        assert_eq!(ts, vec![now - 5_000, now - 4_000, now + 1_000]);
+        // And a read of the damaged file (before any trim) skips the same lines.
+        let q = tmp();
+        std::fs::write(&q, b"\xff\n{\"bad\n").unwrap();
+        assert!(read_window(&q, 0, u64::MAX).is_empty());
+    }
+
+    #[test]
+    fn a_missing_or_unwritable_log_does_not_stop_the_daemon() {
+        let d = tmp().parent().unwrap().to_path_buf();
+        // The path is a directory: opening for append fails.
+        let mut log = EventLog::open(&d, 1_000);
+        log.record(&ev(2_000, started()));
+        log.flush();
+        log.maybe_trim(u64::MAX / 2);
+        assert!(read_window(&d.join("nope.jsonl"), 0, u64::MAX).is_empty());
+    }
+
+    /// Hours of a synthetic fleet against the real file: it holds the 48 h
+    /// window and stays under the size cap the whole way, however long it runs.
+    #[test]
+    #[ignore = "slow (minutes in debug): cargo test -p colonyd --release -- --ignored"]
+    fn the_log_stays_bounded_over_a_multi_day_run() {
+        use colony_synth::fleet::{Config, Fleet};
+        let p = tmp();
+        let start = 1_800_000_000_000u64;
+        let mut fleet = Fleet::new(Config { agents: 2, projects: 4, seed: 3, speed: 1.0 }, start);
+        let mut log = EventLog::open(&p, start);
+        let (mut now, mut total, mut peak) = (start, 0u64, 0u64);
+        let end = start + 3 * 24 * 60 * 60_000;
+        let mut next_check = start;
+        while now < end {
+            now += 1_000;
+            for e in fleet.tick(now) {
+                total += 1;
+                log.record(&e);
+            }
+            if now % 600_000 == 0 {
+                log.flush();
+            }
+            log.maybe_trim(now);
+            if now >= next_check {
+                next_check += 30 * 60_000;
+                peak = peak.max(std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0));
+            }
+        }
+        log.maybe_trim(now + 61 * 60_000);
+        let size = std::fs::metadata(&p).unwrap().len();
+        let events = read_window(&p, 0, u64::MAX);
+        eprintln!("{total} events in 72 h; file peaked at {} KB, ends at {} KB with {} lines", peak / 1024, size / 1024, events.len());
+        assert!(peak <= MAX_BYTES + TRIM_AFTER_BYTES + 1024 * 1024, "peak {peak}");
+        let oldest = events.first().expect("something is kept").ts;
+        assert!(oldest >= now + 61 * 60_000 - RETAIN_MS, "an old event survived the trim");
+        // Two days of the 3 simulated are kept, so well under the whole run.
+        assert!((events.len() as u64) < total * 8 / 10, "{} of {total}", events.len());
+        assert!((events.len() as u64) > total / 4, "{} of {total}: the window was over-trimmed", events.len());
+    }
+
     #[test]
     fn usage_updates_are_not_logged() {
         let p = tmp();

@@ -23,8 +23,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-/// How long the hook waits for stdin.
-pub const STDIN_BUDGET: Duration = Duration::from_millis(40);
+/// How long the hook waits for stdin. Only a stdin that never closes pays all of it; a writer
+/// that is merely slow (a cold start, a loaded or scanning machine) must not lose its payload.
+pub const STDIN_BUDGET: Duration = Duration::from_millis(300);
 /// How long it waits for colonyd to accept a connection (loopback, so a live
 /// daemon answers at once and a dead port refuses at once).
 const CONNECT_BUDGET: Duration = Duration::from_millis(15);
@@ -211,7 +212,9 @@ impl Daemon {
             return None;
         }
         let out = rest.trim();
-        (!out.is_empty()).then(|| out.to_string())
+        // Claude Code reads stdout as a decision: only a JSON object may reach
+        // it (not an error page or a half-sent body from a dying daemon).
+        serde_json::from_str::<Value>(out).ok().filter(Value::is_object).map(|_| out.to_string())
     }
 }
 

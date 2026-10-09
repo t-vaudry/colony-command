@@ -698,6 +698,7 @@ dependencies = [
  "base64 0.22.1",
  "colony-core",
  "colony-source",
+ "colony-synth",
  "futures-util",
  "serde",
  "serde_json",

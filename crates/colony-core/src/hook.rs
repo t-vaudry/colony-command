@@ -11,37 +11,37 @@ use serde_json::{Map, Value};
 pub struct HookPayload {
     pub session_id: String,
     pub hook_event_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub transcript_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub cwd: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub permission_mode: Option<String>,
     /// Present when the event comes from inside a subagent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub agent_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub tool_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_input: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub tool_use_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub message: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub notification_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub last_assistant_message: Option<String>,
     /// String for `PostToolUseFailure` and `StopFailure`; kept as a value in
     /// case a release changes its shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<Value>,
     /// `SessionStart` source: startup, resume, clear, compact, fork.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_string")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<Value>,
@@ -87,4 +87,14 @@ impl HookPayload {
             other => Some(other.to_string()),
         }
     }
+}
+
+/// A string field that a newer Claude Code may send as something else (a
+/// number, an object, null): it reads as absent instead of failing the whole
+/// payload, which would drop the event.
+fn lenient_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match Option::<Value>::deserialize(d)? {
+        Some(Value::String(s)) => Some(s),
+        _ => None,
+    })
 }

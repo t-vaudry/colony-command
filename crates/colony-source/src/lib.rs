@@ -204,9 +204,14 @@ impl DirSource {
             if self.last_capture.is_none() && ts < self.replay_since_ms {
                 continue;
             }
-            let parsed = fs::read_to_string(self.capture_dir.join(&name))
-                .ok()
-                .and_then(|text| HookPayload::parse(&text).ok());
+            let text = fs::read_to_string(self.capture_dir.join(&name)).ok();
+            // Whole JSON that is not a hook payload (no session id, say) will
+            // never become one: skip it now rather than holding the queue.
+            if text.as_deref().is_some_and(|t| serde_json::from_str::<serde_json::Value>(t).is_ok() && HookPayload::parse(t).is_err()) {
+                self.last_capture = Some(name);
+                continue;
+            }
+            let parsed = text.and_then(|text| HookPayload::parse(&text).ok());
             match parsed {
                 Some(p) => {
                     if let Some(e) = Envelope::from_hook(self.host.clone(), ts, &p) {
