@@ -42,6 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Cargo.toml, tauri.conf.json, package.json and Cargo.lock must agree, so a tag can't fail late.
+      - run: scripts/check-release-version.sh
       # The desktop app needs WebKitGTK to compile on Linux and only ships on Windows.
       - run: cargo test --workspace --exclude colony-app --locked
 
@@ -72,13 +74,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Tag matches the app version
+      - name: Tag matches the app version and the changelog
         shell: bash
-        run: |
-          v=$(awk '/^\[workspace.package\]/{f=1} f && /^version/{gsub(/^[^"]*"|".*$/,""); print; exit}' Cargo.toml)
-          [ "${GITHUB_REF_NAME#v}" = "$v" ] || { echo "tag $GITHUB_REF_NAME doesn't match Cargo.toml version $v"; exit 1; }
-          t=$(sed -n 's/.*"version": "\(.*\)".*/\1/p' app/src-tauri/tauri.conf.json | head -1)
-          [ "$t" = "$v" ] || { echo "tauri.conf.json version $t doesn't match $v"; exit 1; }
+        run: scripts/check-release-version.sh "$GITHUB_REF_NAME"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -109,6 +107,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: colony-installer
@@ -127,5 +126,9 @@ jobs:
           url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${exe}"
           jq -n --arg v "$version" --arg url "$url" --rawfile sig "$exe.sig" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{version: $v, notes: ("Colony Command " + $v), pub_date: $date, platforms: {"windows-x86_64": {signature: ($sig | rtrimstr("\n")), url: $url}}}' > latest.json
+          # Release notes: this version's section of CHANGELOG.md (the tag check guarantees it exists).
+          awk -v h="## [$version]" 'index($0,h)==1{f=1;next} /^## /{f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "empty changelog section for $version"; exit 1; }
+          jq --rawfile n notes.md '.notes = $n' latest.json > latest.tmp && mv latest.tmp latest.json
           cat latest.json
-          gh release create "$GITHUB_REF_NAME" "$exe" "$exe.sig" latest.json --title "Colony Command $version" --generate-notes
+          gh release create "$GITHUB_REF_NAME" "$exe" "$exe.sig" latest.json --title "Colony Command $version" --notes-file notes.md
