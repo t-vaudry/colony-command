@@ -148,8 +148,8 @@ enum Command {
     Terminate { id: String },
     /// Done with a session: end every copy of it and clear it off the map.
     Dismiss { id: String },
-    /// Open the login a stuck bot is waiting on in a terminal, to be finished by the user.
-    SignIn {
+    /// Open the sign-in or install a stuck bot is waiting on, in a terminal for the user to finish.
+    FixNeed {
         id: String,
         #[serde(default = "crate::pty::default_cols")]
         cols: u16,
@@ -231,7 +231,7 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         Command::Interrupt { term } => pty.input(&term, b"\x1b").map(|_| None),
         Command::Resize { term, cols, rows } => pty.resize(&term, cols, rows).map(|_| None),
         Command::Kill { term } => pty.kill(&term).map(|_| None),
-        Command::SignIn { id, cols, rows } => match crate::signin::start(shared, &id, cols, rows).await {
+        Command::FixNeed { id, cols, rows } => match crate::needs::start(shared, &id, cols, rows).await {
             Ok(term) => {
                 conn.attached = Some(term.clone());
                 Ok(Some(json!({ "type": "spawned", "term": term, "session_id": id }).to_string()))
@@ -605,17 +605,24 @@ async fn permission(State(shared): State<Arc<Shared>>, Query(params): Params, he
 /// it was. Only between turns, so no work is cut off.
 async fn set_model(shared: &Shared, id: &str, model: &str) -> Result<(), String> {
     let model = crate::pty::checked_model(model)?.to_string();
+    restart_session(shared, id, Some(model), None).await
+}
+
+/// Restart a session Colony started with `--resume`, optionally on another
+/// model and with a first message (`prompt`). The restarted Claude gets a
+/// fresh environment, which is how a program installed meanwhile is found.
+pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, prompt: Option<String>) -> Result<(), String> {
     let (term, session_id, host, dir, busy, has_conversation) = {
         let colony = shared.colony.read().await;
         let a = colony.agents.get(id).ok_or("no such session")?;
-        let term = a.terminal.clone().ok_or("Colony can only switch models in sessions it started; run /model in that session")?;
+        let term = a.terminal.clone().ok_or("Colony can only restart sessions it started")?;
         let dir = a.project_dir.clone().or_else(|| a.cwd.clone()).ok_or("Colony doesn't know this session's folder")?;
         // Nothing to resume until it has been given something to do.
         let has_conversation = a.last_prompt.is_some() || a.objective.is_some() || a.tool_calls > 0;
         (term, a.session_id.clone(), a.host.clone(), dir, a.state == colony_core::AgentState::Working, has_conversation)
     };
     if busy {
-        return Err("Claude is in the middle of a task; switch models when this turn ends.".into());
+        return Err("Claude is in the middle of a task; try again when this turn ends.".into());
     }
     let mut req = shared.pty.request_for(&term).unwrap_or(SpawnRequest {
         host,
@@ -638,16 +645,20 @@ async fn set_model(shared: &Shared, id: &str, model: &str) -> Result<(), String>
         req.resume = None;
         req.session_id = Some(session_id.clone());
     }
-    req.prompt = None;
+    req.prompt = prompt;
     req.name = None;
-    req.model = Some(model.clone());
+    if model.is_some() {
+        req.model = model.clone();
+    }
     shared.pty.kill(&term)?;
     if !shared.pty.closed(&term, Duration::from_secs(10)).await {
         return Err("the session didn't stop; try again".into());
     }
     let spawned = shared.pty.spawn(req).await?;
     let host = shared.colony.read().await.agents.get(id).map(|a| a.host.clone()).unwrap_or(HostId::Windows);
-    let _ = shared.events.send(Envelope { ts: now_ms(), host, session_id, cwd: None, event: DomainEvent::ModelSet { model: model.clone() } }).await;
-    log(format!("restarted session on {model} in terminal {}", spawned.term_id));
+    if let Some(model) = &model {
+        let _ = shared.events.send(Envelope { ts: now_ms(), host, session_id, cwd: None, event: DomainEvent::ModelSet { model: model.clone() } }).await;
+    }
+    log(format!("restarted session{} in terminal {}", model.map(|m| format!(" on {m}")).unwrap_or_default(), spawned.term_id));
     Ok(())
 }

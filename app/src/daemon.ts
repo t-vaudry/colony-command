@@ -174,10 +174,10 @@ export class Daemon {
     });
   }
 
-  /** Open the login this bot is stuck on in a terminal; resolves with its id. */
-  signIn(id: string, size: { cols: number; rows: number }): Promise<{ term: string; session_id: string }> {
+  /** Open the sign-in or install this bot is stuck on in a terminal; resolves with its id. */
+  fixNeed(id: string, size: { cols: number; rows: number }): Promise<{ term: string; session_id: string }> {
     return new Promise((resolve, reject) => {
-      if (!this.send({ type: "sign_in", id, ...size })) {
+      if (!this.send({ type: "fix_need", id, ...size })) {
         reject(new Error("not connected to colonyd"));
         return;
       }

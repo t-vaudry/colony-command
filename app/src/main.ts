@@ -32,14 +32,15 @@ function newSession(prefill?: Prefill): void {
 
 const world = new World(daemon, select);
 const terminal = new TerminalPane(daemon, () => requestAnimationFrame(() => world.resize()));
-async function signIn(a: Agent): Promise<void> {
-  const { term } = await daemon.signIn(a.id, terminal.size());
+async function fixNeed(a: Agent): Promise<void> {
+  const { term } = await daemon.fixNeed(a.id, terminal.size());
   // Not the bot's terminal: don't let the pane snap back to it.
   paneAgent = null;
-  terminal.show(term, `Sign in to ${a.auth_need?.label ?? "the service"} · ${a.name}`);
+  const what = a.auth_need?.kind === "install" ? "Install" : "Sign in to";
+  terminal.show(term, `${what} ${a.auth_need?.label ?? "the tool"} · ${a.name}`);
 }
 
-const hud = new Hud(daemon, { select, showTerminal, newSession, signIn });
+const hud = new Hud(daemon, { select, showTerminal, newSession, fixNeed });
 const dialog = new NewSessionDialog(
   daemon,
   ({ term, session_id }) => {

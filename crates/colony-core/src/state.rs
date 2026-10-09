@@ -460,7 +460,7 @@ impl Colony {
                     a.consecutive_failures += 1;
                     if let Some(need) = error.as_deref().and_then(crate::auth::detect) {
                         // Waiting on a person, not on retries: don't wait for three failures.
-                        a.set_state(AgentState::Blocked, Some(format!("{} needs you to sign in", need.label)), e.ts);
+                        a.set_state(AgentState::Blocked, Some(need.reason()), e.ts);
                         a.auth_need = Some(need);
                     } else if a.consecutive_failures >= FAILURES_TO_BLOCK {
                         let why = format!(

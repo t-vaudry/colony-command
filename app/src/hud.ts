@@ -71,8 +71,8 @@ export interface HudActions {
   select: (id: string | null) => void;
   showTerminal: (a: Agent) => void;
   newSession: (prefill?: Prefill) => void;
-  /** Open the sign-in terminal for a bot stuck on a login. */
-  signIn: (a: Agent) => Promise<void>;
+  /** Open the sign-in or install terminal for a bot stuck on one. */
+  fixNeed: (a: Agent) => Promise<void>;
 }
 
 /** Two-step confirm: the first click arms the button for a few seconds. */
@@ -367,9 +367,13 @@ export class Hud {
       ${card || row(REASON_LABEL[a.state] ?? "Note", a.reason, "reason")}
       ${
         a.auth_need
-          ? `<div class="choice ask" role="group" aria-label="Sign-in needed">
-              <p><b>Not signed in to ${esc(a.auth_need.label)}.</b> Sign in here and this bot is told to retry.</p>
-              <div class="actions"><button type="button" class="primary" data-sign-in="${esc(a.id)}">Sign in to ${esc(a.auth_need.label)}</button></div>
+          ? `<div class="choice ask" role="group" aria-label="${a.auth_need.kind === "install" ? "Install needed" : "Sign-in needed"}">
+              <p><b>${a.auth_need.kind === "install" ? `${esc(a.auth_need.label)} isn't installed.` : `Not signed in to ${esc(a.auth_need.label)}.`}</b> ${
+                a.auth_need.kind === "install" ? "Install it here" : "Sign in here"
+              } and this bot is told to retry.</p>
+              <div class="actions"><button type="button" class="primary" data-fix-need="${esc(a.id)}">${
+                a.auth_need.kind === "install" ? `Install ${esc(a.auth_need.label)}` : `Sign in to ${esc(a.auth_need.label)}`
+              }</button></div>
             </div>`
           : ""
       }
@@ -456,12 +460,12 @@ export class Hud {
       if (!this.daemon.decide(el.dataset.terminalAnswer, "pass")) this.toast("Not connected to colonyd.");
       else if (a) this.actions.showTerminal(a);
     }
-    if (el.dataset.signIn) {
-      const a = this.daemon.agents.get(el.dataset.signIn);
+    if (el.dataset.fixNeed) {
+      const a = this.daemon.agents.get(el.dataset.fixNeed);
       if (!a) return;
       el.setAttribute("disabled", "");
       try {
-        await this.actions.signIn(a);
+        await this.actions.fixNeed(a);
       } catch (err) {
         this.toast(err instanceof Error ? err.message : String(err));
       } finally {

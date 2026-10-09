@@ -577,15 +577,71 @@ const SESSION_VAR_PREFIXES: &[&str] = &[
 
 /// The daemon's environment minus inherited session variables. A variable
 /// you set yourself in your Windows user or system environment is kept.
-fn child_env() -> Vec<(String, String)> {
+pub fn child_env() -> Vec<(String, String)> {
     static PERSISTENT: OnceLock<Vec<String>> = OnceLock::new();
     let persistent = PERSISTENT.get_or_init(persistent_env_names);
-    std::env::vars()
+    let mut env: Vec<(String, String)> = std::env::vars()
         .filter(|(k, _)| {
             let upper = k.to_ascii_uppercase();
             !SESSION_VAR_PREFIXES.iter().any(|p| upper.starts_with(p)) || persistent.contains(&upper)
         })
-        .collect()
+        .collect();
+    // Programs installed since colonyd started are on the registry's PATH, not on ours.
+    let current = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone()).unwrap_or_default();
+    if let Some(extra) = new_path_entries(&current) {
+        match env.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case("PATH")) {
+            Some((_, v)) => v.push_str(&extra),
+            None => env.push(("PATH".into(), extra.trim_start_matches(';').into())),
+        }
+    }
+    env
+}
+
+/// PATH entries the registry has (machine and user) that `current` lacks,
+/// ready to append (with a leading `;`). Windows only.
+fn new_path_entries(current: &str) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let norm = |p: &str| p.trim().trim_end_matches('\\').to_ascii_lowercase();
+    let mut have: HashSet<String> = current.split(';').map(norm).collect();
+    let mut extra = String::new();
+    for key in [r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", r"HKCU\Environment"] {
+        let Ok(out) = std::process::Command::new("reg.exe").args(["query", key, "/v", "Path"]).output() else { continue };
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            // "    Path    REG_EXPAND_SZ    C:\a;%SystemRoot%\b"
+            let Some(value) = line.split("REG_EXPAND_SZ").nth(1).or_else(|| line.split("REG_SZ").nth(1)) else { continue };
+            for entry in value.trim().split(';').filter(|e| !e.is_empty()) {
+                let entry = expand_vars(entry);
+                if have.insert(norm(&entry)) {
+                    extra.push(';');
+                    extra.push_str(&entry);
+                }
+            }
+        }
+    }
+    (!extra.is_empty()).then_some(extra)
+}
+
+/// `%NAME%` -> its value, for the registry's unexpanded PATH entries.
+fn expand_vars(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        match std::env::var(&after[..end]) {
+            Ok(v) => out.push_str(&v),
+            Err(_) => out.push_str(&rest[start..start + end + 2]),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Names of variables in the user's and the machine's saved environment.
@@ -636,6 +692,14 @@ mod tests {
         assert!(checked_model("--dangerously-skip-permissions").is_err());
         assert!(checked_model("haiku; rm -rf /").is_err());
         assert!(checked_model("").is_err());
+    }
+
+    #[test]
+    fn expands_registry_path_variables() {
+        std::env::set_var("COLONY_TEST_ROOT", r"C:\Win");
+        assert_eq!(expand_vars(r"%COLONY_TEST_ROOT%\System32"), r"C:\Win\System32");
+        assert_eq!(expand_vars(r"%NOPE_NOT_SET%\x"), r"%NOPE_NOT_SET%\x");
+        assert_eq!(expand_vars("100%"), "100%");
     }
 
     #[test]
