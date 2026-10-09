@@ -23,7 +23,7 @@ pub const STARTUP_WAIT_MS: u64 = 8_000;
 pub const STARTUP_REASON: &str = "Waiting in its terminal: answer the startup question or send a first message";
 /// Grace between a registry file vanishing and calling the session crashed,
 /// so a normal exit's `SessionEnd` can arrive first.
-pub const CRASH_GRACE_MS: u64 = 5_000;
+pub const CRASH_GRACE_MS: u64 = 1_500;
 /// Working with no events and no tool running for this long counts as stuck.
 pub const STALL_MS: u64 = 10 * 60_000;
 /// A single tool call running this long counts as stuck.

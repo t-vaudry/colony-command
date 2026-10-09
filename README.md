@@ -96,7 +96,8 @@ Everything below is for working on Colony itself.
 | `crates/colony-hook` | Claude Code hook: records each hook payload for colonyd (spooling while it is away), keeps fixtures per Claude Code version |
 | `crates/colony-setup` | Installer logic: edits `~/.claude/settings.json` (Windows and each WSL distro), copies the hook, probe and approval hook; `colony-setup` CLI. Used by the app's Set up Colony window and the uninstaller |
 | `spikes/capture` | Superseded by `colony-hook`: shell hook that records raw payloads |
-| `docs/` | Design spec |
+| `scripts/acceptance.mjs` | MVP acceptance measurements |
+| `docs/` | Design spec, acceptance results |
 
 ## Test
 
@@ -159,6 +160,12 @@ started yourself, run it with `COLONY_INGEST=1` and its own `COLONY_HOME` /
   (same seed, same fleet). `--record` saves what it sent as JSON lines.
 - `colony-replay <log.jsonl>`: `--speed` (0 = as fast as possible),
   `--keep-ts`, `--loop`. The log is one event envelope per line, oldest first.
+
+## Acceptance checks
+
+`node scripts/acceptance.mjs all` measures the MVP acceptance criteria (latency to the
+map, fail-open hooks, daemon CPU/RAM, 50-session frame rate) against a throwaway
+colonyd; it never touches your real one. Results and gaps: [`docs/acceptance.md`](docs/acceptance.md).
 
 ## Dismissing sessions
 
