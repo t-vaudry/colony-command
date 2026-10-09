@@ -417,8 +417,9 @@ so audio never leaves it. The first use asks before downloading the English
 `ggml-base.en` model (about 150 MB) into the app's data folder. The microphone must
 be allowed in Windows Settings > Privacy > Microphone.
 
-Building the app needs CMake and LLVM (for bindgen) on the PATH, with
-`LIBCLANG_PATH` pointing at LLVM's `bin` folder:
+Building the app needs CMake and LLVM (for bindgen); `scripts/update.ps1` and
+`build-installer.ps1` find them in their default folders and say what is missing. By hand, put CMake on the PATH and point
+`LIBCLANG_PATH` at LLVM's `bin` folder:
 `winget install Kitware.CMake LLVM.LLVM`.
 
 ## Hook capture

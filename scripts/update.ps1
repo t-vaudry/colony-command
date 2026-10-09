@@ -15,6 +15,7 @@ param([switch]$IncludeTerminalHost, [switch]$Force)
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $env:PATH = "C:\Program Files\nodejs;$env:USERPROFILE\.cargo\bin;$env:PATH"
+. (Join-Path $PSScriptRoot "build-prereqs.ps1")
 
 function Stop-AndWait($procs) {
     foreach ($p in $procs) {

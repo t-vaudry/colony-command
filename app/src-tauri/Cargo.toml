@@ -24,6 +24,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
 whisper-rs = "0.16.0"
 ureq = "3.4.2"
+sha2 = "0.11.0"
 
 [features]
 # Embed the built frontend instead of loading the Vite dev server.

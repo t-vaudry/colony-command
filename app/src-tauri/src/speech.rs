@@ -7,14 +7,16 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Emitter, Manager, State};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 const MODEL_FILE: &str = "ggml-base.en.bin";
-const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin";
-/// A truncated download is far below this; the real file is ~148 MB.
-const MODEL_MIN_BYTES: u64 = 100 * 1024 * 1024;
+/// Pinned to a commit, not `main`, so the file can't change under us.
+const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin";
+const MODEL_SHA256: &str = "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002";
+const MODEL_BYTES: u64 = 147_964_211;
 const SAMPLE_RATE: usize = 16_000;
 /// Whisper needs at least a second of audio; shorter clips come back as hallucinated filler.
 const MIN_SAMPLES: usize = SAMPLE_RATE / 2;
@@ -38,7 +40,7 @@ fn model_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn model_ready(path: &PathBuf) -> bool {
-    std::fs::metadata(path).map(|m| m.len() >= MODEL_MIN_BYTES).unwrap_or(false)
+    std::fs::metadata(path).map(|m| m.len() == MODEL_BYTES).unwrap_or(false)
 }
 
 #[tauri::command]
@@ -67,31 +69,49 @@ pub async fn speech_download(app: AppHandle, state: State<'_, Speech>) -> Result
 }
 
 fn download(app: &AppHandle, path: &PathBuf) -> Result<(), String> {
-    let resp = ureq::get(MODEL_URL).call().map_err(|e| format!("Couldn't download the speech model: {e}"))?;
-    let total = resp.body().content_length().unwrap_or(0);
     let part = path.with_extension("part");
-    let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+    let result = fetch(app, &part);
+    // Never leave a partial or unverified file behind.
+    if result.is_err() {
+        let _ = std::fs::remove_file(&part);
+        return result;
+    }
+    std::fs::rename(&part, path).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        e.to_string()
+    })
+}
+
+/// Streams the model into `part`, hashing as it goes; Ok only if it is the pinned file.
+fn fetch(app: &AppHandle, part: &PathBuf) -> Result<(), String> {
+    let resp = ureq::get(MODEL_URL).call().map_err(|e| format!("Couldn't download the speech model: {e}"))?;
+    let mut out = std::fs::File::create(part).map_err(|e| e.to_string())?;
     let mut reader = resp.into_body().into_reader();
+    let mut hash = Sha256::new();
     let (mut buf, mut done, mut last) = (vec![0u8; 256 * 1024], 0u64, 101u64);
     loop {
         let n = reader.read(&mut buf).map_err(|e| format!("Download interrupted: {e}"))?;
         if n == 0 {
             break;
         }
-        out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
         done += n as u64;
-        let pct = if total > 0 { done * 100 / total } else { 0 };
+        if done > MODEL_BYTES {
+            return Err("The speech model download was larger than expected.".into());
+        }
+        hash.update(&buf[..n]);
+        out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        let pct = done * 100 / MODEL_BYTES;
         if pct != last {
             last = pct;
             let _ = app.emit("speech-download", pct);
         }
     }
-    drop(out);
-    if done < MODEL_MIN_BYTES || (total > 0 && done != total) {
-        let _ = std::fs::remove_file(&part);
-        return Err("The speech model download was incomplete. Try again.".into());
+    out.flush().map_err(|e| e.to_string())?;
+    let sum: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if done != MODEL_BYTES || sum != MODEL_SHA256 {
+        return Err("The speech model download didn't match the expected file. Try again.".into());
     }
-    std::fs::rename(&part, path).map_err(|e| e.to_string())
+    Ok(())
 }
 
 fn context(app: &AppHandle, state: &Speech) -> Result<Arc<WhisperContext>, String> {
