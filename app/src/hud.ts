@@ -5,6 +5,7 @@ import type { Daemon } from "./daemon";
 import { costChart } from "./costchart";
 import { latencyChart } from "./latencychart";
 import { daySummary } from "./daysummary";
+import { detail, playheadX, REPLAY_FRAMES, timelapse } from "./timelapse";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { md } from "./markdown";
 import { repoDir, resumeWarning, worktreeName, type Prefill } from "./dialog";
@@ -122,6 +123,11 @@ export class Hud {
   private scheduled = false;
   /** Collapsible sections left open (they would otherwise close on every re-render). */
   private openSecs = new Set<string>();
+  /** Time-lapse view: the frame shown, whether it is playing, and a request in flight. */
+  private replayAt = 0;
+  private replayTimer: number | null = null;
+  private replayLoading = false;
+  private replayShown: unknown = null;
 
   constructor(
     private daemon: Daemon,
@@ -155,6 +161,10 @@ export class Hud {
       true,
     );
     this.panel.addEventListener("input", (e) => {
+      if ((e.target as HTMLElement).dataset.replayAt) {
+        this.showFrame(Number((e.target as HTMLInputElement).value));
+        return;
+      }
       const el = e.target as HTMLInputElement;
       if (el.dataset.draft?.startsWith("reply:")) {
         this.resumeDrafts.set(el.dataset.draft.slice(6), el.value);
@@ -478,6 +488,13 @@ export class Hud {
   }
 
   private renderPanel(): void {
+    // A new time-lapse arrived: start it from the beginning.
+    if (this.daemon.replay !== this.replayShown) {
+      this.replayShown = this.daemon.replay;
+      this.replayLoading = false;
+      this.replayAt = 0;
+      this.stopReplay();
+    }
     const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
     this.renderCompose(a);
     document.getElementById("inspector")!.classList.toggle("wide", needsWide(a));
@@ -488,6 +505,7 @@ export class Hud {
         Bots holding a blue package at the review dock have finished a turn.</p>
         <p class="muted">Drag to pan, scroll to zoom, double-click a bot to zoom to its project, <kbd>0</kbd> to fit everything.</p>
         ${daySummary(this.daemon.spend, this.daemon.latency, this.daemon.now())?.html ?? ""}
+        ${timelapse(this.daemon.replay, this.replayAt, this.replayTimer !== null, this.replayLoading)}
         ${costChart(this.daemon.spend, this.daemon.now())}
         ${latencyChart(this.daemon.latency, this.daemon.now())}
         ${this.leftoverList()}
@@ -705,9 +723,57 @@ export class Hud {
     return `<div class="field"><span class="k">Activity</span><ol class="feed" data-scroll="${esc(a.id)}:feed" tabindex="0">${rows}</ol></div>`;
   }
 
+  /** Ask the daemon for a time-lapse ending now. */
+  private loadReplay(spanMs: number): void {
+    this.stopReplay();
+    const to = this.daemon.now();
+    if (!this.daemon.requestReplay(to - spanMs, to, REPLAY_FRAMES)) {
+      this.toast("Not connected to colonyd.");
+      return;
+    }
+    this.replayLoading = true;
+    this.schedule();
+  }
+
+  private toggleReplay(): void {
+    const r = this.daemon.replay;
+    if (!r) return;
+    if (this.replayTimer !== null) {
+      this.stopReplay();
+    } else {
+      if (this.replayAt >= r.frames.length - 1) this.replayAt = 0;
+      this.replayTimer = window.setInterval(() => {
+        if (this.replayAt >= r.frames.length - 1) this.stopReplay();
+        else this.showFrame(this.replayAt + 1);
+      }, 80);
+    }
+    this.schedule();
+  }
+
+  private stopReplay(): void {
+    if (this.replayTimer !== null) window.clearInterval(this.replayTimer);
+    this.replayTimer = null;
+  }
+
+  /** Move the playhead without re-rendering the panel, so dragging the scrubber isn't interrupted. */
+  private showFrame(at: number): void {
+    const r = this.daemon.replay;
+    if (!r) return;
+    this.replayAt = at;
+    const x = playheadX(r, at).toFixed(2);
+    this.panel.querySelector("#tl-head")?.setAttribute("x1", x);
+    this.panel.querySelector("#tl-head")?.setAttribute("x2", x);
+    const d = this.panel.querySelector("#tl-detail");
+    if (d) d.innerHTML = detail(r, at);
+    const s = this.panel.querySelector<HTMLInputElement>("#tl-scrub");
+    if (s && Number(s.value) !== at) s.value = String(at);
+  }
+
   private async action(e: Event): Promise<void> {
     const el = (e.target as HTMLElement).closest<HTMLElement>("button");
     if (!el) return;
+    if (el.dataset.replay) this.loadReplay(Number(el.dataset.replay));
+    if (el.dataset.replayPlay) this.toggleReplay();
     if (el.dataset.select) this.actions.select(el.dataset.select);
     if (el.dataset.decide && el.dataset.req) this.decide(el, el.dataset.req, el.dataset.decide as PermissionChoice);
     if (el.dataset.pick) {

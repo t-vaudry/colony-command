@@ -2,7 +2,7 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Rule, type SpawnRequest } from "./types";
+import { severity, type Agent, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest } from "./types";
 
 interface DaemonInfo {
   port: number;
@@ -15,6 +15,7 @@ type Message =
   | ({ type: "permission_offer"; request_id: string } & Offer)
   | { type: "spend"; projects: Record<string, ProjectSpend> }
   | { type: "latency"; projects: Record<string, ProjectLatency> }
+  | ({ type: "replay" } & Replay)
   | { type: "leftovers"; items: Leftover[] }
   | { type: "upsert"; agent: Agent }
   | { type: "remove"; id: string }
@@ -52,6 +53,8 @@ export class Daemon {
   spend = new Map<string, ProjectSpend>();
   /** How long agents waited on a human, per project key, in 15-minute buckets. */
   latency = new Map<string, ProjectLatency>();
+  /** The last time-lapse the daemon sent. */
+  replay: Replay | null = null;
   /** Worktrees left behind for the user to decide on. */
   leftovers: Leftover[] = [];
   /** Saved "allow always for project" rules. */
@@ -155,6 +158,9 @@ export class Daemon {
         break;
       case "spend":
         for (const [k, p] of Object.entries(m.projects)) this.spend.set(k, p);
+        break;
+      case "replay":
+        this.replay = { from: m.from, to: m.to, frames: m.frames };
         break;
       case "latency":
         for (const [k, p] of Object.entries(m.projects)) this.latency.set(k, p);
@@ -323,5 +329,10 @@ export class Daemon {
   /** Done with a session: end every copy of it and clear it off the map. */
   dismiss(id: string): boolean {
     return this.send({ type: "dismiss", id });
+  }
+
+  /** Ask for a time-lapse of the logged events; the answer lands in `replay`. */
+  requestReplay(from: number, to: number, frames: number): boolean {
+    return this.send({ type: "replay", from, to, frames });
   }
 }

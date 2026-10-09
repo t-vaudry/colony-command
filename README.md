@@ -478,6 +478,7 @@ listed price still has its tokens counted but not its cost, and the UI says
 keeps in memory, so a restart rebuilds them from the transcripts.
 Click the top-bar total (or an empty side panel) for **cost by project**: an hourly bar chart per project over the last 24 hours, on one shared scale.
 **Today so far** tops the same panel: spend and responses per project since local midnight, with a button to copy it as text.
+**Time-lapse** is above them: pick the last hour, 4 hours or 24 hours and scrub or play back who was working, waiting on you, or done, one lane per session. It replays an event log the daemon keeps (`events.jsonl` in the Colony home folder, 48 hours, 64 MB at most, no usage updates); logging starts when a version with this feature first runs.
 **Time to respond** sits under it: for each project, the median time from an agent asking a question or for a permission to your answer. Waits that end because a session stopped or crashed don't count. They are kept for 48 hours in `latency.json` in the Colony home folder, so a restart or an update does not reset them (a missing or unreadable file just starts empty).
 `tools/synth` sends usage too (with an occasional unpriced model) for load tests.
 

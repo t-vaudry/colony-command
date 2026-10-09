@@ -379,3 +379,16 @@ export function waitText(ms: number): string {
   if (s < 3600) return `${Math.floor(s / 60)}m${s % 60 ? ` ${s % 60}s` : ""}`;
   return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
+
+/** A time-lapse from the daemon's event log: the main agents sampled at even steps. */
+export interface Replay {
+  from: number;
+  to: number;
+  frames: ReplayFrame[];
+}
+
+export interface ReplayFrame {
+  ts: number;
+  /** [id, name, project, state] */
+  agents: [string, string, string | null, AgentState][];
+}
