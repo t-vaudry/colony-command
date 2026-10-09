@@ -296,6 +296,7 @@ fn tool_started(s: &Session, sub: Option<(&str, &str)>) -> DomainEvent {
         tool: s.tool.0.into(),
         target: Some(s.tool.1.into()),
         tool_use_id: Some(tool_use_id(s, sub)),
+        background: false,
     }
 }
 

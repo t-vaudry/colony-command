@@ -66,6 +66,12 @@ impl HookPayload {
         None
     }
 
+    /// The call was started with `run_in_background`: it returns at once and
+    /// the work carries on after the turn ends.
+    pub fn runs_in_background(&self) -> bool {
+        self.tool_input.as_ref().and_then(|i| i.get("run_in_background")).and_then(Value::as_bool).unwrap_or(false)
+    }
+
     /// The `model` field as an id: a plain string, or an object's `id`.
     pub fn model_id(&self) -> Option<String> {
         match self.model.as_ref()? {

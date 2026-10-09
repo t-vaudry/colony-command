@@ -80,7 +80,15 @@ pub enum DomainEvent {
         #[serde(default)]
         synthetic: bool,
     },
-    ToolStarted { agent_id: Option<String>, tool: String, target: Option<String>, tool_use_id: Option<String> },
+    ToolStarted {
+        agent_id: Option<String>,
+        tool: String,
+        target: Option<String>,
+        tool_use_id: Option<String>,
+        /// Started with `run_in_background`: still going after the call returns.
+        #[serde(default)]
+        background: bool,
+    },
     ToolFinished { agent_id: Option<String>, tool: String, tool_use_id: Option<String>, ok: bool, error: Option<String> },
     PermissionRequested { agent_id: Option<String>, tool: String, target: Option<String> },
     Notified { kind: Option<String>, message: Option<String> },
@@ -164,6 +172,7 @@ impl Envelope {
                 tool: tool(),
                 target: p.tool_target(),
                 tool_use_id: p.tool_use_id.clone(),
+                background: p.runs_in_background(),
             },
             "PostToolUse" => DomainEvent::ToolFinished {
                 agent_id: p.agent_id.clone(),

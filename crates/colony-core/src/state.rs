@@ -25,6 +25,8 @@ pub const CRASH_GRACE_MS: u64 = 5_000;
 pub const STALL_MS: u64 = 10 * 60_000;
 /// A single tool call running this long counts as stuck.
 pub const TOOL_STALL_MS: u64 = 30 * 60_000;
+/// Why a bot that stopped talking is still counted as working.
+pub const WAITING_ON_BACKGROUND: &str = "waiting on a background task";
 /// Consecutive failed tool calls before an agent counts as blocked.
 pub const FAILURES_TO_BLOCK: u32 = 3;
 /// Ended main agents stay visible this long, returned subagents this long.
@@ -169,6 +171,10 @@ pub struct Agent {
     /// Stays until the sign-in is confirmed (`AuthResolved`).
     #[serde(default)]
     pub auth_need: Option<crate::auth::AuthNeed>,
+    /// Background calls (tests, builds) started and not yet reported finished.
+    /// While any are out, a turn that ends is waiting on them, not done.
+    #[serde(default)]
+    pub background_tasks: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_gone_at: Option<u64>,
 }
@@ -212,6 +218,7 @@ impl Agent {
             recent_tools: Vec::new(),
             model_hint: None,
             auth_need: None,
+            background_tasks: 0,
             process_gone_at: None,
         }
     }
@@ -399,6 +406,9 @@ impl Colony {
                     main.model = model.clone();
                     main.model_hint = models::suggest(main.model.as_deref(), &main.recent_tools);
                 }
+                if source.as_deref() != Some("compact") {
+                    main.background_tasks = 0;
+                }
                 match source.as_deref() {
                     Some("compact") => {}
                     Some("clear") => main.set_state(AgentState::Idle, None, e.ts),
@@ -422,12 +432,21 @@ impl Colony {
                     }
                     main.last_prompt = Some(preview.clone());
                 }
+                // Claude Code announces a finished background call this way.
+                if *synthetic && preview.starts_with("<task-notification>") {
+                    main.background_tasks = main.background_tasks.saturating_sub(1);
+                }
                 main.consecutive_failures = 0;
                 main.set_state(AgentState::Working, None, e.ts);
             }
-            DomainEvent::ToolStarted { agent_id, tool, target, tool_use_id } => {
+            DomainEvent::ToolStarted { agent_id, tool, target, tool_use_id, background } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
                 settle_if_after(a, e.ts);
+                if *background {
+                    a.background_tasks += 1;
+                } else if matches!(tool.as_str(), "KillShell" | "TaskStop") {
+                    a.background_tasks = a.background_tasks.saturating_sub(1);
+                }
                 a.recent_tools.push(models::tool_kind(tool));
                 if a.recent_tools.len() > models::RECENT_TOOLS {
                     a.recent_tools.remove(0);
@@ -525,6 +544,11 @@ impl Colony {
                 main.last_message_full = last_message.as_deref().map(|m| trim_text(m, FULL_TEXT_CHARS));
                 match last_message.as_deref().and_then(question_in) {
                     Some(q) => main.set_state(AgentState::AwaitingReply, Some(q), e.ts),
+                    // Stopped to wait on a background run: not finished, and
+                    // Claude Code wakes it when the run reports back.
+                    None if main.background_tasks > 0 => {
+                        main.set_state(AgentState::Working, Some(WAITING_ON_BACKGROUND.into()), e.ts)
+                    }
                     None => main.set_state(AgentState::ReadyToReview, main.last_message.clone(), e.ts),
                 }
                 self.end_children(&sid, e.ts, &mut changed);
@@ -548,6 +572,7 @@ impl Colony {
                 }
             }
             DomainEvent::SessionEnded => {
+                main.background_tasks = 0;
                 main.permission = None;
                 main.current_tool = None;
                 main.set_state(AgentState::Ended, None, e.ts);
@@ -651,7 +676,8 @@ impl Colony {
                 AgentState::Working => {
                     let quiet = now.saturating_sub(a.last_event_at);
                     match &a.current_tool {
-                        None if a.hooks_seen && quiet > STALL_MS => {
+                        // Waiting on a background run is quiet by design.
+                        None if a.hooks_seen && quiet > if a.background_tasks > 0 { TOOL_STALL_MS } else { STALL_MS } => {
                             a.set_state(AgentState::Blocked, Some(format!("no activity for {} min", quiet / 60_000)), now);
                         }
                         Some(t) if now.saturating_sub(t.started_at) > TOOL_STALL_MS => {
