@@ -17,3 +17,6 @@ uuid.workspace = true
 base64.workspace = true
 ureq = "3.4.2"
 
+
+[dev-dependencies]
+colony-synth = { path = "../../tools/synth" }

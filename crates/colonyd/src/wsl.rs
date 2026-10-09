@@ -20,26 +20,57 @@ const RESCAN: Duration = Duration::from_secs(15);
 /// The probe is installed per distro by `scripts/install-probe.sh`.
 const PROBE: &str = "exec \"$HOME/.colony/bin/colony-probe\"";
 
+/// A probe that lived this long counts as healthy: its next restart is immediate.
+const HEALTHY_AFTER: Duration = Duration::from_secs(60);
+const BACKOFF_FIRST: Duration = Duration::from_secs(5);
+const BACKOFF_MAX: Duration = Duration::from_secs(300);
+
+/// After a probe exits having lived `lived`: the new consecutive-failure count
+/// and how long to leave the distro alone. A probe that is not installed, or
+/// that dies as it starts, would otherwise be relaunched (and logged) forever
+/// at the rescan rate; this backs off 5 s, 10 s, ... up to 5 min.
+pub(crate) fn backoff(failures: u32, lived: Duration) -> (u32, Duration) {
+    if lived >= HEALTHY_AFTER {
+        return (0, Duration::ZERO);
+    }
+    let delay = BACKOFF_FIRST.saturating_mul(1u32 << failures.min(10)).min(BACKOFF_MAX);
+    (failures.saturating_add(1), delay)
+}
+
 pub async fn supervise(tx: mpsc::Sender<Envelope>, shared: Arc<Shared>) {
     let attached: Arc<Mutex<HashSet<String>>> = Arc::default();
+    // Per distro: consecutive quick failures and the earliest next attempt.
+    let cooling: Arc<Mutex<std::collections::HashMap<String, (u32, std::time::Instant)>>> = Arc::default();
     loop {
         *shared.distros.write().await = list_distros(false).await;
         for distro in list_distros(true).await {
+            if cooling.lock().unwrap().get(&distro).is_some_and(|(_, until)| std::time::Instant::now() < *until) {
+                continue;
+            }
             if !attached.lock().unwrap().insert(distro.clone()) {
                 continue;
             }
-            let (tx, attached, shared) = (tx.clone(), attached.clone(), shared.clone());
+            let (tx, attached, shared, cooling) = (tx.clone(), attached.clone(), shared.clone(), cooling.clone());
             tokio::spawn(async move {
+                let started = std::time::Instant::now();
                 if let Err(e) = run_probe(&distro, tx, shared).await {
                     log(format!("probe in {distro}: {e}"));
                 }
+                let mut cooling = cooling.lock().unwrap();
+                let failures = cooling.get(&distro).map_or(0, |(f, _)| *f);
+                let (failures, delay) = backoff(failures, started.elapsed());
+                cooling.insert(distro.clone(), (failures, std::time::Instant::now() + delay));
                 attached.lock().unwrap().remove(&distro);
             });
         }
         tokio::select! {
             _ = tokio::time::sleep(RESCAN) => {}
             // A session was just started in WSL; give the distro a moment to boot.
-            _ = shared.wsl_wake.notified() => tokio::time::sleep(Duration::from_secs(2)).await,
+            // That is also news that the probe may be wanted again, so forgive past failures.
+            _ = shared.wsl_wake.notified() => {
+                cooling.lock().unwrap().clear();
+                tokio::time::sleep(Duration::from_secs(2)).await
+            }
         }
     }
 }
@@ -194,6 +225,46 @@ mod tests {
         assert!(matches!(parse_probe_line(&line), Ok(ProbeLine::Event(_))));
         assert!(parse_probe_line("{\"permission\":{\"id\":\"x\"}}").is_err());
         assert!(parse_probe_line("nonsense").is_err());
+    }
+
+    #[test]
+    fn a_probe_that_keeps_dying_is_retried_less_and_less_often_then_forgiven() {
+        let quick = Duration::from_secs(1);
+        let mut failures = 0;
+        let mut delays = Vec::new();
+        for _ in 0..12 {
+            let (f, d) = backoff(failures, quick);
+            failures = f;
+            delays.push(d.as_secs());
+        }
+        assert_eq!(&delays[..4], &[5, 10, 20, 40]);
+        assert!(delays.windows(2).all(|w| w[0] <= w[1]), "never speeds up: {delays:?}");
+        assert_eq!(*delays.last().unwrap(), 300, "capped at five minutes");
+        // A probe that ran for a while was healthy: restart at once, forget the failures.
+        assert_eq!(backoff(failures, Duration::from_secs(61)), (0, Duration::ZERO));
+        // Counting never overflows however long a distro stays broken.
+        assert_eq!(backoff(u32::MAX, quick).1, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn a_probe_stream_that_is_cut_or_corrupted_never_panics() {
+        let env = Envelope { ts: 1, host: colony_core::HostId::Wsl("Ubuntu".into()), session_id: "s".into(), cwd: None, event: colony_core::DomainEvent::SessionEnded };
+        let good = serde_json::to_string(&env).unwrap();
+        // The stream dies mid-line: every prefix is either an event or an error.
+        for cut in 0..good.len() {
+            if good.is_char_boundary(cut) {
+                let _ = parse_probe_line(&good[..cut]);
+            }
+        }
+        for junk in ["", " ", "{", "{\"permission", "{\"permission\":null}", "{\"permission_cancel\":-1}", "{\"permission_cancel\":\"x\"}", "\u{0}\u{1}", "null", "[]", "{\"ts\":\"x\"}"] {
+            assert!(parse_probe_line(junk).is_err(), "{junk:?}");
+        }
+        // A newer probe sending fields we do not know about still gets through.
+        let mut v: serde_json::Value = serde_json::from_str(&good).unwrap();
+        v["newField"] = serde_json::json!({"a": [1, 2]});
+        assert!(matches!(parse_probe_line(&v.to_string()), Ok(ProbeLine::Event(_))));
+        // A multi-megabyte line is just an error, not a problem.
+        assert!(parse_probe_line(&"x".repeat(5_000_000)).is_err());
     }
 
     #[test]
