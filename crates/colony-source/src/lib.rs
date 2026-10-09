@@ -8,6 +8,8 @@
 //!   A file whose process has died (it was killed and could not clean up)
 //!   also counts as gone.
 //!
+//! - `<claude home>/projects/**/*.jsonl`: transcripts, read for token usage (see [`usage`]).
+//!
 //! Polling a couple of small directories every few hundred milliseconds is
 //! cheap and avoids file-watcher edge cases (buffer overflows, network paths).
 
@@ -19,12 +21,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use colony_core::{DomainEvent, Envelope, HookPayload, HostId, SessionRecord};
 
 pub mod process;
+pub mod usage;
 
 /// A capture file that still fails to parse after this long is skipped; before
 /// that it may simply be half-written.
 const PARTIAL_WRITE_GRACE_MS: u64 = 5_000;
 /// Polls between checks that registered processes are still running.
 const ALIVE_CHECK_EVERY: u64 = 10;
+/// Transcripts last written longer ago than this are not read for usage: it
+/// covers "today" in any time zone, plus slack.
+const USAGE_WINDOW_MS: u64 = 48 * 60 * 60 * 1000;
 
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -64,6 +70,7 @@ pub struct DirSource {
     /// Name of the last capture file processed; later names are newer.
     last_capture: Option<String>,
     replay_since_ms: u64,
+    usage: usage::UsageReader,
 }
 
 impl DirSource {
@@ -72,6 +79,7 @@ impl DirSource {
     /// everything ever captured.
     pub fn new(host: HostId, claude_home: &Path, colony_home: &Path, replay_since_ms: u64) -> Self {
         drain_spool(colony_home);
+        let host_for_usage = host.clone();
         DirSource {
             host,
             sessions_dir: claude_home.join("sessions"),
@@ -80,6 +88,7 @@ impl DirSource {
             stale: HashMap::new(),
             polls: 0,
             last_capture: None,
+            usage: usage::UsageReader::new(host_for_usage, claude_home, now_ms().saturating_sub(USAGE_WINDOW_MS)),
             replay_since_ms,
         }
     }
@@ -93,6 +102,8 @@ impl DirSource {
     pub fn poll(&mut self) -> Vec<Envelope> {
         let mut out = self.poll_captures();
         out.extend(self.poll_registry());
+        // Last, so a session's registry entry is known before its usage arrives.
+        out.extend(self.usage.poll());
         out
     }
 

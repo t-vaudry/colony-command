@@ -545,3 +545,102 @@ fn waiting_on_a_background_run_is_not_ready_for_review() {
     r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "All tests pass."}));
     assert_eq!(r.state(SID), AgentState::ReadyToReview);
 }
+
+fn usage(r: &mut Run, sid: &str, agent: Option<&str>, seq: u64, model: &str, input: u64, output: u64) -> Vec<String> {
+    r.t += 1_000;
+    let e = Envelope {
+        ts: r.t,
+        host: r.host.clone(),
+        session_id: sid.into(),
+        cwd: Some("/mnt/c/Users/thoma/code/bingosync".into()),
+        event: colony_core::DomainEvent::UsageUpdated {
+            agent_id: agent.map(str::to_string),
+            seq,
+            model: Some(model.into()),
+            tokens: colony_core::Tokens { input, output, cache_read: 0, cache_creation: 0 },
+        },
+    };
+    r.colony.apply(&e)
+}
+
+#[test]
+fn usage_accumulates_rolls_up_subagents_and_ignores_replays() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup"}));
+    r.hook(json!({"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}));
+    let sub = sub_id(SID, "a1");
+
+    let changed = usage(&mut r, SID, None, 1, "claude-sonnet-5-5", 1_000_000, 0);
+    assert_eq!(changed, vec![SID.to_string()]);
+    usage(&mut r, SID, Some("a1"), 1, "claude-haiku-5-5", 0, 1_000_000);
+    let (main, s) = (&r.colony.agents[SID], &r.colony.agents[&sub]);
+    // Sonnet: $2 for 1M input. Haiku: $0.50 for 1M output.
+    assert!((s.cost_usd - 0.5).abs() < 1e-9 && s.tokens.output == 1_000_000);
+    assert!((main.cost_usd - 2.5).abs() < 1e-9, "parent includes its subagent: {}", main.cost_usd);
+    assert_eq!((main.tokens.input, main.tokens.output), (1_000_000, 1_000_000));
+    assert!(!main.cost_partial);
+
+    // A source that replays its history (restarted probe) is not counted twice;
+    // a newer message is.
+    assert!(usage(&mut r, SID, None, 1, "claude-sonnet-5-5", 1_000_000, 0).is_empty());
+    usage(&mut r, SID, None, 2, "claude-sonnet-5-5", 500_000, 0);
+    assert!((r.colony.agents[SID].cost_usd - 3.5).abs() < 1e-9);
+
+    // Usage is not agent activity.
+    assert_eq!(r.state(SID), AgentState::Spawning);
+}
+
+#[test]
+fn unknown_models_count_tokens_but_not_cost_and_say_partial() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup"}));
+    usage(&mut r, SID, None, 1, "claude-opus-5-5", 1_000_000, 0);
+    usage(&mut r, SID, None, 2, "some-future-model", 1_000, 0);
+    let a = &r.colony.agents[SID];
+    assert_eq!(a.tokens.input, 1_001_000);
+    assert!((a.cost_usd - 4.0).abs() < 1e-9);
+    assert!(a.cost_partial);
+    let ledger = r.colony.spend.values().next().unwrap();
+    assert!(ledger.buckets.values().any(|b| b.partial));
+}
+
+#[test]
+fn ledger_outlives_the_agent_and_feeds_the_project_rollup() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup"}));
+    usage(&mut r, SID, None, 1, "claude-sonnet-5-5", 1_000_000, 0);
+    // A session that is not on the map still counts toward its project,
+    // but does not conjure an agent.
+    usage(&mut r, "other-session", None, 1, "claude-sonnet-5-5", 1_000_000, 0);
+    assert!(!r.colony.agents.contains_key("other-session"));
+    assert_eq!(r.colony.spend.len(), 1, "same project");
+    let total: f64 = r.colony.spend["c:/users/thoma/code/bingosync"].buckets.values().map(|b| b.cost_usd).sum();
+    assert!((total - 4.0).abs() < 1e-9);
+
+    let changes = r.colony.take_spend_changes();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].1.name, "bingosync");
+    assert!(r.colony.take_spend_changes().is_empty());
+
+    // Dismissing the session does not erase what it spent.
+    r.colony.dismiss(SID, r.t);
+    assert!(!r.colony.spend.is_empty());
+    // Old buckets are dropped; recent ones stay.
+    r.colony.tick(r.t + 47 * 3_600_000);
+    assert!(!r.colony.spend.is_empty());
+    r.colony.tick(r.t + 49 * 3_600_000);
+    assert!(r.colony.spend.is_empty());
+}
+
+#[test]
+fn agents_from_older_daemons_parse_without_usage_fields() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup"}));
+    let mut v = serde_json::to_value(&r.colony.agents[SID]).unwrap();
+    for k in ["tokens", "cost_usd", "cost_partial"] {
+        v.as_object_mut().unwrap().remove(k);
+    }
+    let a: colony_core::Agent = serde_json::from_value(v).unwrap();
+    assert_eq!(a.cost_usd, 0.0);
+    assert!(a.tokens.is_zero());
+}

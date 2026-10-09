@@ -4,7 +4,7 @@
 import type { Daemon } from "./daemon";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { repoDir, resumeWarning, worktreeName, type Prefill } from "./dialog";
-import { MODELS, modelLabel, severity, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
+import { compact, money, MODELS, modelLabel, severity, spentToday, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -300,7 +300,7 @@ export class Hud {
       ["idle", "idle", count("idle", "spawning")],
     ]
       .map(([c, label, n]) => `<span class="chip"><span class="dot ${c}"></span>${label} <b>${n}</b></span>`)
-      .join("") + this.leftoverChip());
+      .join("") + this.leftoverChip() + this.spendChip());
     this.conn.className = `conn ${this.daemon.status}`;
     this.conn.textContent =
       this.daemon.status === "live"
@@ -339,6 +339,15 @@ export class Hud {
   }
 
   /** Header chip: worktrees Colony left for the user to decide on. */
+  /** Everything spent since local midnight, an estimate from list prices. */
+  private spendChip(): string {
+    const t = spentToday(this.daemon.spend, this.daemon.now());
+    if (t.tokens === 0) return "";
+    const note = t.partial ? " · partial" : "";
+    const why = "Estimate from list prices, since local midnight, all projects." + (t.partial ? " Some sessions ran a model without a known price: their tokens are counted but not their cost." : "");
+    return `<span class="chip spend" title="${esc(why)}">${money(t.usd)} today${note} · ${compact(t.tokens)} tokens</span>`;
+  }
+
   private leftoverChip(): string {
     const n = this.daemon.leftovers.length;
     return n
@@ -398,6 +407,9 @@ export class Hud {
     const toolRow = a.current_tool
       ? `<div class="row"><span class="k">Now</span><span>${esc(`${a.current_tool.name}${short ? `: ${short}` : ""}`)} (${since(a.current_tool.started_at)})</span></div>`
       : "";
+    const usageRow = a.tokens && a.tokens.input + a.tokens.output + a.tokens.cache_read + a.tokens.cache_creation > 0
+      ? `<div class="row"><span class="k">Usage</span><span title="Estimate from list prices${a.kind === "main" ? "; includes subagents" : ""}${a.cost_partial ? ". Some tokens were from a model without a known price, so the cost is low." : ""}">${esc(`${compact(a.tokens.input + a.tokens.cache_creation + a.tokens.cache_read)} in · ${compact(a.tokens.output)} out · ${money(a.cost_usd ?? 0)}${a.cost_partial ? " partial" : ""}`)}</span></div>`
+      : "";
     const resume = `claude --resume ${a.session_id}`;
     setHtml(this.panel, `
       <div class="k">${a.kind === "subagent" ? `Subagent of ${esc(parent?.name ?? "?")}` : esc(a.project_name ?? "unknown project")}</div>
@@ -420,6 +432,7 @@ export class Hud {
       ${row("Objective", a.objective)}
       ${a.last_prompt !== a.objective ? row("Last prompt", a.last_prompt) : ""}
       ${toolRow}
+      ${usageRow}
       ${this.modelRows(a)}
       ${row("Where", `${hostLabel(a.host)} · ${originLabel(a)}${a.pid ? ` · pid ${a.pid}` : ""}`)}
       ${row("Folder", a.cwd, "mono")}

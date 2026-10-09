@@ -11,6 +11,8 @@ use crate::event::{preview, DomainEvent, Envelope, HostId};
 use crate::models::{self, ModelHint, ToolKind};
 use crate::names;
 use crate::paths;
+use crate::prices;
+use crate::usage::{ProjectSpend, Tokens, BUCKET_MS, LEDGER_KEEP_MS};
 
 /// A session with no prompt this long after starting is idle.
 pub const SPAWN_TO_IDLE_MS: u64 = 60_000;
@@ -177,6 +179,15 @@ pub struct Agent {
     pub background_tasks: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_gone_at: Option<u64>,
+    /// Tokens used so far, subagents included for a main agent.
+    #[serde(default)]
+    pub tokens: Tokens,
+    /// Estimated cost so far in USD (list prices; see `prices.rs`).
+    #[serde(default)]
+    pub cost_usd: f64,
+    /// Some tokens were from a model without a known price, so `cost_usd` is low.
+    #[serde(default)]
+    pub cost_partial: bool,
 }
 
 impl Agent {
@@ -220,6 +231,9 @@ impl Agent {
             auth_need: None,
             background_tasks: 0,
             process_gone_at: None,
+            tokens: Tokens::default(),
+            cost_usd: 0.0,
+            cost_partial: false,
         }
     }
 
@@ -290,6 +304,16 @@ pub struct Colony {
     /// Sessions the user dismissed, by session id.
     #[serde(default)]
     pub dismissed: BTreeMap<String, Dismissed>,
+    /// Estimated spend per project, in time buckets, kept after the agents
+    /// that spent it are gone.
+    #[serde(default)]
+    pub spend: BTreeMap<String, ProjectSpend>,
+    /// Last usage `seq` applied per agent id, to ignore replays.
+    #[serde(skip)]
+    usage_seq: BTreeMap<String, u64>,
+    /// Projects whose ledger changed since the last `take_spend_changes`.
+    #[serde(skip)]
+    spend_dirty: std::collections::BTreeSet<String>,
 }
 
 pub fn sub_id(session_id: &str, agent_id: &str) -> String {
@@ -301,9 +325,16 @@ impl Colony {
         Self::default()
     }
 
+    pub fn with_dismissed(dismissed: BTreeMap<String, Dismissed>) -> Self {
+        Colony { dismissed, ..Self::default() }
+    }
+
     /// Fold one event in. Returns the ids of agents that changed; an id that
     /// is no longer in `agents` was removed.
     pub fn apply(&mut self, e: &Envelope) -> Vec<String> {
+        if let DomainEvent::UsageUpdated { .. } = &e.event {
+            return self.apply_usage(e);
+        }
         let mut changed = Vec::new();
         let sid = e.session_id.clone();
         if let Some(d) = self.dismissed.get(&sid) {
@@ -634,6 +665,7 @@ impl Colony {
                     main.set_state(AgentState::Spawning, None, e.ts);
                 }
             }
+            DomainEvent::UsageUpdated { .. } => {} // handled in apply_usage
             DomainEvent::TerminalExited { term_id, requested } => {
                 if main.terminal.as_deref() == Some(term_id.as_str()) {
                     main.terminal = None;
@@ -654,6 +686,58 @@ impl Colony {
         }
         changed.dedup();
         changed
+    }
+
+    /// Fold one message's usage into its agent (and its parent, for a
+    /// subagent) and into the project ledger. Handled apart from other events:
+    /// transcript lines are not agent activity, and usage for a session that is
+    /// off the map (ended, dismissed) still counts toward the project's spend.
+    fn apply_usage(&mut self, e: &Envelope) -> Vec<String> {
+        let DomainEvent::UsageUpdated { agent_id, seq, model, tokens } = &e.event else { return Vec::new() };
+        let sid = &e.session_id;
+        let own = agent_id.as_deref().map_or_else(|| sid.clone(), |a| sub_id(sid, a));
+        let last = self.usage_seq.entry(own.clone()).or_insert(0);
+        if *seq != 0 {
+            if *seq <= *last {
+                return Vec::new();
+            }
+            *last = *seq;
+        }
+        if tokens.is_zero() {
+            return Vec::new();
+        }
+        let cost = model.as_deref().and_then(|m| prices::cost(m, tokens));
+        let mut changed = Vec::new();
+        for id in [Some(own), agent_id.as_ref().map(|_| sid.clone())].into_iter().flatten() {
+            if let Some(a) = self.agents.get_mut(&id) {
+                a.tokens.add(tokens);
+                match cost {
+                    Some(c) => a.cost_usd += c,
+                    None => a.cost_partial = true,
+                }
+                changed.push(id);
+            }
+        }
+        let (key, name) = match self.agents.get(sid).and_then(|a| a.project_key.clone().zip(a.project_name.clone())) {
+            Some(p) => p,
+            None => match &e.cwd {
+                Some(cwd) => (paths::project_key(&e.host, cwd), paths::project_name(cwd)),
+                None => ("unknown".into(), "unknown".into()),
+            },
+        };
+        let project = self.spend.entry(key.clone()).or_default();
+        project.name = name;
+        project.buckets.entry(e.ts / BUCKET_MS).or_default().add(tokens, cost);
+        self.spend_dirty.insert(key);
+        changed
+    }
+
+    /// Ledger rows of projects that changed since the last call.
+    pub fn take_spend_changes(&mut self) -> Vec<(String, ProjectSpend)> {
+        std::mem::take(&mut self.spend_dirty)
+            .into_iter()
+            .filter_map(|k| self.spend.get(&k).map(|p| (k, p.clone())))
+            .collect()
     }
 
     /// Time-based transitions: idle after spawn, crash after the process
@@ -718,6 +802,11 @@ impl Colony {
             changed.push(id);
         }
         self.dismissed.retain(|_, d| now.saturating_sub(d.at) <= DISMISSED_KEEP_MS);
+        let oldest = now.saturating_sub(LEDGER_KEEP_MS) / BUCKET_MS;
+        for p in self.spend.values_mut() {
+            p.buckets.retain(|b, _| *b >= oldest);
+        }
+        self.spend.retain(|_, p| !p.buckets.is_empty());
         changed
     }
 

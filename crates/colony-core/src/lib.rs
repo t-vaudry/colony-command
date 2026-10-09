@@ -11,11 +11,14 @@ pub mod hook;
 pub mod models;
 pub mod names;
 pub mod paths;
+pub mod prices;
 pub mod ptyproto;
 pub mod registry;
 pub mod state;
+pub mod usage;
 
 pub use event::{DomainEvent, Envelope, HostId};
 pub use hook::HookPayload;
 pub use registry::SessionRecord;
 pub use state::{Agent, AgentKind, AgentState, Colony};
+pub use usage::{ProjectSpend, Spend, Tokens};

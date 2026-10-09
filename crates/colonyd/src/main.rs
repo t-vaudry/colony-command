@@ -97,7 +97,7 @@ async fn main() {
     let (deltas, _) = broadcast::channel(4096);
     let (ev_tx, mut ev_rx) = mpsc::channel::<Envelope>(8192);
     let shared = Arc::new(Shared {
-        colony: RwLock::new(Colony { dismissed: api::load_dismissed(), ..Colony::new() }),
+        colony: RwLock::new(Colony::with_dismissed(api::load_dismissed())),
         deltas,
         token: token.clone(),
         pty: PtyHost::new(ev_tx.clone()),
@@ -153,7 +153,13 @@ async fn main() {
                     let mut colony = reducer.colony.write().await;
                     let changed = colony.tick(now_ms());
                     reducer.approvals.release_answered(&colony);
-                    delta_messages(&colony, &changed)
+                    let mut msgs = delta_messages(&colony, &changed);
+                    // Spend moves with every message; maps hear about it once a second.
+                    let spend = colony.take_spend_changes();
+                    if !spend.is_empty() {
+                        msgs.push(json!({ "type": "spend", "projects": spend.into_iter().collect::<std::collections::BTreeMap<_, _>>() }).to_string());
+                    }
+                    msgs
                 }
             };
             for msg in changed {

@@ -3,7 +3,7 @@
 //! real sessions do. Deterministic for a seed, so a visual or load test can be
 //! repeated.
 
-use colony_core::{DomainEvent, Envelope, HostId};
+use colony_core::{DomainEvent, Envelope, HostId, Tokens};
 
 const PROJECTS: &[&str] = &[
     "harbor-api", "atlas-web", "ledger", "nightly-etl", "docs-site", "mobile-app", "infra", "billing",
@@ -20,6 +20,10 @@ const TOOLS: &[(&str, &str)] = &[
     ("WebFetch", "https://docs.example.com"),
 ];
 const MODELS: &[&str] = &["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
+/// Now and then a session runs a model with no known price, so the "partial" cost shows.
+const UNPRICED_MODEL: &str = "claude-experimental-x";
+/// Subagents run on this one.
+const SUB_MODEL: &str = "claude-haiku-5-5";
 const PROMPTS: &[&str] = &[
     "Add retry with backoff to the sync client",
     "Fix the flaky login test",
@@ -81,6 +85,9 @@ struct Session {
     /// The running subagent and how many tool calls it has left.
     sub: Option<(String, u32)>,
     turns_left: u32,
+    /// Usage messages sent so far for the main agent and for the running subagent.
+    usage_seq: u64,
+    sub_usage_seq: u64,
 }
 
 pub struct Config {
@@ -110,6 +117,17 @@ impl Fleet {
         f
     }
 
+    /// One assistant message's worth of tokens: mostly cached context, a little new input and output.
+    fn usage(&mut self, agent_id: Option<String>, seq: u64, model: &str) -> DomainEvent {
+        let tokens = Tokens {
+            input: self.rng.range(20, 3_000),
+            output: self.rng.range(100, 2_500),
+            cache_read: self.rng.range(5_000, 80_000),
+            cache_creation: if self.rng.chance(30) { self.rng.range(500, 6_000) } else { 0 },
+        };
+        DomainEvent::UsageUpdated { agent_id, seq, model: Some(model.into()), tokens }
+    }
+
     fn scaled(&mut self, lo_ms: u64, hi_ms: u64) -> u64 {
         (self.rng.range(lo_ms, hi_ms) as f64 / self.cfg.speed) as u64
     }
@@ -127,7 +145,7 @@ impl Fleet {
             id: format!("synth-{:x}-{:05}", self.cfg.seed, self.spawned),
             host,
             cwd,
-            model: self.rng.pick(MODELS),
+            model: if self.rng.chance(4) { UNPRICED_MODEL } else { self.rng.pick(MODELS) },
             phase: Phase::Start,
             next_at: at,
             tools_left: 0,
@@ -135,6 +153,8 @@ impl Fleet {
             tool: TOOLS[0],
             sub: None,
             turns_left: self.rng.range(1, 4) as u32,
+            usage_seq: 0,
+            sub_usage_seq: 0,
         }
     }
 
@@ -211,10 +231,14 @@ impl Fleet {
             Phase::ToolEnd => {
                 let ok = !self.rng.chance(6);
                 out.push(env(&s, at, tool_finished(&s, None, ok)));
+                s.usage_seq += 1;
+                let (model, seq) = (s.model, s.usage_seq);
+                out.push(env(&s, at, self.usage(None, seq, model)));
                 s.tools_left = s.tools_left.saturating_sub(1);
                 if s.sub.is_none() && s.tools_left > 1 && self.rng.chance(8) {
                     let sub = format!("sub{}", s.tool_n);
                     out.push(env(&s, at, DomainEvent::SubagentStarted { agent_id: sub.clone(), agent_type: Some("Explore".into()) }));
+                    s.sub_usage_seq = 0;
                     s.sub = Some((sub, self.rng.range(2, 5) as u32));
                     s.phase = Phase::SubagentWork;
                     s.next_at = at + self.scaled(500, 2_000);
@@ -238,6 +262,9 @@ impl Fleet {
                     let id = format!("{sub}-t{left}");
                     out.push(env(&s, at, tool_started(&s, Some((&sub, &id)))));
                     out.push(env(&s, at + 1, tool_finished(&s, Some((&sub, &id)), true)));
+                    s.sub_usage_seq += 1;
+                    let seq = s.sub_usage_seq;
+                    out.push(env(&s, at + 1, self.usage(Some(sub.clone()), seq, SUB_MODEL)));
                     s.sub = Some((sub, left - 1));
                     s.next_at = at + self.scaled(400, 2_500);
                 }
@@ -283,6 +310,8 @@ fn placeholder() -> Session {
         tool: TOOLS[0],
         sub: None,
         turns_left: 0,
+        usage_seq: 0,
+        sub_usage_seq: 0,
     }
 }
 
@@ -340,5 +369,22 @@ mod tests {
         assert!(mains >= 20, "{mains} main agents");
         let projects: std::collections::HashSet<_> = colony.agents.values().filter_map(|a| a.project_key.clone()).collect();
         assert!(projects.len() > 1 && projects.len() <= 8, "{} projects", projects.len());
+    }
+
+    #[test]
+    fn fleet_spends_money_with_some_unpriced_models() {
+        let mut f = Fleet::new(Config { agents: 40, projects: 4, seed: 3, speed: 20.0 }, 0);
+        let mut colony = Colony::new();
+        for t in (0..120_000).step_by(50) {
+            for e in f.tick(t) {
+                colony.apply(&e);
+            }
+        }
+        let mains: Vec<_> = colony.agents.values().filter(|a| a.parent_id.is_none()).collect();
+        assert!(mains.iter().map(|a| a.cost_usd).sum::<f64>() > 0.0);
+        assert!(mains.iter().any(|a| a.cost_partial), "some session runs an unpriced model");
+        assert!(colony.spend.values().all(|p| !p.buckets.is_empty()));
+        let subs = colony.agents.values().filter(|a| a.parent_id.is_some() && a.tokens.total() > 0).count();
+        assert!(subs > 0, "subagents spend too");
     }
 }

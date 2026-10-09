@@ -74,7 +74,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "hosts": hosts, "leftovers": crate::worktree::leftovers() }).to_string()
+    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "hosts": hosts, "leftovers": crate::worktree::leftovers() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
