@@ -66,7 +66,7 @@ pub async fn create(host: &HostId, dir: &str, session_id: &str, label: &str) -> 
     ensure_excluded(host, &repo).await;
     let base = base_ref(host, &repo).await;
     // --no-track: the branch is the bot's own, not a local copy of origin/main.
-    git(host, &repo, &["worktree", "add", "--no-track", "-b", &branch, &path, &base]).await?;
+    worktree_add(host, &repo, &["--no-track", "-b", &branch, &path, &base]).await?;
 
     // Keep to the subfolder the session was asked for, if the new checkout has it.
     let mut start = path.clone();
@@ -85,10 +85,21 @@ pub async fn create(host: &HostId, dir: &str, session_id: &str, label: &str) -> 
 /// repository has no remote.
 async fn base_ref(host: &HostId, repo: &str) -> String {
     // Never hang a spawn on a slow or unreachable remote.
-    match tokio::time::timeout(Duration::from_secs(30), git(host, repo, &["fetch", "--quiet", "origin"])).await {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => log(format!("could not fetch origin in {repo}: {e}")),
-        Err(_) => log(format!("fetching origin in {repo} timed out")),
+    let fetch = |h: HostId, dir: String| async move {
+        match tokio::time::timeout(Duration::from_secs(30), git(&h, &dir, &["fetch", "--quiet", "origin"])).await {
+            Ok(r) => r.map(|_| ()),
+            Err(_) => Err("timed out".to_string()),
+        }
+    };
+    if let Err(e) = fetch(host.clone(), repo.to_string()).await {
+        log(format!("could not fetch origin in {repo}: {e}"));
+        // WSL has no GitHub login of its own; a repository on a Windows drive
+        // can be fetched by Windows git, which has yours. Refs are shared.
+        if let (HostId::Wsl(_), Some(win)) = (host, windows_form(repo)) {
+            if let Err(e) = fetch(HostId::Windows, win.clone()).await {
+                log(format!("could not fetch origin in {win} either: {e}; using the last fetched origin"));
+            }
+        }
     }
     let default = git(host, repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await.ok().map(|s| s.trim().to_string());
     for r in default.into_iter().chain(["origin/main".to_string(), "origin/master".to_string()]) {
@@ -106,10 +117,35 @@ pub async fn restore(w: &Worktree) -> Result<(), String> {
         return Ok(());
     }
     let _ = git(&w.host, &w.repo, &["worktree", "prune"]).await;
-    git(&w.host, &w.repo, &["worktree", "add", &w.path, &w.branch])
+    worktree_add(&w.host, &w.repo, &[&w.path, &w.branch])
         .await
-        .map(|_| ())
         .map_err(|e| format!("this session's worktree is gone and couldn't be restored: {e}"))
+}
+
+/// `git worktree add`. A repository on a Windows drive is used from both
+/// Windows and WSL, whose git each write absolute paths the other can't read
+/// (`C:/x` vs `/mnt/c/x`), leaving the worktree broken on one side. Relative
+/// links work on both, so use them there (git 2.48+; older git gets the plain form).
+async fn worktree_add(host: &HostId, repo: &str, args: &[&str]) -> Result<(), String> {
+    if windows_form(repo).is_some() || matches!(host, HostId::Windows) {
+        let mut rel = vec!["worktree", "add", "--relative-paths"];
+        rel.extend_from_slice(args);
+        match git(host, repo, &rel).await {
+            Ok(_) => return Ok(()),
+            Err(e) if e.contains("unknown option") || e.contains("usage:") => log(format!("git here lacks --relative-paths; using absolute worktree paths ({host})")),
+            Err(e) => return Err(e),
+        }
+    }
+    let mut plain = vec!["worktree", "add"];
+    plain.extend_from_slice(args);
+    git(host, repo, &plain).await.map(|_| ())
+}
+
+/// `/mnt/c/x/y` -> `C:/x/y`: a WSL path on a Windows drive, as Windows spells it.
+fn windows_form(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/mnt/")?;
+    let (drive, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    (drive.len() == 1 && drive.as_bytes()[0].is_ascii_alphabetic()).then(|| format!("{}:/{tail}", drive.to_ascii_uppercase()))
 }
 
 /// Remove a session's worktree and its branch. Fails, leaving both in place,
@@ -189,7 +225,9 @@ async fn git(host: &HostId, dir: &str, args: &[&str]) -> Result<String, String> 
         }
         HostId::Wsl(distro) => {
             let mut c = quiet("wsl.exe");
-            c.args(["-d", distro, "--cd", &to_wsl_path(dir), "-e", "git"]);
+            // The variable has to be set inside WSL; without it a fetch that
+            // needs credentials waits for a prompt nobody can answer.
+            c.args(["-d", distro, "--cd", &to_wsl_path(dir), "-e", "env", "GIT_TERMINAL_PROMPT=0", "git"]);
             c
         }
     };
@@ -311,6 +349,19 @@ mod tests {
         assert_eq!(git(&host, &clone, &["status", "--porcelain"]).await.unwrap().trim(), "");
         assert!(git(&host, &made.dir, &["rev-parse", "--abbrev-ref", "@{upstream}"]).await.is_err());
 
+        // A repository on a Windows drive is shared by both hosts: the worktree
+        // has to work, and not look prunable, from the other side too.
+        let other = match &host {
+            HostId::Windows => Some(HostId::Wsl(first_distro())),
+            HostId::Wsl(_) => windows_form(&made.record.path).map(|_| HostId::Windows),
+        };
+        if let Some(other) = other.filter(|_| windows_form(&made.record.repo).is_some() || matches!(host, HostId::Windows)) {
+            let there = if matches!(other, HostId::Windows) { windows_form(&made.record.path).unwrap() } else { made.record.path.clone() };
+            git(&other, &there, &["status", "--porcelain"]).await.unwrap_or_else(|e| panic!("worktree broken from {other}: {e}"));
+            let list = git(&other, &there, &["worktree", "list"]).await.unwrap();
+            assert!(!list.contains("prunable"), "{other} sees the worktree as prunable:\n{list}");
+        }
+
         // A second bot gets its own checkout.
         let other = create(&host, &clone, "Fix the bug", "5678efgh").await.unwrap();
         assert_ne!(other.dir, made.dir);
@@ -331,7 +382,13 @@ mod tests {
         assert!(git(&host, &made.dir, &["rev-parse", "--is-inside-work-tree"]).await.is_ok());
     }
 
-    fn rt() -> tokio::runtime::Runtime {
+    fn first_distro() -> String {
+        let out = std::process::Command::new("wsl.exe").args(["--list", "--quiet"]).output().unwrap();
+        let units: Vec<u16> = out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&units).lines().map(|l| l.trim().to_string()).find(|l| !l.is_empty() && !l.starts_with("docker-desktop")).expect("a WSL distro")
+    }
+
+    fn rt() ->tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
     }
 
@@ -349,9 +406,7 @@ mod tests {
     #[test]
     #[ignore]
     fn worktrees_in_wsl() {
-        let out = std::process::Command::new("wsl.exe").args(["--list", "--quiet"]).output().unwrap();
-        let units: Vec<u16> = out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-        let distro = String::from_utf16_lossy(&units).lines().map(|l| l.trim().to_string()).find(|l| !l.is_empty() && !l.starts_with("docker-desktop")).expect("a WSL distro");
+        let distro = first_distro();
         let base = format!("/tmp/colony-wt-{}", std::process::id());
         rt().block_on(exercise(HostId::Wsl(distro.clone()), base.clone()));
         let _ = std::process::Command::new("wsl.exe").args(["-d", &distro, "-e", "rm", "-rf", &base]).status();
@@ -362,9 +417,7 @@ mod tests {
     #[test]
     #[ignore]
     fn worktrees_in_wsl_on_a_windows_folder() {
-        let out = std::process::Command::new("wsl.exe").args(["--list", "--quiet"]).output().unwrap();
-        let units: Vec<u16> = out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-        let distro = String::from_utf16_lossy(&units).lines().map(|l| l.trim().to_string()).find(|l| !l.is_empty() && !l.starts_with("docker-desktop")).expect("a WSL distro");
+        let distro = first_distro();
         let base = std::env::temp_dir().join(format!("colony-wtm-{}", std::process::id()));
         rt().block_on(exercise(HostId::Wsl(distro), base.display().to_string().replace('\\', "/")));
         let _ = std::fs::remove_dir_all(&base);
