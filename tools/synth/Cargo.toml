@@ -1,0 +1,15 @@
+[package]
+name = "colony-synth"
+description = "Synthetic fleet generator: drives a test colonyd with made-up sessions."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "colony_synth"
+
+[dependencies]
+colony-core.workspace = true
+colony-source.workspace = true
+serde.workspace = true
+serde_json.workspace = true
