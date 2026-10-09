@@ -102,6 +102,9 @@ pub struct CurrentTool {
     pub target: Option<String>,
     pub tool_use_id: Option<String>,
     pub started_at: u64,
+    /// A background start: it only counts toward `background_tasks` if the call succeeds.
+    #[serde(default)]
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -545,6 +548,7 @@ impl Colony {
                     target: target.clone(),
                     tool_use_id: tool_use_id.clone(),
                     started_at: e.ts,
+                    background: *background,
                 });
                 a.tool_calls += 1;
                 if a.state != AgentState::Ended {
@@ -569,6 +573,11 @@ impl Colony {
                     None
                 };
                 if same {
+                    // A background start that failed never began a task, so
+                    // nothing will report back to release it.
+                    if !*ok && a.current_tool.as_ref().is_some_and(|t| t.background) {
+                        a.background_tasks = a.background_tasks.saturating_sub(1);
+                    }
                     a.current_tool = None;
                 }
                 if *ok {
