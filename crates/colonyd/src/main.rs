@@ -9,6 +9,7 @@
 mod api;
 mod approvals;
 mod pty;
+mod signin;
 mod worktree;
 #[cfg(windows)]
 mod wsl;

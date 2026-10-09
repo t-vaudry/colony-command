@@ -148,6 +148,14 @@ enum Command {
     Terminate { id: String },
     /// Done with a session: end every copy of it and clear it off the map.
     Dismiss { id: String },
+    /// Open the login a stuck bot is waiting on in a terminal, to be finished by the user.
+    SignIn {
+        id: String,
+        #[serde(default = "crate::pty::default_cols")]
+        cols: u16,
+        #[serde(default = "crate::pty::default_rows")]
+        rows: u16,
+    },
 }
 
 /// What one map connection is looking at.
@@ -166,7 +174,7 @@ fn term_data(term: &str, bytes: &[u8], reset: bool) -> String {
 }
 
 /// Run one command; returns a message to send back to this map, if any.
-async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<String> {
+async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Option<String> {
     let cmd = match serde_json::from_str::<Command>(text) {
         Ok(c) => c,
         Err(e) => return error(format!("unknown command ({e})")),
@@ -223,6 +231,13 @@ async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<
         Command::Interrupt { term } => pty.input(&term, b"\x1b").map(|_| None),
         Command::Resize { term, cols, rows } => pty.resize(&term, cols, rows).map(|_| None),
         Command::Kill { term } => pty.kill(&term).map(|_| None),
+        Command::SignIn { id, cols, rows } => match crate::signin::start(shared, &id, cols, rows).await {
+            Ok(term) => {
+                conn.attached = Some(term.clone());
+                Ok(Some(json!({ "type": "spawned", "term": term, "session_id": id }).to_string()))
+            }
+            Err(e) => Err(e),
+        },
         Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
         Command::Dismiss { id } => dismiss(shared, &id).await.map(|_| None),
         Command::SetModel { id, model } => set_model(shared, &id, &model).await.map(|_| None),

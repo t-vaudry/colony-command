@@ -5,6 +5,7 @@
 //! into a [`Colony`]: the set of agents and their lifecycle states that the map
 //! renders. Pure logic only, so the daemon, the WSL probe, and tests share it.
 
+pub mod auth;
 pub mod event;
 pub mod hook;
 pub mod models;

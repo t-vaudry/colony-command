@@ -165,6 +165,10 @@ pub struct Agent {
     /// A model better suited to what it's doing lately, if any.
     #[serde(default)]
     pub model_hint: Option<ModelHint>,
+    /// A tool failed because a login is missing; the map offers to sign in.
+    /// Stays until the sign-in is confirmed (`AuthResolved`).
+    #[serde(default)]
+    pub auth_need: Option<crate::auth::AuthNeed>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_gone_at: Option<u64>,
 }
@@ -207,6 +211,7 @@ impl Agent {
             model: None,
             recent_tools: Vec::new(),
             model_hint: None,
+            auth_need: None,
             process_gone_at: None,
         }
     }
@@ -331,6 +336,7 @@ impl Colony {
                 | DomainEvent::TerminalExited { .. }
                 | DomainEvent::PermissionAsked { .. }
                 | DomainEvent::PermissionSettled { .. }
+                | DomainEvent::AuthResolved
         );
         if from_hooks {
             main.hooks_seen = true;
@@ -452,7 +458,11 @@ impl Colony {
                     }
                 } else {
                     a.consecutive_failures += 1;
-                    if a.consecutive_failures >= FAILURES_TO_BLOCK {
+                    if let Some(need) = error.as_deref().and_then(crate::auth::detect) {
+                        // Waiting on a person, not on retries: don't wait for three failures.
+                        a.set_state(AgentState::Blocked, Some(format!("{} needs you to sign in", need.label)), e.ts);
+                        a.auth_need = Some(need);
+                    } else if a.consecutive_failures >= FAILURES_TO_BLOCK {
                         let why = format!(
                             "{} failed tool calls in a row. Last: {}{}",
                             a.consecutive_failures,
@@ -541,6 +551,18 @@ impl Colony {
                     None => tool.clone(),
                 };
                 a.set_state(AgentState::NeedsInput, Some(what), e.ts);
+            }
+            DomainEvent::AuthResolved => {
+                // The session and its subagents were all waiting on the same login.
+                for a in self.agents.values_mut().filter(|a| a.session_id == sid) {
+                    if a.auth_need.take().is_some() {
+                        if a.state == AgentState::Blocked {
+                            a.set_state(AgentState::Working, None, e.ts);
+                        }
+                        a.consecutive_failures = 0;
+                        changed.push(a.id.clone());
+                    }
+                }
             }
             DomainEvent::PermissionSettled { request_id } => {
                 for a in self.agents.values_mut() {

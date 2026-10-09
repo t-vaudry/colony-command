@@ -174,6 +174,17 @@ export class Daemon {
     });
   }
 
+  /** Open the login this bot is stuck on in a terminal; resolves with its id. */
+  signIn(id: string, size: { cols: number; rows: number }): Promise<{ term: string; session_id: string }> {
+    return new Promise((resolve, reject) => {
+      if (!this.send({ type: "sign_in", id, ...size })) {
+        reject(new Error("not connected to colonyd"));
+        return;
+      }
+      this.pendingSpawns.push({ resolve, reject });
+    });
+  }
+
   attach(term: string): boolean {
     return this.send({ type: "attach", term });
   }

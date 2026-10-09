@@ -112,6 +112,25 @@ fn repeated_failures_block_and_success_unblocks() {
 }
 
 #[test]
+fn a_missing_login_blocks_at_once_until_signed_in() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "open a PR"}));
+    r.hook(json!({"hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_use_id": "t1",
+                  "error": "To get started with GitHub CLI, please run:  gh auth login"}));
+    assert_eq!(r.state(SID), AgentState::Blocked);
+    assert_eq!(r.colony.agents[SID].auth_need.as_ref().map(|n| n.provider.as_str()), Some("github"));
+    // A later success elsewhere doesn't say the login was fixed.
+    r.hook(json!({"hook_event_name": "PostToolUse", "tool_name": "Read", "tool_use_id": "t2"}));
+    assert!(r.colony.agents[SID].auth_need.is_some());
+    // Colony confirmed the sign-in.
+    r.t += 1_000;
+    let e = Envelope { ts: r.t, host: HostId::Windows, session_id: SID.into(), cwd: None, event: colony_core::DomainEvent::AuthResolved };
+    r.colony.apply(&e);
+    assert!(r.colony.agents[SID].auth_need.is_none());
+    assert_eq!(r.state(SID), AgentState::Working);
+}
+
+#[test]
 fn interrupts_are_not_failures() {
     let mut r = Run::new(HostId::Windows);
     r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));

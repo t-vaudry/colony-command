@@ -61,6 +61,8 @@ export interface Agent {
   model: string | null;
   /** A model better suited to what it's been doing lately. */
   model_hint: ModelHint | null;
+  /** A tool failed on a missing login (GitHub, Azure, ...); the map offers to sign in. */
+  auth_need?: { provider: string; label: string } | null;
 }
 
 export interface ModelHint {

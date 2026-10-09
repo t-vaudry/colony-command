@@ -112,6 +112,9 @@ pub enum DomainEvent {
         #[serde(default)]
         input: Option<serde_json::Value>,
     },
+    /// The user signed in to what the session was missing (confirmed by the
+    /// provider's own status command), so its sign-in prompt can go.
+    AuthResolved,
     /// That request was answered on the map, timed out, or its hook gave up.
     PermissionSettled { request_id: String },
     /// That terminal's process exited. `requested`: the user ended it from

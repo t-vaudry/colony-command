@@ -71,10 +71,10 @@ pub struct SpawnRequest {
     pub rows: u16,
 }
 
-fn default_cols() -> u16 {
+pub fn default_cols() -> u16 {
     120
 }
-fn default_rows() -> u16 {
+pub fn default_rows() -> u16 {
     32
 }
 
@@ -125,6 +125,13 @@ pub struct PtyHost {
     /// How each terminal was started, to restart it the same way (on another
     /// model). Not kept across colonyd restarts.
     requests: Mutex<HashMap<String, SpawnRequest>>,
+}
+
+/// A command to run in a terminal with no bot in it, spelled for each shell.
+pub struct UtilityCommand {
+    pub what: String,
+    pub powershell: String,
+    pub bash: String,
 }
 
 pub struct Spawned {
@@ -221,12 +228,42 @@ impl PtyHost {
             }
         };
 
+        let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows).await?;
+        log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
+        self.requests.lock().unwrap().insert(term_id.clone(), req);
+        Ok(Spawned { term_id, session_id })
+    }
+
+    /// Start a plain command (not a Claude session) in a terminal the map can
+    /// show, such as a login. It has no bot: no session id, no events.
+    pub async fn spawn_utility(&self, host: &HostId, dir: &str, cols: u16, rows: u16, cmd: &UtilityCommand) -> Result<String, String> {
+        let (program, args, cwd): (String, Vec<String>, Option<String>) = match host {
+            HostId::Windows => (
+                "powershell.exe".into(),
+                vec!["-NoLogo".into(), "-NoProfile".into(), "-Command".into(), cmd.powershell.clone()],
+                Some(dir.to_string()),
+            ),
+            HostId::Wsl(distro) => (
+                "wsl.exe".into(),
+                ["-d", distro, "--cd", &to_wsl_path(dir), "-e", "bash", "-lc", &cmd.bash, "bash"].iter().map(|s| s.to_string()).collect(),
+                None,
+            ),
+        };
+        let (term_id, pid) = self.launch("", host, dir, program, args, cwd, cols, rows).await?;
+        log(format!("started {} in terminal {term_id} ({host}, {dir}, pid {pid})", cmd.what));
+        Ok(term_id)
+    }
+
+    /// Ask ptyd to start a process and wait for it. `session_id` is empty for
+    /// a terminal that isn't a bot's.
+    #[allow(clippy::too_many_arguments)]
+    async fn launch(&self, session_id: &str, host: &HostId, dir: &str, program: String, args: Vec<String>, cwd: Option<String>, cols: u16, rows: u16) -> Result<(String, u32), String> {
         let term_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         // Mark the session as Colony's: Windows recognizes it by process id;
         // inside WSL the probe reads this variable (WSLENV carries it across).
         let mut env = child_env();
         env.push(("COLONY_TERM_ID".into(), term_id.clone()));
-        if matches!(req.host, HostId::Wsl(_)) {
+        if matches!(host, HostId::Wsl(_)) {
             let wslenv = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("WSLENV")).map(|(_, v)| v.clone());
             env.retain(|(k, _)| !k.eq_ignore_ascii_case("WSLENV"));
             let joined = match wslenv.filter(|v| !v.is_empty()) {
@@ -243,10 +280,10 @@ impl PtyHost {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        let info = TermInfo { term: term_id.clone(), session_id: session_id.clone(), host: req.host.clone(), dir: req.dir.clone(), pid: 0, started_at: now_ms() };
+        let info = TermInfo { term: term_id.clone(), session_id: session_id.to_string(), host: host.clone(), dir: dir.to_string(), pid: 0, started_at: now_ms() };
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(term_id.clone(), (info.clone(), tx));
-        let sent = self.send(&ToPtyd::Spawn { info, program, args, cwd, env, cols: req.cols.max(40), rows: req.rows.max(10) });
+        let sent = self.send(&ToPtyd::Spawn { info, program, args, cwd, env, cols: cols.max(40), rows: rows.max(10) });
         if let Err(e) = sent {
             self.pending.lock().unwrap().remove(&term_id);
             return Err(e);
@@ -258,9 +295,7 @@ impl PtyHost {
                 return Err("the terminal host didn't answer".into());
             }
         };
-        log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
-        self.requests.lock().unwrap().insert(term_id.clone(), req);
-        Ok(Spawned { term_id, session_id })
+        Ok((term_id, pid))
     }
 
     fn send(&self, msg: &ToPtyd) -> Result<(), String> {
@@ -419,13 +454,16 @@ impl PtyHost {
     /// Track a terminal and link it to its bot.
     fn adopt(&self, info: TermInfo, scrollback: VecDeque<u8>) {
         self.owned.lock().unwrap().insert(info.pid, info.term.clone());
-        let _ = self.events.blocking_send(Envelope {
-            ts: now_ms(),
-            host: info.host.clone(),
-            session_id: info.session_id.clone(),
-            cwd: None,
-            event: DomainEvent::TerminalAttached { term_id: info.term.clone(), dir: info.dir.clone(), pid: Some(info.pid) },
-        });
+        // A terminal that isn't a bot's (a login) has no session to attach to.
+        if !info.session_id.is_empty() {
+            let _ = self.events.blocking_send(Envelope {
+                ts: now_ms(),
+                host: info.host.clone(),
+                session_id: info.session_id.clone(),
+                cwd: None,
+                event: DomainEvent::TerminalAttached { term_id: info.term.clone(), dir: info.dir.clone(), pid: Some(info.pid) },
+            });
+        }
         let mut terms = self.terms.lock().unwrap();
         let kill_requested = terms.get(&info.term).is_some_and(|m| m.kill_requested);
         terms.insert(info.term.clone(), Mirror { info, scrollback, kill_requested });
@@ -434,13 +472,15 @@ impl PtyHost {
     fn exited(&self, term: &str, requested: bool) {
         let Some(m) = self.terms.lock().unwrap().remove(term) else { return };
         self.owned.lock().unwrap().retain(|_, t| t != term);
-        let _ = self.events.blocking_send(Envelope {
-            ts: now_ms(),
-            host: m.info.host.clone(),
-            session_id: m.info.session_id.clone(),
-            cwd: None,
-            event: DomainEvent::TerminalExited { term_id: term.into(), requested: requested || m.kill_requested },
-        });
+        if !m.info.session_id.is_empty() {
+            let _ = self.events.blocking_send(Envelope {
+                ts: now_ms(),
+                host: m.info.host.clone(),
+                session_id: m.info.session_id.clone(),
+                cwd: None,
+                event: DomainEvent::TerminalExited { term_id: term.into(), requested: requested || m.kill_requested },
+            });
+        }
         let _ = self.output.send(Output { term_id: term.into(), bytes: Arc::new(b"\r\n\x1b[2m[session ended]\x1b[0m\r\n".to_vec()) });
     }
 }
