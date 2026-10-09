@@ -20,6 +20,7 @@
       <button type="button" class="primary" id="new-session-btn" title="Start a Claude Code session in a terminal Colony owns (N)">
         + New session
       </button>
+      <button type="button" class="chip" id="patience-btn" title="When Colony sends an OS notification for a bot that has waited too long">Notifications</button>
       <div class="conn connecting" id="conn">connecting…</div>
     </header>
     <main class="stage">
@@ -125,6 +126,27 @@
         <div class="actions">
           <button type="submit" class="primary" id="ns-start">Start</button>
           <button type="button" id="ns-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="patience">
+      <form method="dialog" id="patience-form">
+        <h2>Notifications</h2>
+        <p class="muted small">A bot that has waited on you longer than its budget gets one OS notification. Nothing is sent while this window is focused: the porch already shows what is waiting. Set a budget to 0 to turn that kind off.</p>
+        <label class="check">
+          <input name="enabled" type="checkbox" />
+          <span>Notify me about waiting bots</span>
+        </label>
+        <div class="row2">
+          <label><span class="k">Permission (min)</span><input name="permission_min" type="number" min="0" max="10080" step="1" /></label>
+          <label><span class="k">Question (min)</span><input name="question_min" type="number" min="0" max="10080" step="1" /></label>
+          <label><span class="k">Review (min)</span><input name="review_min" type="number" min="0" max="10080" step="1" /></label>
+        </div>
+        <p class="muted small">Blocked and crashed bots use the question budget. Coming back to the window right after a notification selects that bot.</p>
+        <div class="actions">
+          <button type="submit" class="primary" value="save">Save</button>
+          <button type="button" id="patience-cancel">Cancel</button>
+          <button type="button" id="patience-test">Send a test</button>
         </div>
       </form>
     </dialog>

@@ -989,3 +989,50 @@ html[data-motion="reduce"] *::after {
   transition-duration: 0.001ms !important;
   scroll-behavior: auto !important;
 }
+
+/* Notifications dialog: same look as New session. */
+#patience-btn[hidden] {
+  display: none;
+}
+#patience {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0;
+  width: min(520px, calc(100vw - 32px));
+}
+#patience::backdrop {
+  background: rgba(10, 14, 12, 0.45);
+}
+#patience-form {
+  display: grid;
+  gap: 14px;
+  padding: 20px 22px;
+}
+#patience-form h2 {
+  font-family: var(--f-display);
+  font-size: 22px;
+  margin: 0;
+}
+#patience-form label {
+  display: grid;
+  gap: 5px;
+}
+#patience-form label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+#patience-form input[type="checkbox"] {
+  width: auto;
+}
+#patience-form input[type="number"] {
+  width: 100%;
+}
+#patience-form .row2 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}

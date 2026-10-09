@@ -10,6 +10,7 @@ pub mod event;
 pub mod hook;
 pub mod models;
 pub mod names;
+pub mod patience;
 pub mod paths;
 pub mod prices;
 pub mod ptyproto;
