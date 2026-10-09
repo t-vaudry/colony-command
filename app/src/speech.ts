@@ -113,7 +113,7 @@ class Dictation {
     const f = this.field;
     if (this.btn.hidden || !f?.isConnected) return;
     const r = f.getBoundingClientRect();
-    const size = 26;
+    const size = 30;
     const clipped = r.bottom < 0 || r.top > innerHeight || r.width === 0;
     this.btn.style.visibility = clipped ? "hidden" : "visible";
     this.btn.style.left = `${Math.max(0, r.right - size - 6)}px`;
@@ -125,7 +125,7 @@ class Dictation {
     b.dataset.mode = this.mode;
     b.disabled = this.mode === "transcribing";
     if (this.mode === "downloading") return;
-    b.textContent = this.mode === "transcribing" ? "…" : "";
+    b.textContent = "";
     b.title =
       this.mode === "recording"
         ? "Stop and insert the text (Ctrl+Shift+M). Esc cancels."
