@@ -1025,3 +1025,29 @@ fn activity_feed_keeps_whole_prompts_and_marks_tool_results() {
     }
     assert_eq!(r.colony.agents[SID].activity.len(), ACTIVITY_KEEP);
 }
+
+#[test]
+fn answered_questions_and_permissions_feed_the_latency_ledger() {
+    let mut r = Run::new(HostId::Wsl("Ubuntu".into()));
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup"}));
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    assert!(r.colony.latency.is_empty());
+
+    // A question waits 3s for its answer.
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Shall I continue?"}));
+    r.t += 2_000;
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "yes"}));
+    let key = "c:/users/thoma/code/bingosync";
+    let waits: Vec<u64> = r.colony.latency[key].buckets.values().flatten().copied().collect();
+    assert_eq!(waits, vec![3_000]);
+    assert_eq!(r.colony.latency[key].name, "bingosync");
+
+    // A turn that ends in a report, and is acknowledged, is not a wait on a human.
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Done. All tests pass."}));
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "next"}));
+    assert_eq!(r.colony.latency[key].buckets.values().map(Vec::len).sum::<usize>(), 1);
+
+    // The daemon hears of the change once.
+    assert_eq!(r.colony.take_latency_changes().len(), 1);
+    assert!(r.colony.take_latency_changes().is_empty());
+}

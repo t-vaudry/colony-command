@@ -12,7 +12,7 @@ use crate::models::{self, ModelHint, ToolKind};
 use crate::names;
 use crate::paths;
 use crate::prices;
-use crate::usage::{ProjectSpend, Tokens, BUCKET_MS, LEDGER_KEEP_MS};
+use crate::usage::{ProjectLatency, ProjectSpend, Tokens, BUCKET_MS, LATENCY_SAMPLES_MAX, LEDGER_KEEP_MS};
 use crate::workdir::{self, Collision, CollisionScope, DiffStat};
 
 /// A session with no prompt this long after starting is idle.
@@ -253,6 +253,10 @@ pub struct Agent {
     /// daemon has counted them.
     #[serde(default)]
     pub diff_stat: Option<DiffStat>,
+    /// How long the agent waited on a human, set when a question or permission
+    /// was answered and taken by the colony into its latency ledger.
+    #[serde(skip)]
+    pub answered_after: Option<u64>,
 }
 
 impl Agent {
@@ -307,11 +311,19 @@ impl Agent {
             work_dir: None,
             collision: None,
             diff_stat: None,
+            answered_after: None,
         }
     }
 
     fn set_state(&mut self, state: AgentState, reason: Option<String>, ts: u64) {
         if self.state != state {
+            // A question or permission answered by a human; Colony's own startup wait is not one.
+            if matches!(self.state, AgentState::NeedsInput | AgentState::AwaitingReply)
+                && state == AgentState::Working
+                && self.reason.as_deref() != Some(STARTUP_REASON)
+            {
+                self.answered_after = Some(ts.saturating_sub(self.state_since));
+            }
             self.state = state;
             self.state_since = ts;
             // A count describes the work as it was when it was ready.
@@ -390,6 +402,12 @@ pub struct Colony {
     /// that spent it are gone.
     #[serde(default)]
     pub spend: BTreeMap<String, ProjectSpend>,
+    /// How long agents waited on a human, per project, in time buckets.
+    #[serde(default)]
+    pub latency: BTreeMap<String, ProjectLatency>,
+    /// Projects whose latency ledger changed since the last `take_latency_changes`.
+    #[serde(skip)]
+    latency_dirty: std::collections::BTreeSet<String>,
     /// Last usage `seq` applied per agent id, to ignore replays.
     #[serde(skip)]
     usage_seq: BTreeMap<String, u64>,
@@ -427,6 +445,12 @@ impl Colony {
     /// Fold one event in. Returns the ids of agents that changed; an id that
     /// is no longer in `agents` was removed.
     pub fn apply(&mut self, e: &Envelope) -> Vec<String> {
+        let changed = self.apply_event(e);
+        self.collect_latency(&changed, e.ts);
+        changed
+    }
+
+    fn apply_event(&mut self, e: &Envelope) -> Vec<String> {
         if let DomainEvent::UsageUpdated { .. } = &e.event {
             return self.apply_usage(e);
         }
@@ -913,6 +937,30 @@ impl Colony {
         changed
     }
 
+    /// File the waits that just ended into their projects' latency ledger.
+    fn collect_latency(&mut self, changed: &[String], ts: u64) {
+        for id in changed {
+            let Some(a) = self.agents.get_mut(id) else { continue };
+            let Some(wait) = a.answered_after.take() else { continue };
+            let Some((key, name)) = a.project_key.clone().zip(a.project_name.clone()) else { continue };
+            let project = self.latency.entry(key.clone()).or_default();
+            project.name = name;
+            let samples = project.buckets.entry(ts / BUCKET_MS).or_default();
+            if samples.len() < LATENCY_SAMPLES_MAX {
+                samples.push(wait);
+            }
+            self.latency_dirty.insert(key);
+        }
+    }
+
+    /// Latency rows of projects that changed since the last call.
+    pub fn take_latency_changes(&mut self) -> Vec<(String, ProjectLatency)> {
+        std::mem::take(&mut self.latency_dirty)
+            .into_iter()
+            .filter_map(|k| self.latency.get(&k).map(|p| (k, p.clone())))
+            .collect()
+    }
+
     /// Ledger rows of projects that changed since the last call.
     pub fn take_spend_changes(&mut self) -> Vec<(String, ProjectSpend)> {
         std::mem::take(&mut self.spend_dirty)
@@ -924,6 +972,12 @@ impl Colony {
     /// Time-based transitions: idle after spawn, crash after the process
     /// vanished, stalls, and removal of long-finished agents.
     pub fn tick(&mut self, now: u64) -> Vec<String> {
+        let changed = self.tick_inner(now);
+        self.collect_latency(&changed, now);
+        changed
+    }
+
+    fn tick_inner(&mut self, now: u64) -> Vec<String> {
         let mut changed = Vec::new();
         let mut crashed_sessions = Vec::new();
         for a in self.agents.values_mut() {
@@ -989,6 +1043,10 @@ impl Colony {
             p.buckets.retain(|b, _| *b >= oldest);
         }
         self.spend.retain(|_, p| !p.buckets.is_empty());
+        for p in self.latency.values_mut() {
+            p.buckets.retain(|b, _| *b >= oldest);
+        }
+        self.latency.retain(|_, p| !p.buckets.is_empty());
         changed
     }
 

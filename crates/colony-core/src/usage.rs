@@ -65,3 +65,15 @@ pub struct ProjectSpend {
     /// Bucket number (unix ms / `BUCKET_MS`) to spend in it.
     pub buckets: std::collections::BTreeMap<u64, Spend>,
 }
+
+/// Most response times kept per project per bucket; later ones are dropped.
+pub const LATENCY_SAMPLES_MAX: usize = 100;
+
+/// How long agents waited on a human in one project. Each sample is a wait
+/// that ended with a response, in ms, filed under the bucket it ended in.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectLatency {
+    pub name: String,
+    /// Bucket number (unix ms / `BUCKET_MS`) to the waits that ended in it.
+    pub buckets: std::collections::BTreeMap<u64, Vec<u64>>,
+}
