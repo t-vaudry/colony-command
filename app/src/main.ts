@@ -19,7 +19,11 @@ function select(id: string | null): void {
   hud.schedule();
   // Follow the selection with the terminal pane when it's open.
   const a = id ? daemon.agents.get(id) : undefined;
-  if (terminal.visible && a?.terminal) showTerminal(a);
+  if (!id) {
+    // Nothing selected: close the pane rather than leave the last bot's terminal open.
+    paneAgent = null;
+    terminal.hide();
+  } else if (terminal.visible && a?.terminal) showTerminal(a);
 }
 
 /** Agent whose terminal the pane shows, so it can follow a replaced terminal. */
