@@ -17,12 +17,12 @@ Design spec: [`docs/design-spec.html`](docs/design-spec.html)
 | `crates/colony-ptyd` | Terminal host: owns Colony's terminals so sessions survive daemon restarts |
 | `app` | The map: PixiJS world + HUD, connects to colonyd |
 | `app/src-tauri` | Desktop app: the map in a window; starts colonyd if it isn't running |
-| `hooks/colony-approve.sh` | Approval hook: hands permission requests to colonyd for Allow/Deny on the map |
 | `tools/synth`, `tools/replay` | Synthetic fleet generator and event-log replay, for load and visual tests |
+| `hooks/colony-approve.sh` | Approval hook (Windows and WSL): hands permission requests to colonyd for Allow/Deny on the map |
 | `spikes/capture` | Hook that records raw Claude Code hook payloads, for schema checks |
 | `docs/` | Design spec |
 
-Planned: `crates/colony-hook` (replaces the capture spike); approvals for WSL sessions.
+Planned: `crates/colony-hook` (replaces the capture spike).
 
 ## Test
 
@@ -113,8 +113,16 @@ Register `hooks/colony-approve.sh` for Claude Code's `PermissionRequest` event
 While the map is open, permission requests show on the porch and in the
 inspector with Allow, Always allow (adds Claude Code's suggested rule), and
 Deny. The session's own prompt stays up too; whichever is answered first wins.
-With colonyd stopped or no map open, the hook steps aside. Windows sessions
-only for now: WSL hooks can't reach colonyd yet.
+With colonyd stopped or no map open, the hook steps aside.
+
+This works for Windows and WSL sessions. In WSL, `scripts/install-probe.sh`
+installs the hook next to the probe (`~/.colony/bin/colony-approve.sh`); add
+the same settings entry in that distro's `~/.claude/settings.json`. The hook
+talks to `colony-probe` over a private Unix socket (`~/.colony/hook.sock`,
+owner-only), and the probe relays the request to colonyd over the channel
+colonyd already has to it, so colonyd's token never enters the distro. Restart
+colonyd (or the distro's probe) after re-running the installer. To check the
+hook's fail-open behaviour: `sh scripts/test-approve-hook.sh`.
 
 ## Models
 
