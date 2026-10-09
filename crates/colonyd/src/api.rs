@@ -9,6 +9,8 @@
 //!                      crash (for scripts; the map uses the socket)
 //! - `POST /api/permission` a `PermissionRequest` hook payload; held until the
 //!                      map answers, then the hook's decision JSON (or no body)
+//! - `POST /api/ingest` only when `COLONY_INGEST=1`: a JSON envelope, or an array
+//!                      of them, fed to the reducer (tools/synth, tools/replay)
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,6 +46,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/api/agents", get(agents))
         .route("/api/ack", post(ack))
         .route("/api/permission", post(permission))
+        .route("/api/ingest", post(ingest))
         .with_state(shared)
 }
 
@@ -806,4 +809,40 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
     }
     log(format!("restarted session{} in terminal {}", model.map(|m| format!(" on {m}")).unwrap_or_default(), spawned.term_id));
     Ok(())
+}
+
+/// Whether this daemon takes injected events. Off unless `COLONY_INGEST=1`, so
+/// a daemon running real sessions never mixes in made-up ones.
+fn ingest_enabled() -> bool {
+    std::env::var("COLONY_INGEST").is_ok_and(|v| v == "1")
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum IngestBody {
+    One(Envelope),
+    Many(Vec<Envelope>),
+}
+
+/// Feed domain events straight to the reducer, for the synthetic fleet
+/// generator and log replay.
+async fn ingest(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap, body: String) -> Response {
+    if !ingest_enabled() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if !authorized(&shared, &params, &headers) {
+        return unauthorized();
+    }
+    let events = match serde_json::from_str::<IngestBody>(&body) {
+        Ok(IngestBody::One(e)) => vec![e],
+        Ok(IngestBody::Many(v)) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("not an envelope or array of envelopes: {e}")).into_response(),
+    };
+    let n = events.len();
+    for e in events {
+        if shared.events.send(e).await.is_err() {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    }
+    Json(json!({ "ok": true, "accepted": n })).into_response()
 }
