@@ -225,7 +225,7 @@ impl Fleet {
             }
             Phase::Prompt => {
                 let preview = self.rng.pick(PROMPTS).to_string();
-                out.push(env(&s, at, DomainEvent::PromptSubmitted { preview, synthetic: false }));
+                out.push(env(&s, at, DomainEvent::PromptSubmitted { preview, synthetic: false, task_ended: false }));
                 s.tools_left = self.rng.range(3, 14) as u32;
                 s.phase = Phase::ToolStart;
                 s.next_at = at + self.scaled(400, 2_500);

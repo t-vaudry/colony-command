@@ -541,10 +541,65 @@ fn waiting_on_a_background_run_is_not_ready_for_review() {
     assert_eq!(r.state(SID), AgentState::Working);
 
     // The run reports back, the bot wakes, finishes, and now it's for review.
-    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "<task-notification>\n<task-id>t1</task-id>"}));
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>"}));
     assert_eq!(r.state(SID), AgentState::Working);
     r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "All tests pass."}));
     assert_eq!(r.state(SID), AgentState::ReadyToReview);
+}
+
+fn monitor_started(r: &mut Run, tool_use_id: &str) {
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Monitor", "tool_use_id": tool_use_id,
+                  "tool_input": {"command": "until [ -e node_modules/.bin/tsc ]; do sleep 5; done; echo ready",
+                                 "timeout_ms": 900000, "description": "tsc available"}}));
+    r.hook(json!({"hook_event_name": "PostToolUse", "tool_name": "Monitor", "tool_use_id": tool_use_id,
+                  "tool_response": {"taskId": "bgmrj5fzi", "timeoutMs": 900000, "persistent": false}}));
+}
+
+#[test]
+fn waiting_on_a_monitor_is_not_ready_for_review() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "set up the app"}));
+    monitor_started(&mut r, "toolu_01P145Ruzrcwtg2wNCwB9Jj5");
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Waiting for the install to finish; I'll run the build once it does."}));
+    assert_eq!(r.state(SID), AgentState::Working);
+    assert_eq!(r.colony.agents[SID].reason.as_deref(), Some(colony_core::state::WAITING_ON_BACKGROUND));
+
+    // A mid-run event wakes the bot, but the monitor is still running.
+    r.hook(json!({"hook_event_name": "UserPromptSubmit",
+                  "prompt": "<task-notification>\n<task-id>bgmrj5fzi</task-id>\n<summary>Monitor event: \"tsc available\"</summary>\n<event>almost</event>\n</task-notification>"}));
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Still installing."}));
+    assert_eq!(r.state(SID), AgentState::Working);
+    assert_eq!(r.colony.agents[SID].background_tasks, 1);
+
+    // Unrelated notifications (no task) don't release it either.
+    r.hook(json!({"hook_event_name": "UserPromptSubmit",
+                  "prompt": "<task-notification>\n<task-type>artifact-auto-react</task-type>\n<summary>paused</summary>\n</task-notification>"}));
+    assert_eq!(r.colony.agents[SID].background_tasks, 1);
+
+    // The stream ends: the bot wakes, builds, and is ready for review.
+    r.hook(json!({"hook_event_name": "UserPromptSubmit",
+                  "prompt": "<task-notification>\n<task-id>bgmrj5fzi</task-id>\n<status>completed</status>\n<summary>Monitor \"tsc available\" stream ended</summary>\n<event>ready</event>\n</task-notification>"}));
+    assert_eq!(r.colony.agents[SID].background_tasks, 0);
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Build passes."}));
+    assert_eq!(r.state(SID), AgentState::ReadyToReview);
+}
+
+#[test]
+fn a_monitor_that_never_reports_cannot_hold_a_bot_forever() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    monitor_started(&mut r, "m1");
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Waiting."}));
+    assert_eq!(r.state(SID), AgentState::Working);
+
+    // Quiet beyond the tool stall limit: the normal stall logic still applies.
+    let t = r.t;
+    r.colony.tick(t + colony_core::state::TOOL_STALL_MS + 1);
+    assert_ne!(r.state(SID), AgentState::Working);
+
+    // A fresh session start clears any leaked count.
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup"}));
+    assert_eq!(r.colony.agents[SID].background_tasks, 0);
 }
 
 fn usage(r: &mut Run, sid: &str, agent: Option<&str>, seq: u64, model: &str, input: u64, output: u64) -> Vec<String> {
@@ -694,7 +749,7 @@ fn replayed_history_does_not_undo_a_pause_but_new_activity_does() {
         host: r.host.clone(),
         session_id: SID.into(),
         cwd: None,
-        event: colony_core::DomainEvent::PromptSubmitted { preview: "go".into(), synthetic: false },
+        event: colony_core::DomainEvent::PromptSubmitted { preview: "go".into(), synthetic: false, task_ended: false },
     });
     assert_eq!(r.state(SID), AgentState::Idle);
     assert!(r.colony.agents[SID].paused_at.is_some());
@@ -891,4 +946,48 @@ fn sibling_subagents_in_one_folder_do_not_warn_but_one_file_does() {
     assert!(r.colony.agents[&sub_id(SID, "a1")].collision.is_none());
     go(&mut r, "a2", "x.ts");
     assert!(r.colony.agents[&sub_id(SID, "a1")].collision.is_some());
+}
+
+#[test]
+fn a_failed_background_start_does_not_leak_a_wait() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Monitor", "tool_use_id": "m1",
+                  "tool_input": {"command": "until false; do sleep 5; done"}}));
+    r.hook(json!({"hook_event_name": "PostToolUseFailure", "tool_name": "Monitor", "tool_use_id": "m1",
+                  "error": "Monitor is not available"}));
+    assert_eq!(r.colony.agents[SID].background_tasks, 0);
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Could not start the monitor."}));
+    assert_eq!(r.state(SID), AgentState::ReadyToReview);
+
+    // A started one that later succeeds elsewhere is untouched by a failed foreground call.
+    monitor_started(&mut r, "m2");
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "b1", "tool_input": {"command": "false"}}));
+    r.hook(json!({"hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_use_id": "b1", "error": "exit 1"}));
+    assert_eq!(r.colony.agents[SID].background_tasks, 1);
+}
+
+#[test]
+fn a_stopped_notification_releases_the_count_without_a_task_stop_decrement() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    monitor_started(&mut r, "m1");
+    monitor_started(&mut r, "m2");
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "TaskStop", "tool_use_id": "s1", "tool_input": {"task_id": "bgmrj5fzi"}}));
+    r.hook(json!({"hook_event_name": "PostToolUse", "tool_name": "TaskStop", "tool_use_id": "s1"}));
+    assert_eq!(r.colony.agents[SID].background_tasks, 2);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit",
+                  "prompt": "<task-notification>\n<task-id>bgmrj5fzi</task-id>\n<status>stopped</status>\n<summary>Monitor stopped</summary>\n</task-notification>"}));
+    assert_eq!(r.colony.agents[SID].background_tasks, 1);
+}
+
+#[test]
+fn compact_keeps_the_monitor_wait_but_startup_clears_it() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    monitor_started(&mut r, "m1");
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "compact"}));
+    assert_eq!(r.colony.agents[SID].background_tasks, 1);
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Waiting."}));
+    assert_eq!(r.state(SID), AgentState::Working);
 }

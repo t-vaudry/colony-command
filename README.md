@@ -262,8 +262,13 @@ point between turns: if it is working, it waits for the turn to end (shown as
 it stops at once. Colony then ends the session's process; the conversation is
 on disk, so **Resume** starts it again with `claude --resume` in a new Colony
 terminal, on the same model and permission mode. Nothing is paused mid-tool,
-while a permission request is open, or while a subagent or background run is
-out.
+while a permission request is open, or while a subagent, a background run or a
+Monitor is still going.
+
+A bot that ends its turn while a background run or a Monitor is still going stays
+Working ("waiting on a background task") until the task reports back. A Monitor
+that is persistent or times out may never send a completion notification; such a
+bot stays Working until the stall limit (30 minutes of silence) marks it stalled.
 
 A paused bot stays on the map, idle, with a pause mark (and "paused" in the
 inspector) instead of ending or counting as crashed. Paused sessions are kept in

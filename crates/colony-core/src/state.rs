@@ -102,6 +102,9 @@ pub struct CurrentTool {
     pub target: Option<String>,
     pub tool_use_id: Option<String>,
     pub started_at: u64,
+    /// A background start: it only counts toward `background_tasks` if the call succeeds.
+    #[serde(default)]
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -509,7 +512,7 @@ impl Colony {
                 main.model = Some(model.clone());
                 main.model_hint = models::suggest(main.model.as_deref(), &main.recent_tools);
             }
-            DomainEvent::PromptSubmitted { preview, synthetic } => {
+            DomainEvent::PromptSubmitted { preview, synthetic, task_ended } => {
                 settle_if_after(main, e.ts);
                 if !synthetic && !preview.is_empty() {
                     if main.objective.is_none() {
@@ -517,8 +520,8 @@ impl Colony {
                     }
                     main.last_prompt = Some(preview.clone());
                 }
-                // Claude Code announces a finished background call this way.
-                if *synthetic && preview.starts_with("<task-notification>") {
+                // Claude Code announces a finished background call or Monitor this way.
+                if *synthetic && *task_ended {
                     main.background_tasks = main.background_tasks.saturating_sub(1);
                 }
                 main.consecutive_failures = 0;
@@ -529,9 +532,9 @@ impl Colony {
                 settle_if_after(a, e.ts);
                 if *background {
                     a.background_tasks += 1;
-                } else if matches!(tool.as_str(), "KillShell" | "TaskStop") {
-                    a.background_tasks = a.background_tasks.saturating_sub(1);
                 }
+                // A stopped task (KillShell, TaskStop) is announced with a
+                // `stopped` task-notification, which releases the count.
                 a.recent_tools.push(models::tool_kind(tool));
                 if a.recent_tools.len() > models::RECENT_TOOLS {
                     a.recent_tools.remove(0);
@@ -545,6 +548,7 @@ impl Colony {
                     target: target.clone(),
                     tool_use_id: tool_use_id.clone(),
                     started_at: e.ts,
+                    background: *background,
                 });
                 a.tool_calls += 1;
                 if a.state != AgentState::Ended {
@@ -569,6 +573,11 @@ impl Colony {
                     None
                 };
                 if same {
+                    // A background start that failed never began a task, so
+                    // nothing will report back to release it.
+                    if !*ok && a.current_tool.as_ref().is_some_and(|t| t.background) {
+                        a.background_tasks = a.background_tasks.saturating_sub(1);
+                    }
                     a.current_tool = None;
                 }
                 if *ok {
