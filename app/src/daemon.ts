@@ -9,8 +9,16 @@ interface DaemonInfo {
   token: string;
 }
 
+export interface DaemonSettings {
+  /** Ask Claude Haiku about unclear question-or-done endings (off by default). */
+  haiku_classifier: boolean;
+  /** A key was found, so turning it on can work. The key itself is never sent. */
+  haiku_key_present: boolean;
+}
+
 type Message =
-  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer> }
+  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
+  | { type: "settings"; settings: DaemonSettings }
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
   | { type: "spend"; projects: Record<string, ProjectSpend> }
@@ -61,6 +69,8 @@ export class Daemon {
   rules: Rule[] = [];
   /** What each held permission request would save as a project rule, by request id. */
   offers = new Map<string, Offer>();
+  /** Daemon settings the map can change. */
+  settings: DaemonSettings = { haiku_classifier: false, haiku_key_present: false };
   status: ConnectionStatus = "connecting";
   error: string | null = null;
   /** Daemon clock minus local clock, so durations match the daemon's timestamps. */
@@ -140,6 +150,7 @@ export class Daemon {
         this.leftovers = m.leftovers ?? [];
         this.rules = m.rules ?? [];
         this.offers = new Map(Object.entries(m.offers ?? {}));
+        this.settings = m.settings ?? this.settings;
         this.skew = m.now - Date.now();
         this.status = "live";
         this.error = null;
@@ -147,6 +158,9 @@ export class Daemon {
         break;
       case "leftovers":
         this.leftovers = m.items;
+        break;
+      case "settings":
+        this.settings = m.settings;
         break;
       case "rules":
         this.rules = m.items;
@@ -209,6 +223,16 @@ export class Daemon {
         return s === "critical" || s === "input";
       })
       .sort((a, b) => rank[severity(a.state)!] - rank[severity(b.state)!] || a.state_since - b.state_since);
+  }
+
+  /** "Wrong state": log what the bot showed and what the user says it should have been. */
+  stateFeedback(id: string, shouldBe: string): boolean {
+    return this.send({ type: "state_feedback", id, should_be: shouldBe });
+  }
+
+  /** Turn the opt-in Haiku classifier for unclear endings on or off. */
+  setClassifier(enabled: boolean): boolean {
+    return this.send({ type: "set_classifier", enabled });
   }
 
   /** Mark finished work reviewed, or clear a crash. False if not connected. */

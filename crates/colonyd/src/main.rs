@@ -15,6 +15,7 @@ mod needs;
 mod pause;
 mod policy;
 mod pty;
+mod quality;
 mod resume;
 mod timelapse;
 mod worktree;
@@ -51,6 +52,8 @@ pub struct Shared {
     pub events: mpsc::Sender<Envelope>,
     /// Permission requests held for the map to answer.
     pub approvals: Arc<approvals::Approvals>,
+    /// Settings the map can change (`~/.colony/settings.json`).
+    pub settings: std::sync::Mutex<quality::Settings>,
 }
 
 pub fn log(msg: impl AsRef<str>) {
@@ -107,6 +110,8 @@ async fn main() {
         colony: RwLock::new({
             let mut c = Colony::with_dismissed(api::load_dismissed());
             c.latency = latency_store::load(&latency_store::path(), now_ms());
+            c.thresholds = quality::load_thresholds(&quality::thresholds_path());
+            quality::log_loaded(&c.thresholds);
             c
         }),
         deltas,
@@ -116,6 +121,7 @@ async fn main() {
         wsl_wake: Notify::new(),
         events: ev_tx.clone(),
         approvals: Arc::default(),
+        settings: std::sync::Mutex::new(quality::Settings::load(&quality::settings_path())),
     });
 
     // This machine's sessions.
@@ -214,6 +220,8 @@ async fn main() {
     });
     // Files and lines changed, for work ready to review.
     tokio::spawn(diffstat::run(shared.clone()));
+    // A long tool call whose processes are still computing is not a stall.
+    tokio::spawn(quality::watch_cpu(shared.clone()));
 
     // Worktrees of sessions that ended without being dismissed.
     let sweeper = shared.clone();

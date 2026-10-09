@@ -40,6 +40,8 @@ export interface Agent {
   state: AgentState;
   state_since: number;
   reason: string | null;
+  /** How the state was decided (the rule or classifier). Absent from older daemons. */
+  basis?: string | null;
   objective: string | null;
   last_prompt: string | null;
   /** The whole first and latest prompts; the fields above are one-line previews. Absent from older daemons. */
@@ -177,6 +179,41 @@ export function stateLabel(a: Agent): string {
   if (a.pause_pending) return `${STATE_LABEL[a.state]}, pausing after this turn`;
   return STATE_LABEL[a.state];
 }
+
+/** Why a bot is in its state: the rule or classifier that decided, else a plain description of the state. */
+export function whyText(a: Agent): string {
+  if (a.basis) return a.basis;
+  switch (a.state) {
+    case "spawning":
+      return "A session was started and has not been given work yet.";
+    case "working":
+      return a.current_tool ? `A tool call (${a.current_tool.name}) is running.` : "It is mid-turn: events are still arriving.";
+    case "needs_input":
+      return "Claude Code is waiting for a permission or an answer in its terminal.";
+    case "awaiting_reply":
+      return "Its last message ends with a question.";
+    case "blocked":
+      return "Repeated failures, an API error, or a stall.";
+    case "ready_to_review":
+      return "Its turn ended without a question.";
+    case "idle":
+      return "No prompt is in progress.";
+    case "crashed":
+      return "Its process stopped without ending the session.";
+    default:
+      return "The session has ended.";
+  }
+}
+
+/** States the "Wrong state" menu offers, as [daemon name, label]. */
+export const WRONG_STATE_CHOICES: Array<[AgentState, string]> = [
+  ["working", "Still working"],
+  ["needs_input", "Needs permission"],
+  ["awaiting_reply", "Has a question for me"],
+  ["ready_to_review", "Done, ready to review"],
+  ["blocked", "Stuck or failing"],
+  ["idle", "Idle"],
+];
 
 /** Where Colony can start sessions. */
 export interface HostOption {
