@@ -3,6 +3,7 @@ import { Daemon } from "./daemon";
 import { NewSessionDialog, repoDir, type Prefill } from "./dialog";
 import { Hud } from "./hud";
 import { prefs } from "./prefs";
+import { initLayout } from "./layout";
 import { TerminalPane } from "./terminal";
 import type { Agent } from "./types";
 import { PatienceNotifier } from "./patience";
@@ -122,6 +123,7 @@ motionBtn.addEventListener("click", () => prefs.cycleMotion());
 prefs.onChange(syncPrefs);
 syncPrefs();
 
+initLayout();
 new SetupDialog();
 new PatienceNotifier(daemon, select);
 void world.init(document.getElementById("map")!).then(() => daemon.start());

@@ -749,7 +749,7 @@ fn replayed_history_does_not_undo_a_pause_but_new_activity_does() {
         host: r.host.clone(),
         session_id: SID.into(),
         cwd: None,
-        event: colony_core::DomainEvent::PromptSubmitted { preview: "go".into(), synthetic: false, task_ended: false },
+        event: colony_core::DomainEvent::PromptSubmitted { preview: "go".into(), synthetic: false, task_ended: false, full: None },
     });
     assert_eq!(r.state(SID), AgentState::Idle);
     assert!(r.colony.agents[SID].paused_at.is_some());
@@ -990,4 +990,38 @@ fn compact_keeps_the_monitor_wait_but_startup_clears_it() {
     assert_eq!(r.colony.agents[SID].background_tasks, 1);
     r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Waiting."}));
     assert_eq!(r.state(SID), AgentState::Working);
+}
+
+#[test]
+fn activity_feed_keeps_whole_prompts_and_marks_tool_results() {
+    use colony_core::state::{ActivityKind, ACTIVITY_KEEP};
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup"}));
+    let long = format!("Please refactor the parser. {}", "Keep the public API stable. ".repeat(20));
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": long}));
+    let a = &r.colony.agents[SID];
+    // The one-line preview is cut; the full text is not.
+    assert!(a.objective.as_deref().unwrap().ends_with('…'));
+    assert_eq!(a.objective_full.as_deref(), Some(long.trim()));
+    assert_eq!(a.activity[0].kind, ActivityKind::Prompt);
+
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "cargo test"}, "tool_use_id": "t1"}));
+    assert_eq!(r.colony.agents[SID].activity.last().unwrap().ok, None);
+    r.hook(json!({"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "t1"}));
+    let last = r.colony.agents[SID].activity.last().unwrap();
+    assert_eq!((last.text.as_str(), last.ok), ("Bash: cargo test", Some(true)));
+
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "make"}, "tool_use_id": "t2"}));
+    r.hook(json!({"hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_use_id": "t2", "error": "Exit code 2"}));
+    let acts = &r.colony.agents[SID].activity;
+    assert_eq!(acts[acts.len() - 2].ok, Some(false));
+    assert_eq!(acts[acts.len() - 1].kind, ActivityKind::Problem);
+
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Done."}));
+    assert_eq!(r.colony.agents[SID].activity.last().unwrap().kind, ActivityKind::Reply);
+
+    for i in 0..ACTIVITY_KEEP + 10 {
+        r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": format!("/f{i}")}, "tool_use_id": format!("r{i}")}));
+    }
+    assert_eq!(r.colony.agents[SID].activity.len(), ACTIVITY_KEEP);
 }

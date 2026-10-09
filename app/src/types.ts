@@ -42,6 +42,11 @@ export interface Agent {
   reason: string | null;
   objective: string | null;
   last_prompt: string | null;
+  /** The whole first and latest prompts; the fields above are one-line previews. Absent from older daemons. */
+  objective_full?: string | null;
+  last_prompt_full?: string | null;
+  /** Recent history, oldest first. Absent from older daemons. */
+  activity?: Activity[];
   last_message: string | null;
   /** The whole last message, for reading a question in full. */
   last_message_full?: string | null;
@@ -79,6 +84,15 @@ export interface Agent {
   collision?: Collision | null;
   /** Files and lines changed, once ready to review and counted. Absent when git couldn't say. */
   diff_stat?: DiffStat | null;
+}
+
+/** One line of an agent's recent history. */
+export interface Activity {
+  at: number;
+  kind: "prompt" | "tool" | "reply" | "problem";
+  text: string;
+  /** How a tool call ended; absent while it runs. */
+  ok?: boolean;
 }
 
 export interface Collision {

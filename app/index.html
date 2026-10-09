@@ -28,6 +28,7 @@
         <div id="map"></div>
         <button type="button" class="chip" id="setup-btn" title="Install, repair or remove Colony's Claude Code hooks and WSL probe">Set up Colony</button>
         <section id="term-pane" hidden>
+          <div class="splitter h" id="split-h" role="separator" aria-orientation="horizontal" aria-label="Resize terminal" tabindex="0" title="Drag to resize · double-click to reset"></div>
           <div class="term-head">
             <span class="k" id="term-title">Terminal</span>
             <span class="muted small">Typing here goes straight to the session.</span>
@@ -36,7 +37,8 @@
           <div id="term-host"></div>
         </section>
       </div>
-      <aside id="inspector" aria-live="polite">
+      <div class="splitter v" id="split-v" role="separator" aria-orientation="vertical" aria-label="Resize side panel" tabindex="0" title="Drag to resize · double-click to reset"></div>
+      <aside id="inspector">
         <div id="insp-body"></div>
         <div id="compose" hidden>
           <div id="perm" class="perm" hidden>
@@ -46,22 +48,23 @@
               <button type="button" class="danger" id="perm-deny" title="Decline and let Claude try something else (Esc)">Deny</button>
             </div>
           </div>
-          <div class="keys" role="group" aria-label="Answer a prompt in the session">
-            <span class="k">Prompt keys</span>
-            <button type="button" data-key="up" aria-label="Up arrow">↑</button>
-            <button type="button" data-key="down" aria-label="Down arrow">↓</button>
-            <button type="button" data-key="enter">Enter</button>
-            <button type="button" data-key="esc">Esc</button>
-          </div>
-          <label class="k" for="reply">Reply</label>
-          <textarea id="reply" rows="3" placeholder="Message…"></textarea>
+          <label class="k" for="reply">Message</label>
+          <textarea id="reply" rows="2" placeholder="Message…"></textarea>
           <div class="actions">
             <button type="button" class="primary" id="send">Send <kbd>Enter</kbd></button>
             <button type="button" id="interrupt" title="Press Esc in the session: stops the current step, keeps the conversation">Interrupt</button>
-            <button type="button" id="open-term">Terminal</button>
-            <button type="button" id="end" class="danger">End session</button>
+            <span class="muted small">Shift+Enter: new line</span>
           </div>
-          <p class="muted small">Shift+Enter for a new line. Menus in the session (folder trust, browser tools) answer with the prompt keys above or in the terminal.</p>
+          <details class="keys-box">
+            <summary>Answer a menu in the session</summary>
+            <p class="muted small">For menus that aren't a permission request (folder trust, browser tools). These press the key in the session.</p>
+            <div class="keys" role="group" aria-label="Answer a menu in the session">
+              <button type="button" data-key="up" aria-label="Up arrow">↑</button>
+              <button type="button" data-key="down" aria-label="Down arrow">↓</button>
+              <button type="button" data-key="enter">Enter</button>
+              <button type="button" data-key="esc">Esc</button>
+            </div>
+          </details>
         </div>
       </aside>
     </main>

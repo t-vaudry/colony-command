@@ -166,7 +166,8 @@ button.chip {
 }
 .stage {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  /* map | divider | inspector. The width is the user's (see layout.ts). */
+  grid-template-columns: minmax(0, 1fr) 6px var(--insp-w, 440px);
   min-height: 0;
 }
 #map {
@@ -335,6 +336,9 @@ kbd {
   .stage {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) 40%;
+  }
+  #split-v {
+    display: none;
   }
   #inspector {
     border-left: none;
@@ -641,7 +645,7 @@ button[disabled] {
 /* Questions and permissions get room: the inspector widens while a session
    is waiting on you, and the request scrolls on its own. */
 .stage:has(#inspector.wide) {
-  grid-template-columns: minmax(0, 1fr) clamp(320px, 46vw, 640px);
+  grid-template-columns: minmax(0, 1fr) 6px max(var(--insp-w, 440px), clamp(440px, 46vw, 640px));
 }
 @media (max-width: 760px) {
   .stage:has(#inspector.wide) {
@@ -1031,4 +1035,246 @@ html[data-motion="reduce"] *::after {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
+}
+
+/* Dividers between the panels. Drag, or focus and use the arrow keys. */
+.splitter {
+  position: relative;
+  z-index: 4;
+  background: var(--line);
+  transition: background 0.12s;
+}
+.splitter.v {
+  cursor: col-resize;
+  width: 6px;
+}
+.splitter.h {
+  cursor: row-resize;
+  height: 6px;
+  flex: 0 0 6px;
+}
+.splitter:hover,
+.splitter.dragging,
+.splitter:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+body.resizing {
+  user-select: none;
+}
+body.resizing * {
+  cursor: inherit !important;
+}
+#term-pane {
+  flex: 0 0 var(--term-h, 42%);
+}
+
+/* Inspector: a header, one row of actions, then what the bot is doing. */
+.head {
+  display: grid;
+  gap: 4px;
+}
+.actions.bar {
+  align-items: center;
+  margin-top: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+/* Long text never grows the panel: it sits in a box that scrolls. */
+.scrollbox {
+  max-height: 9.5em;
+  overflow: auto;
+  padding: 7px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+  font-size: 13.5px;
+  resize: vertical;
+}
+.scrollbox.short {
+  max-height: 6em;
+}
+.scrollbox.reason {
+  border-left: 3px solid var(--input);
+}
+.scrollbox:focus-visible,
+.feed:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+.facts {
+  display: grid;
+  gap: 4px;
+}
+.facts:empty {
+  display: none;
+}
+.fact {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.fact .kids {
+  min-width: 0;
+}
+#inspector .row {
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 2px 8px;
+  align-items: baseline;
+}
+#inspector .row > .model-switch,
+#inspector .row > .small {
+  grid-column: 2;
+}
+details.more > summary,
+details.keys-box > summary,
+details.menu > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--muted);
+  user-select: none;
+}
+details.more > summary:hover,
+details.keys-box > summary:hover {
+  color: var(--ink);
+}
+details.more[open] > summary,
+details.keys-box[open] > summary {
+  margin-bottom: 8px;
+}
+.keys-box {
+  padding-top: 2px;
+}
+.keys-box .keys {
+  margin-top: 6px;
+}
+
+/* "More" menu in the action row. */
+details.menu {
+  position: relative;
+}
+details.menu > summary {
+  list-style: none;
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+}
+details.menu > summary::-webkit-details-marker {
+  display: none;
+}
+details.menu > summary::after {
+  content: " ▾";
+}
+details.menu[open] > summary {
+  border-color: var(--accent);
+  margin-bottom: 0;
+}
+.menu-list {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 190px;
+  display: grid;
+  gap: 2px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.2);
+}
+.menu-list button {
+  text-align: left;
+  font-size: 12.5px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+}
+.menu-list button:hover {
+  background: var(--bg);
+}
+
+/* Activity feed: newest first. */
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: max(220px, 38vh);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  resize: vertical;
+}
+.act {
+  display: grid;
+  grid-template-columns: 62px 38px minmax(0, 1fr);
+  gap: 6px;
+  align-items: baseline;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--line);
+}
+.act:last-child {
+  border-bottom: 0;
+}
+.act time {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.act-mark {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+.act-text {
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+.act.prompt .act-text,
+.act.reply .act-text {
+  max-height: 7.5em;
+  overflow-y: auto;
+}
+.act.prompt .act-mark {
+  color: var(--accent);
+  font-weight: 600;
+}
+.act.reply .act-mark {
+  color: var(--done);
+  font-weight: 600;
+}
+.act.problem,
+.act.fail {
+  background: color-mix(in srgb, var(--crit) 8%, transparent);
+}
+.act.problem .act-mark,
+.act.fail .act-mark {
+  color: var(--crit);
+  font-weight: 700;
+}
+.act.tool:not(.run):not(.fail) .act-mark {
+  color: var(--ok);
+}
+.act.run .act-mark {
+  color: var(--input);
+  font-weight: 700;
+}
+.act .md p {
+  margin: 0 0 6px;
 }

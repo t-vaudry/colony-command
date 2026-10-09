@@ -83,6 +83,9 @@ pub enum DomainEvent {
         /// failed, stopped, stream ended), not a mid-run Monitor event.
         #[serde(default)]
         task_ended: bool,
+        /// The prompt as typed (capped by the reducer), for reading in full.
+        #[serde(default)]
+        full: Option<String>,
     },
     ToolStarted {
         agent_id: Option<String>,
@@ -206,6 +209,7 @@ impl Envelope {
                     preview: preview(prompt),
                     synthetic: is_synthetic_prompt(prompt),
                     task_ended: ends_background_task(prompt),
+                    full: Some(prompt.to_string()),
                 }
             }
             "PreToolUse" => DomainEvent::ToolStarted {

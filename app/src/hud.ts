@@ -3,6 +3,7 @@
 
 import type { Daemon } from "./daemon";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
+import { md } from "./markdown";
 import { repoDir, resumeWarning, worktreeName, type Prefill } from "./dialog";
 import { compact, diffText, money, MODELS, modelLabel, ruleLabel, severity, spentToday, STATE_LABEL, stateLabel, type Agent, type AgentState, type PermissionChoice } from "./types";
 
@@ -24,11 +25,15 @@ const since = (ts: number) => `<span data-since="${ts}"></span>`;
  *  to a re-render between mousedown and mouseup. */
 function setHtml(el: HTMLElement, html: string): void {
   if (el.dataset.html !== html) {
+    // Scroll boxes (the activity feed, long prompts) keep their place across updates.
+    const scrolls = new Map<string, number>();
+    el.querySelectorAll<HTMLElement>("[data-scroll]").forEach((s) => scrolls.set(s.dataset.scroll!, s.scrollTop));
     // Keep the caret in an answer field the user is typing in.
     const f = document.activeElement as HTMLInputElement | null;
     const sel = f && el.contains(f) ? (f.dataset.other ? `[data-other="${f.dataset.other}"]` : f.dataset.draft ? `[data-draft="${f.dataset.draft}"]` : null) : null;
     const typing = sel && f ? { sel, at: f.selectionStart } : null;
     el.innerHTML = html;
+    el.querySelectorAll<HTMLElement>("[data-scroll]").forEach((s) => (s.scrollTop = scrolls.get(s.dataset.scroll!) ?? 0));
     if (typing) {
       const n = el.querySelector<HTMLInputElement>(typing.sel);
       n?.focus();
@@ -112,6 +117,8 @@ export class Hud {
   /** Answers chosen so far for held questions, by request id. */
   private picks = new Map<string, Pick[]>();
   private scheduled = false;
+  /** Collapsible sections left open (they would otherwise close on every re-render). */
+  private openSecs = new Set<string>();
 
   constructor(
     private daemon: Daemon,
@@ -131,6 +138,18 @@ export class Hud {
       if (id) this.actions.select(id);
     });
     this.panel.addEventListener("click", (e) => void this.action(e));
+    // `toggle` doesn't bubble, so listen on the way down.
+    this.panel.addEventListener(
+      "toggle",
+      (e) => {
+        const d = e.target as HTMLDetailsElement;
+        const key = d.dataset?.sec;
+        if (!key) return;
+        if (d.open) this.openSecs.add(key);
+        else this.openSecs.delete(key);
+      },
+      true,
+    );
     this.panel.addEventListener("input", (e) => {
       const el = e.target as HTMLInputElement;
       if (el.dataset.draft?.startsWith("reply:")) {
@@ -164,15 +183,7 @@ export class Hud {
       const a = this.composeAgent();
       if (a?.terminal) this.daemon.interrupt(a.terminal);
     });
-    document.getElementById("end")!.addEventListener("click", (e) => {
-      const a = this.composeAgent();
-      if (a?.terminal && confirmed(e.currentTarget as HTMLElement, "Click again to end the session")) this.daemon.kill(a.terminal);
-    });
-    document.getElementById("open-term")!.addEventListener("click", () => {
-      const a = this.composeAgent();
-      if (a) this.actions.showTerminal(a);
-    });
-    // Prompt keys and Allow/Deny press keys in the session, so menus can be
+    // Menu keys and Allow/Deny press keys in the session, so menus can be
     // answered without the terminal pane having keyboard focus.
     this.compose.addEventListener("click", (e) => {
       const key = (e.target as HTMLElement).closest<HTMLElement>("[data-key]")?.dataset.key;
@@ -459,30 +470,67 @@ export class Hud {
       this.resumeDrafts.get(a.id) ?? "",
       resumeWarning(a),
     );
-    const row = (k: string, v: string | null | undefined, cls = "") =>
-      v ? `<div class="row"><span class="k">${k}</span><span class="${cls}">${esc(v)}</span></div>` : "";
+    // Short facts sit in a two-column grid; long text gets a box that scrolls.
+    const fact = (k: string, v: string | null | undefined, cls = "") =>
+      v ? `<div class="fact"><span class="k">${k}</span><span class="${cls}">${esc(v)}</span></div>` : "";
+    const field = (k: string, key: string, html: string, cls = "") =>
+      html ? `<div class="field"><span class="k">${k}</span><div class="scrollbox ${cls}" data-scroll="${key}" tabindex="0">${html}</div></div>` : "";
+    const text = (s: string | null | undefined) => (s ? esc(s) : "");
+
     const target = a.current_tool?.target?.replace(/\s+/g, " ");
-    const short = target && target.length > 110 ? `${target.slice(0, 109)}…` : target;
-    const toolRow = a.current_tool
-      ? `<div class="row"><span class="k">Now</span><span>${esc(`${a.current_tool.name}${short ? `: ${short}` : ""}`)} (${since(a.current_tool.started_at)})</span></div>`
+    const nowRow = a.current_tool
+      ? field("Now · " + since(a.current_tool.started_at), "now", `<b>${esc(a.current_tool.name)}</b>${target ? ` <span class="mono">${esc(target)}</span>` : ""}`, "short")
       : "";
     const usageRow = a.tokens && a.tokens.input + a.tokens.output + a.tokens.cache_read + a.tokens.cache_creation > 0
-      ? `<div class="row"><span class="k">Usage</span><span title="Estimate from list prices${a.kind === "main" ? "; includes subagents" : ""}${a.cost_partial ? ". Some tokens were from a model without a known price, so the cost is low." : ""}">${esc(`${compact(a.tokens.input + a.tokens.cache_creation + a.tokens.cache_read)} in · ${compact(a.tokens.output)} out · ${money(a.cost_usd ?? 0)}${a.cost_partial ? " partial" : ""}`)}</span></div>`
+      ? `<div class="fact"><span class="k">Usage</span><span title="Estimate from list prices${a.kind === "main" ? "; includes subagents" : ""}${a.cost_partial ? ". Some tokens were from a model without a known price, so the cost is low." : ""}">${esc(`${compact(a.tokens.input + a.tokens.cache_creation + a.tokens.cache_read)} in · ${compact(a.tokens.output)} out · ${money(a.cost_usd ?? 0)}${a.cost_partial ? " partial" : ""}`)}</span></div>`
       : "";
     const collisionRow = a.collision
-      ? `<div class="row"><span class="k">Overlap</span><span class="reason" title="A warning only: nothing is blocked.">${esc(
+      ? `<div class="fact"><span class="k">Overlap</span><span class="reason" title="A warning only: nothing is blocked.">${esc(
           `${a.collision.scope === "file" ? "Also editing" : "Same folder as"} ${a.collision.with.map((w) => this.daemon.agents.get(w)?.name ?? "another bot").join(", ")}: ${a.collision.path.split(/[\\/]/).slice(-2).join("/")}`,
         )}</span></div>`
       : "";
     const diffRow = a.diff_stat
-      ? `<div class="row"><span class="k">Changes</span><span title="Uncommitted and untracked work in the session's folder, plus commits on its worktree branch">${esc(diffText(a.diff_stat))}</span></div>`
+      ? `<div class="fact"><span class="k">Changes</span><span title="Uncommitted and untracked work in the session's folder, plus commits on its worktree branch">${esc(diffText(a.diff_stat))}</span></div>`
       : "";
     const resume = `claude --resume ${a.session_id}`;
+    const wt = worktreeName(a.project_dir ?? a.cwd);
+    const reply = a.last_message_full ?? a.last_message;
+    // The card already shows a question in full; a finished turn's reason is its reply.
+    const showReply = !!reply && !card;
+    const showReason = !!a.reason && !card && !(a.state === "ready_to_review" && showReply);
+    const secOpen = (k: string) => (this.openSecs.has(k) ? " open" : "");
+
+    const main = a.kind === "main";
+    const bar = [
+      a.state === "ready_to_review" ? `<button type="button" class="primary" data-ack="${esc(a.id)}" title="Move it off the review dock">Mark reviewed</button>` : "",
+      a.state === "crashed" ? `<button type="button" data-ack="${esc(a.id)}">Clear</button>` : "",
+      a.terminal ? `<button type="button" data-open-term="${esc(a.id)}" title="Show this session's terminal (T)">Terminal</button>` : "",
+      main && a.paused_at ? `<button type="button" class="primary" data-resume-paused="${esc(a.id)}" title="Start this session again with claude --resume; the conversation carries over">Resume</button>` : "",
+      main && a.terminal && !a.paused_at
+        ? a.pause_pending
+          ? `<button type="button" data-cancel-pause="${esc(a.id)}">Cancel pause</button>`
+          : `<button type="button" data-pause="${esc(a.id)}" title="${esc(a.state === "working" ? "Waits for this turn to end, then stops the session. Resume carries on with the conversation intact." : "Stops the session now (it is between turns). Resume carries on with the conversation intact.")}">Pause</button>`
+        : "",
+      main && !a.terminal && !a.paused_at ? `<button type="button" class="primary" data-resume="${esc(a.id)}" title="Start this session in a Colony terminal so you can talk to it from here">Resume in Colony</button>` : "",
+      main
+        ? `<details class="menu" data-sec="more"${secOpen("more")}><summary>More</summary><div class="menu-list">
+            <button type="button" data-new-here="${esc(a.id)}">New session here</button>
+            ${!a.terminal ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
+            ${a.terminal ? `<button type="button" class="danger" data-end="${esc(a.id)}" title="Stop the session's process. It stays on the map as ended.">End session</button>` : ""}
+            <button type="button" class="danger" data-dismiss="${esc(a.id)}" title="End every copy of this session and clear it off the map. The conversation stays on disk and can still be resumed.">Dismiss from map</button>
+          </div></details>`
+        : "",
+    ].join("");
+
     setHtml(this.panel, `
-      <div class="k">${a.kind === "subagent" ? `Subagent of ${esc(parent?.name ?? "?")}` : esc(a.project_name ?? "unknown project")}</div>
-      <h2>${esc(a.name)}</h2>
-      <div><span class="pill ${sev ?? a.state}">${esc(stateLabel(a))}</span> <span class="muted">for ${since(a.state_since)}</span></div>
-      ${card || row(REASON_LABEL[a.state] ?? "Note", a.reason, "reason")}
+      <div class="head">
+        <div class="k">${a.kind === "subagent" ? `Subagent of ${esc(parent?.name ?? "?")}` : esc(a.project_name ?? "unknown project")}</div>
+        <h2>${esc(a.name)}</h2>
+        <div><span class="pill ${sev ?? a.state}">${esc(stateLabel(a))}</span> <span class="muted">for ${since(a.state_since)}</span></div>
+      </div>
+      ${bar ? `<div class="actions bar">${bar}</div>` : ""}
+      ${card}
+      ${showReason ? field(REASON_LABEL[a.state] ?? "Note", "reason", text(a.reason), "short reason") : ""}
       ${
         a.auth_need
           ? `<div class="choice ask" role="group" aria-label="${a.auth_need.kind === "install" ? "Install needed" : "Sign-in needed"}">
@@ -495,45 +543,35 @@ export class Hud {
             </div>`
           : ""
       }
-      ${a.title !== a.name ? row("Session", a.title) : ""}
-      ${row("Objective", a.objective)}
-      ${a.last_prompt !== a.objective ? row("Last prompt", a.last_prompt) : ""}
-      ${toolRow}
-      ${collisionRow}
-      ${diffRow}
-      ${usageRow}
+      ${nowRow}
+      ${field("Objective", "objective", text(a.objective_full ?? a.objective), "short")}
+      ${showReply ? field(a.state === "ready_to_review" ? "Result" : "Latest reply", "reply", `<div class="md">${md(reply!)}</div>`) : ""}
+      <div class="facts">
+        ${diffRow}${collisionRow}${usageRow}
+      </div>
       ${this.modelRows(a)}
-      ${row("Where", `${hostLabel(a.host)} · ${originLabel(a)}${a.pid ? ` · pid ${a.pid}` : ""}`)}
-      ${row("Folder", a.cwd, "mono")}
-      ${row("Worktree", worktreeName(a.project_dir ?? a.cwd) && `${worktreeName(a.project_dir ?? a.cwd)} (branch colony/${worktreeName(a.project_dir ?? a.cwd)})`, "mono")}
-      ${row("Tool calls", a.tool_calls ? String(a.tool_calls) : null)}
       ${
         kids.length
-          ? `<div class="row"><span class="k">Subagents</span><div class="kids">${kids
+          ? `<div class="fact"><span class="k">Subagents</span><div class="kids">${kids
               .map((k) => `<button type="button" class="kid" data-select="${esc(k.id)}"><span class="dot ${severity(k.state) ?? (k.state === "working" ? "ok" : "idle")}"></span>${esc(k.name)} · ${esc(STATE_LABEL[k.state])}</button>`)
               .join("")}</div></div>`
           : ""
       }
-      ${row("Last message", a.last_message)}
+      ${this.feed(a)}
+      <details class="more" data-sec="details"${secOpen("details")}>
+        <summary>Session details</summary>
+        <div class="facts">
+          ${a.title !== a.name ? fact("Session", a.title) : ""}
+          ${fact("Where", `${hostLabel(a.host)} · ${originLabel(a)}${a.pid ? ` · pid ${a.pid}` : ""}`)}
+          ${fact("Folder", a.cwd, "mono")}
+          ${fact("Worktree", wt && `${wt} (branch colony/${wt})`, "mono")}
+          ${fact("Tool calls", a.tool_calls ? String(a.tool_calls) : null)}
+          ${fact("Session id", a.session_id, "mono")}
+        </div>
+      </details>
       ${!a.hooks_seen && !a.terminal ? `<p class="muted small">Seen through the session registry only, so state is coarse. New sessions report full detail through hooks.</p>` : ""}
-      <div class="actions">
-        ${a.state === "ready_to_review" ? `<button type="button" data-ack="${esc(a.id)}">Mark reviewed</button>` : ""}
-        ${a.state === "crashed" ? `<button type="button" data-ack="${esc(a.id)}">Clear</button>` : ""}
-        ${a.kind === "main" && a.paused_at ? `<button type="button" class="primary" data-resume-paused="${esc(a.id)}" title="Start this session again with claude --resume; the conversation carries over">Resume</button>` : ""}
-        ${
-          a.kind === "main" && a.terminal && !a.paused_at
-            ? a.pause_pending
-              ? `<button type="button" data-cancel-pause="${esc(a.id)}">Cancel pause</button>`
-              : `<button type="button" data-pause="${esc(a.id)}" title="${esc(a.state === "working" ? "Waits for this turn to end, then stops the session. Resume carries on with the conversation intact." : "Stops the session now (it is between turns). Resume carries on with the conversation intact.")}">Pause</button>`
-            : ""
-        }
-        ${a.kind === "main" && !a.terminal && !a.paused_at ? `<button type="button" class="primary" data-resume="${esc(a.id)}">Resume in Colony</button>` : ""}
-        ${a.kind === "main" ? `<button type="button" data-new-here="${esc(a.id)}">New session here</button>` : ""}
-        ${a.kind === "main" && !a.terminal ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
-        ${a.kind === "main" ? `<button type="button" class="danger" data-dismiss="${esc(a.id)}" title="End every copy of this session and clear it off the map. The conversation stays on disk and can still be resumed.">Dismiss</button>` : ""}
-      </div>
       ${
-        a.kind === "main" && a.terminal && resumeWarning(a)
+        main && a.terminal && resumeWarning(a)
           ? `<div class="choice">
               <p><b>Also open elsewhere.</b> ${esc(resumeWarning(a)!)}</p>
               <p class="muted small">Two copies write to one conversation. Keep the one in Colony and end the other.</p>
@@ -555,19 +593,56 @@ export class Hud {
           : ""
       }
       ${
-        a.kind === "main" && a.paused_at
+        main && a.paused_at
           ? `<p class="muted small">Paused: Colony stopped this session's process between turns. Nothing is lost; the conversation is on disk. Resume starts it again with <code>--resume</code>.</p>`
           : a.pause_pending
             ? `<p class="muted small">Pausing as soon as this turn ends, so no work is cut off.</p>`
             : ""
       }
       ${
-        a.kind === "main" && !a.terminal && !a.paused_at
+        main && !a.terminal && !a.paused_at
           ? `<p class="muted small">Colony didn't start this session, so it can't type into it or pause it (it only stops sessions it owns). ${
               a.state === "ready_to_review" ? "Mark reviewed only moves it off the dock. " : ""
             }Resume it here to talk to it from the map, or reply in ${a.entrypoint === "claude-desktop" ? "the Claude desktop app" : "its terminal"}.</p>`
           : ""
       }`);
+  }
+
+  /** What the bot has been doing, newest first, so the panel answers "what is it up to?" without the terminal. */
+  private feed(a: Agent): string {
+    const items = [...(a.activity ?? [])].reverse();
+    if (!items.length) {
+      return `<div class="field"><span class="k">Activity</span><p class="muted small">Nothing yet. Prompts, tool calls and replies appear here as they happen.</p></div>`;
+    }
+    const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    // Only the newest tool call can still be running.
+    const live = a.current_tool ? items.findIndex((x) => x.kind === "tool") : -1;
+    const rows = items
+      .map((x, i) => {
+        let mark: string;
+        let body: string;
+        switch (x.kind) {
+          case "prompt":
+            mark = "You";
+            body = `<div class="act-text">${esc(x.text)}</div>`;
+            break;
+          case "reply":
+            mark = "Claude";
+            body = `<div class="act-text md">${md(x.text)}</div>`;
+            break;
+          case "problem":
+            mark = "!";
+            body = `<div class="act-text mono">${esc(x.text)}</div>`;
+            break;
+          default:
+            mark = i === live ? "…" : x.ok === false ? "✗" : x.ok ? "✓" : "·";
+            body = `<div class="act-text mono">${esc(x.text)}</div>`;
+        }
+        const state = x.kind === "tool" ? (i === live ? "run" : x.ok === false ? "fail" : "") : "";
+        return `<li class="act ${x.kind} ${state}"><time>${clock(x.at)}</time><span class="act-mark">${mark}</span>${body}</li>`;
+      })
+      .join("");
+    return `<div class="field"><span class="k">Activity</span><ol class="feed" data-scroll="feed" tabindex="0">${rows}</ol></div>`;
   }
 
   private async action(e: Event): Promise<void> {
@@ -608,7 +683,17 @@ export class Hud {
         el.removeAttribute("disabled");
       }
     }
+    if (el.dataset.openTerm) {
+      const a = this.daemon.agents.get(el.dataset.openTerm);
+      if (a) this.actions.showTerminal(a);
+    }
+    if (el.dataset.end) {
+      const a = this.daemon.agents.get(el.dataset.end);
+      if (a?.terminal && confirmed(el, "Click again to end the session")) this.daemon.kill(a.terminal);
+    }
     if (el.dataset.newHere) {
+      this.openSecs.delete("more");
+      this.schedule();
       const a = this.daemon.agents.get(el.dataset.newHere);
       this.actions.newSession({ dir: repoDir(a?.project_dir ?? a?.cwd) ?? undefined, host: a?.host });
     }
