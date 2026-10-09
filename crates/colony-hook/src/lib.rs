@@ -81,7 +81,8 @@ pub fn run(input: &str, ctx: &Ctx) -> Option<String> {
     if let Some(event) = &event {
         let _ = keep_fixture(ctx, event, input);
     }
-    if event.as_deref() == Some("PermissionRequest") {
+    // The tray's kill switch: the request is still recorded above, just not held.
+    if event.as_deref() == Some("PermissionRequest") && !colony_source::gating::paused(&ctx.colony_home) {
         return daemon?.permission(input);
     }
     None

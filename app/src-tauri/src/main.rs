@@ -1,7 +1,10 @@
 // No console window behind the map in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
 mod daemon;
+mod gating;
+mod tray;
 
 use colony_setup::{Applied, Options, Plan, Selection, TargetStatus};
 use serde::Serialize;
@@ -62,9 +65,32 @@ async fn setup_apply(app: tauri::AppHandle, target: String, selection: Selection
     tauri::async_runtime::spawn_blocking(move || colony_setup::apply(&opts, &target, selection, Some(&token))).await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn autostart_enabled() -> bool {
+    autostart::enabled()
+}
+
+#[tauri::command]
+fn autostart_set(on: bool) -> Result<bool, String> {
+    autostart::set(on)?;
+    Ok(autostart::enabled())
+}
+
 fn main() {
     tauri::Builder::default()
-        .setup(|_| {
+        .setup(|app| {
+            // The window starts hidden (tauri.conf.json) so a login start can stay
+            // in the tray. Without a tray there'd be no way back, so show it then.
+            let handle = app.handle();
+            let tray_ok = tray::init(handle);
+            if tray_ok {
+                tray::hide_on_close(handle);
+            }
+            if !(tray_ok && std::env::args().any(|a| a == "--tray")) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                }
+            }
             // Start the daemon while the window loads rather than on first ask.
             std::thread::spawn(|| {
                 if let Err(e) = daemon::ensure() {
@@ -73,7 +99,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply])
+        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set])
         .run(tauri::generate_context!())
         .expect("Colony Command failed to start");
 }

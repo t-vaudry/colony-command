@@ -115,7 +115,30 @@ Or inside Ubuntu:
     target/release/colony-command.exe
 
 The app starts `colonyd` (next to it) when no daemon is answering, and
-leaves it running when you close the window. Sessions Colony starts live in
+leaves it running when you close the window.
+
+### Tray
+
+Closing the window hides Colony to the tray (the notification area); colonyd and
+your sessions carry on. Left-click the icon to show or hide the map. The menu
+has:
+
+- **Show / Hide window**, and a line saying how many bots are blocked, waiting
+  on you, or ready to review (the icon's tooltip says the same).
+- **Pause approvals gating**: a kill switch. While it is ticked, permission
+  requests are no longer held for the map (and saved "allow always for project"
+  rules are not applied): Claude Code's own prompt decides. It works by creating
+  `~/.colony/gating-paused` (under `COLONY_HOME` if set), which `colony-hook`,
+  `colony-approve.sh` and colonyd all check, so it also covers WSL sessions. It
+  fails open: a missing or unreadable file means gating is on as usual, and the
+  switch can never block a tool call. It survives restarts until unticked. Hook
+  events are still recorded, so the map keeps showing sessions.
+- **Start at login**: off by default. Adds `Colony Command` to your per-user
+  Run key (no administrator needed) and starts the app hidden in the tray
+  (`colony-command.exe --tray`). Also a checkbox in **Set up Colony**; it
+  applies immediately rather than through Review changes.
+- **Quit** exits the app only; colonyd keeps running. If the desktop has no tray,
+  the window closes normally instead. Sessions Colony starts live in
 `colony-ptyd`, which colonyd starts and reconnects to, so they keep running
 through daemon restarts and updates. Logs: `~/.colony/colonyd.log`,
 `~/.colony/ptyd.log`.

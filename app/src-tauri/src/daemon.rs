@@ -22,7 +22,7 @@ pub struct Info {
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn colony_home() -> PathBuf {
+pub fn colony_home() -> PathBuf {
     if let Some(dir) = std::env::var_os("COLONY_HOME") {
         return PathBuf::from(dir);
     }
