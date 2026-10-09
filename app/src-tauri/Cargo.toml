@@ -17,6 +17,8 @@ tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true
 colony-setup = { path = "../../crates/colony-setup" }
+colony-core.workspace = true
+tauri-plugin-notification = "2"
 
 [features]
 # Embed the built frontend instead of loading the Vite dev server.

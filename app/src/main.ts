@@ -5,6 +5,7 @@ import { Hud } from "./hud";
 import { prefs } from "./prefs";
 import { TerminalPane } from "./terminal";
 import type { Agent } from "./types";
+import { PatienceNotifier } from "./patience";
 import { SetupDialog } from "./setup";
 import { World } from "./world";
 
@@ -122,4 +123,5 @@ prefs.onChange(syncPrefs);
 syncPrefs();
 
 new SetupDialog();
+new PatienceNotifier(daemon, select);
 void world.init(document.getElementById("map")!).then(() => daemon.start());

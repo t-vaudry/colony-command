@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod daemon;
+mod notify;
 
 use colony_setup::{Applied, Options, Plan, Selection, TargetStatus};
 use serde::Serialize;
@@ -64,6 +65,8 @@ async fn setup_apply(app: tauri::AppHandle, target: String, selection: Selection
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .manage(notify::Patience::default())
         .setup(|_| {
             // Start the daemon while the window loads rather than on first ask.
             std::thread::spawn(|| {
@@ -73,7 +76,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply])
+        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply, notify::patience_tick, notify::patience_test])
         .run(tauri::generate_context!())
         .expect("Colony Command failed to start");
 }
