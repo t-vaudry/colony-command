@@ -969,3 +969,19 @@ textarea.resume-reply:focus {
 .rule .k {
   grid-column: 1 / -1;
 }
+
+/* Attention budget: Focus mode button, and no CSS motion when calm is on
+   (the HUD has no animation today; this keeps it that way if some is added). */
+button.chip.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+html[data-motion="reduce"] *,
+html[data-motion="reduce"] *::before,
+html[data-motion="reduce"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
