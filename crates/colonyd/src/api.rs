@@ -509,6 +509,10 @@ async fn leftover_command(shared: &Shared, session_id: &str, what: Leftover) -> 
 /// terminal can't start, the worktree made for it is removed again.
 pub async fn spawn_session(shared: &Shared, mut req: SpawnRequest) -> Result<crate::pty::Spawned, String> {
     let mut made = None;
+    // Before its worktree is restored, not after.
+    if req.auto && req.resume.as_deref().is_some_and(|sid| !crate::resume::still_wanted(sid)) {
+        return Err("that session was dismissed or ended; not restarting it".into());
+    }
     // Resuming a bot whose worktree was cleaned up while it was ended.
     if let Some(w) = req.resume.as_deref().and_then(crate::worktree::find) {
         crate::worktree::restore(&w).await?;

@@ -173,8 +173,12 @@ fn load() -> Records {
 fn update(f: impl FnOnce(&mut Records)) {
     let _g = lock();
     let mut all = load();
+    let before = serde_json::to_vec(&all).ok();
     f(&mut all);
-    save_to(&path(), &all);
+    // Most passes change nothing.
+    if serde_json::to_vec(&all).ok() != before {
+        save_to(&path(), &all);
+    }
 }
 
 /// Note how a session was started (a fresh start, or a restart of the same session).
