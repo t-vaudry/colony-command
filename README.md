@@ -183,7 +183,24 @@ distros are attached automatically; stopped ones are left alone.
 
 Then open http://localhost:5173. In dev, the page reads the daemon's port and
 token through a Vite route. Keys: `Space` next agent that needs you, `0` fit
-the whole colony, `Esc` clear selection.
+the whole colony, `F` Focus mode, `Esc` clear selection.
+
+## Attention budget: Focus mode and motion
+
+Colony is meant to be calm until something needs you.
+
+- **Motion ceiling.** Healthy work (working, walking, idle) moves slowly and
+  small: gentle arm swing, a light step, rare sparks. Only blocked, needs-input
+  and crashed bots get the pulse, wave and flash.
+- **Focus mode** (`F`, or **Focus** in the top bar). Bots that don't need you
+  fade out and hold still, buildings and labels recede, and review packages dim
+  a little. Blocked, crashed, waiting-for-input bots and your selection stay
+  fully visible. Counts, the porch strip and the inspector are unchanged.
+- **Motion** (top bar button, cycles *system → calm → full*). *System* follows
+  the OS "reduce motion" setting; *calm* always applies it (no bounces, sparks,
+  pulses, wave or marching dashes, and the dim switches instantly); *full*
+  ignores the OS setting.
+- Both choices are remembered in `localStorage`. There is no sound.
 
 ## Approvals from the map
 

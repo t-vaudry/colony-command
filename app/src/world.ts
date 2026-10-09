@@ -4,6 +4,7 @@
 
 import { Application, Container, Graphics, Text } from "pixi.js";
 import type { Daemon } from "./daemon";
+import { prefs } from "./prefs";
 import { money, spentToday, type Agent, type AgentState } from "./types";
 
 interface Palette {
@@ -72,6 +73,8 @@ interface Body {
   moving: boolean;
   face: number;
   alpha: number;
+  /** Focus-mode dimming, 1 = fully shown. Eased so toggling fades. */
+  dim: number;
   label: Text;
   glyph: Text;
   /** Changed-file counts under a package on the dock. */
@@ -127,6 +130,11 @@ const rand = (a: number, b: number) => a + Math.random() * (b - a);
 /** Only bots at work show a collision: ones on the porch or dock are not editing. */
 const EDITING: AgentState[] = ["working"];
 const ATTENTION: AgentState[] = ["needs_input", "awaiting_reply", "blocked", "crashed"];
+/** Attention budget: healthy work stays under this ceiling. Alarm states may exceed it. */
+const HEALTHY = { swingRate: 4, swingAmp: 0.25, stepRate: 6, stepBob: 1.5, sparkRate: 1 };
+/** In Focus mode, what is not asking for you fades to this. */
+const FOCUS_DIM = 0.18;
+const FOCUS_DIM_REVIEW = 0.5;
 
 export class World {
   selected: string | null = null;
@@ -156,7 +164,10 @@ export class World {
   private worldH = 0;
   private cam = { s: 1, x: 0, y: 0, user: false };
   private t = 0;
-  private reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  /** OS setting or the in-app override (see prefs.ts). */
+  private get reduced(): boolean {
+    return prefs.reduced;
+  }
 
   constructor(
     private daemon: Daemon,
@@ -182,6 +193,8 @@ export class World {
       this.app.renderer.background.color = this.pal.ground;
       this.layout();
     });
+    prefs.onChange(() => this.applyFocusLayers());
+    this.applyFocusLayers();
     this.daemon.onChange(() => this.sync());
     this.sync();
   }
@@ -329,6 +342,7 @@ export class World {
       moving: false,
       face: 0,
       alpha: 1,
+      dim: 1,
       label,
       glyph,
       diff,
@@ -448,6 +462,29 @@ export class World {
     this.updateDistrictLabels();
   }
 
+  // ---- focus mode ----------------------------------------------------------
+
+  /** Whether the bot is asking for the user (always shown at full strength in Focus mode). */
+  private needsYou(a: Agent): boolean {
+    return ATTENTION.includes(a.state) || this.selected === a.id;
+  }
+
+  /** Dim target for a bot: 1 unless Focus mode is on and it can wait. */
+  private dimTarget(a: Agent): number {
+    if (!prefs.focus || this.needsYou(a)) return 1;
+    return a.state === "ready_to_review" ? FOCUS_DIM_REVIEW : FOCUS_DIM;
+  }
+
+  /** Not needing you in Focus mode: held still as well as dimmed. */
+  private calm(a: Agent): boolean {
+    return this.reduced || (prefs.focus && !this.needsYou(a));
+  }
+
+  private applyFocusLayers(): void {
+    this.groundText.alpha = prefs.focus ? 0.45 : 1;
+    this.buildingLabels.alpha = prefs.focus ? 0.3 : 1;
+  }
+
   // ---- simulation -----------------------------------------------------------
 
   private frame(dt: number): void {
@@ -498,6 +535,8 @@ export class World {
 
   private steer(a: Agent, b: Body, dt: number, crit: Agent[], input: Agent[], ready: Agent[]): void {
     b.phase += dt;
+    const dim = this.dimTarget(a);
+    b.dim = this.reduced ? dim : b.dim + (dim - b.dim) * Math.min(1, dt * 6);
     const d = this.districts.get(this.projectOf(a));
     const near = (r = 3) => Math.hypot(b.tx - b.x, b.ty - b.y) < r;
     let speed = 55;
@@ -518,7 +557,7 @@ export class World {
         }
         if (d && near()) {
           b.dwell -= dt;
-          if (!this.reduced && Math.random() < dt * 3) {
+          if (!this.calm(a) && Math.random() < dt * HEALTHY.sparkRate) {
             this.sparks.push({ x: b.x + rand(-6, 6), y: b.y - 16, vx: rand(-10, 10), vy: rand(-32, -16), life: 0.6, color: this.pal.ok });
           }
           if (b.dwell <= 0) {
@@ -655,7 +694,7 @@ export class World {
         drawn.add(pair);
         // Only while both are still at it, in one district: stale warnings stay off the map.
         if (!o || !EDITING.includes(agents.get(w)?.state ?? "ended") || this.projectOf(agents.get(w)!) !== this.projectOf(a)) continue;
-        this.dashed(g, b.x, b.y - 4, o.x, o.y - 4, b.alpha * o.alpha);
+        this.dashed(g, b.x, b.y - 4, o.x, o.y - 4, b.alpha * o.alpha * Math.max(b.dim, o.dim));
       }
     }
 
@@ -668,15 +707,16 @@ export class World {
       const mx = (b.x + p.x) / 2;
       const my = (b.y + p.y) / 2 + Math.min(30, Math.hypot(b.x - p.x, b.y - p.y) * 0.15);
       const color = ATTENTION.includes(a.state) ? this.stateColor(a.state) : this.districtColor(a);
-      g.moveTo(p.x, p.y - 4).quadraticCurveTo(mx, my, b.x, b.y - 3).stroke({ width: 1.5, color, alpha: 0.75 * b.alpha });
+      g.moveTo(p.x, p.y - 4).quadraticCurveTo(mx, my, b.x, b.y - 3).stroke({ width: 1.5, color, alpha: 0.75 * b.alpha * b.dim });
     }
 
     // Packages waiting on the dock.
     ready.forEach((_, i) => {
       const x = this.dock.x + 22 + (i % 5) * 40;
       const y = this.dock.y + 74 + Math.floor(i / 5) * DOCK_ROW;
-      g.roundRect(x, y, 16, 12, 2).fill({ color: this.pal.done });
-      g.rect(x + 7, y, 2, 12).fill({ color: this.pal.plot });
+      const pa = prefs.focus ? FOCUS_DIM_REVIEW : 1;
+      g.roundRect(x, y, 16, 12, 2).fill({ color: this.pal.done, alpha: pa });
+      g.rect(x + 7, y, 2, 12).fill({ color: this.pal.plot, alpha: pa });
     });
 
     const order = [...this.bodies.entries()].sort((a, b) => a[1].y - b[1].y);
@@ -701,7 +741,7 @@ export class World {
         const occ = this.occupancy.get(`${district}|${bld.key}`);
         const n = occ?.n ?? 0;
         const hot = occ?.hot ?? false;
-        const fade = Math.max(0.45, 1 - (Date.now() - bld.seen) / BUILDING_TTL_MS);
+        const fade = Math.max(0.45, 1 - (Date.now() - bld.seen) / BUILDING_TTL_MS) * (prefs.focus && !hot ? FOCUS_DIM * 1.5 : 1);
         g.poly([r.x - 4, r.y, r.x + r.w / 2, r.y - 10, r.x + r.w + 4, r.y]).fill({ color: d.color, alpha: 0.85 * fade });
         g.roundRect(r.x, r.y, r.w, r.h, 2)
           .fill({ color: d.color, alpha: (n > 0 ? 0.5 : 0.22) * fade })
@@ -744,9 +784,10 @@ export class World {
     const sub = a.kind === "subagent";
     const r = sub ? 6 : 10;
     const st = a.state;
-    const al = b.alpha;
+    const al = b.alpha * b.dim;
     const resting = st === "idle" || st === "ended";
-    const bob = this.reduced ? 0 : b.moving ? Math.abs(Math.sin(b.phase * 10)) * 2 : Math.sin(b.phase * 2) * 0.6;
+    const calm = this.calm(a);
+    const bob = calm ? 0 : b.moving ? Math.abs(Math.sin(b.phase * HEALTHY.stepRate)) * HEALTHY.stepBob : Math.sin(b.phase * 2) * 0.6;
     const x = b.x;
     const y = b.y - bob;
     const sc = this.stateColor(st);
@@ -779,11 +820,11 @@ export class World {
       arm(-1, -1.9 + w);
       arm(1, -1.9 - w);
     } else if (st === "needs_input" || st === "awaiting_reply") {
-      const up = Math.sin(this.t * 2.4 + b.phase) > 0.3;
+      const up = this.reduced || Math.sin(this.t * 2.4 + b.phase) > 0.3;
       arm(-1, 0.9);
       arm(1, up ? -1.6 : 0.9);
     } else if (st === "working") {
-      const w = this.reduced ? 0 : Math.sin(this.t * 9 + b.phase) * 0.5;
+      const w = calm ? 0 : Math.sin(this.t * HEALTHY.swingRate + b.phase) * HEALTHY.swingAmp;
       arm(-1, 0.6);
       arm(1, 0.2 + w);
     } else {
@@ -827,7 +868,7 @@ export class World {
       this.setGlyph(b, `×${kids}`, p.ink, x, oy + 2, al);
     } else if (a.paused_at) {
       this.setGlyph(b, "⏸", p.muted, x + r, oy + 2, al);
-    } else if (st === "idle" && !b.moving && !this.reduced) {
+    } else if (st === "idle" && !b.moving && !calm) {
       this.setGlyph(b, "z", p.muted, x + r, oy + 2, (0.5 + 0.5 * Math.sin(this.t * 1.5 + b.phase)) * al);
     } else {
       this.setGlyph(b, "", p.ink, x, oy, 0);

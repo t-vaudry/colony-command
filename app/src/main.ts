@@ -2,6 +2,7 @@ import "./style.css";
 import { Daemon } from "./daemon";
 import { NewSessionDialog, repoDir, type Prefill } from "./dialog";
 import { Hud } from "./hud";
+import { prefs } from "./prefs";
 import { TerminalPane } from "./terminal";
 import type { Agent } from "./types";
 import { SetupDialog } from "./setup";
@@ -94,10 +95,31 @@ window.addEventListener("keydown", (e) => {
     const a = world.selected ? daemon.agents.get(world.selected) : undefined;
     if (terminal.visible) terminal.hide();
     else if (a?.terminal) showTerminal(a);
+  } else if (e.key === "f" || e.key === "F") {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    prefs.toggleFocus();
   } else if (e.key === "Escape") {
     select(null);
   }
 });
+
+// Attention-budget controls in the top bar (Focus mode, motion override).
+const focusBtn = document.getElementById("focus-btn")!;
+const motionBtn = document.getElementById("motion-btn")!;
+const MOTION_LABEL = { system: "Motion: system", reduce: "Motion: calm", full: "Motion: full" } as const;
+function syncPrefs(): void {
+  focusBtn.textContent = prefs.focus ? "Focus: on" : "Focus: off";
+  focusBtn.setAttribute("aria-pressed", String(prefs.focus));
+  focusBtn.classList.toggle("on", prefs.focus);
+  focusBtn.title = "Focus mode: dim and calm everything that does not need you (F)";
+  motionBtn.textContent = MOTION_LABEL[prefs.motion];
+  motionBtn.title =
+    "Motion: follow the system's reduced-motion setting, always calm (no bounces, particles or pulses), or full. Click to change.";
+}
+focusBtn.addEventListener("click", () => prefs.toggleFocus());
+motionBtn.addEventListener("click", () => prefs.cycleMotion());
+prefs.onChange(syncPrefs);
+syncPrefs();
 
 new SetupDialog();
 void world.init(document.getElementById("map")!).then(() => daemon.start());
