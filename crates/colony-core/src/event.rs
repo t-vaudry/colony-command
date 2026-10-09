@@ -132,6 +132,24 @@ pub enum DomainEvent {
         #[serde(default)]
         requested: bool,
     },
+    /// One assistant message's token usage, read from the transcript. The
+    /// envelope `ts` is when the message was written. `agent_id` is set for a
+    /// subagent's messages, which count toward its parent too.
+    ///
+    /// `seq` numbers a session/agent's usage messages from 1 in transcript
+    /// order, so a source that replays its history (a restarted probe) is not
+    /// counted twice: the reducer ignores anything at or below what it has
+    /// seen. 0 means unnumbered.
+    UsageUpdated {
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        seq: u64,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        tokens: crate::usage::Tokens,
+    },
 }
 
 const PREVIEW_CHARS: usize = 160;
