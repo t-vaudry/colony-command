@@ -17,3 +17,10 @@ axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
+
+# whisper.cpp built as a Windows Debug config mixes CRTs with Rust and crashes the app
+# on the first transcription; build it optimized even in dev builds.
+[profile.dev.package.whisper-rs-sys]
+opt-level = 3
+[profile.dev.package.whisper-rs]
+opt-level = 3

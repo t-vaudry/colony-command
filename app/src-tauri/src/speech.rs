@@ -139,10 +139,12 @@ pub async fn speech_transcribe(app: AppHandle, request: Request<'_>) -> Result<S
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err("Expected raw audio bytes.".into());
     };
-    let samples: Vec<f32> = bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+    let mut samples: Vec<f32> = bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
     if samples.len() < MIN_SAMPLES {
         return Ok(String::new());
     }
+    // whisper.cpp misbehaves on clips under a second; pad with silence.
+    samples.resize(samples.len().max(SAMPLE_RATE + SAMPLE_RATE / 10), 0.0);
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Speech>();
         let ctx = context(&app, &state)?;
@@ -151,6 +153,7 @@ pub async fn speech_transcribe(app: AppHandle, request: Request<'_>) -> Result<S
         params.set_language(Some("en"));
         params.set_n_threads(std::thread::available_parallelism().map(|n| n.get().min(8) as i32).unwrap_or(4));
         params.set_translate(false);
+        params.set_no_timestamps(true);
         params.set_no_context(true);
         params.set_print_special(false);
         params.set_print_progress(false);
