@@ -2,7 +2,7 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectSpend, type Rule, type SpawnRequest } from "./types";
+import { severity, type Agent, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Rule, type SpawnRequest } from "./types";
 
 interface DaemonInfo {
   port: number;
@@ -10,10 +10,11 @@ interface DaemonInfo {
 }
 
 type Message =
-  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; spend?: Record<string, ProjectSpend>; rules?: Rule[]; offers?: Record<string, Offer> }
+  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer> }
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
   | { type: "spend"; projects: Record<string, ProjectSpend> }
+  | { type: "latency"; projects: Record<string, ProjectLatency> }
   | { type: "leftovers"; items: Leftover[] }
   | { type: "upsert"; agent: Agent }
   | { type: "remove"; id: string }
@@ -49,6 +50,8 @@ export class Daemon {
   hosts: HostOption[] = [];
   /** Estimated spend per project key, in 15-minute buckets. */
   spend = new Map<string, ProjectSpend>();
+  /** How long agents waited on a human, per project key, in 15-minute buckets. */
+  latency = new Map<string, ProjectLatency>();
   /** Worktrees left behind for the user to decide on. */
   leftovers: Leftover[] = [];
   /** Saved "allow always for project" rules. */
@@ -130,6 +133,7 @@ export class Daemon {
         this.agents = new Map(m.agents.map((a) => [a.id, a]));
         this.hosts = m.hosts ?? this.hosts;
         this.spend = new Map(Object.entries(m.spend ?? {}));
+        this.latency = new Map(Object.entries(m.latency ?? {}));
         this.leftovers = m.leftovers ?? [];
         this.rules = m.rules ?? [];
         this.offers = new Map(Object.entries(m.offers ?? {}));
@@ -151,6 +155,9 @@ export class Daemon {
         break;
       case "spend":
         for (const [k, p] of Object.entries(m.projects)) this.spend.set(k, p);
+        break;
+      case "latency":
+        for (const [k, p] of Object.entries(m.projects)) this.latency.set(k, p);
         break;
       case "upsert":
         this.agents.set(m.agent.id, m.agent);

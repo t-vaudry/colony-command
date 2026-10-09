@@ -163,6 +163,10 @@ async fn main() {
                     if !spend.is_empty() {
                         msgs.push(json!({ "type": "spend", "projects": spend.into_iter().collect::<std::collections::BTreeMap<_, _>>() }).to_string());
                     }
+                    let latency = colony.take_latency_changes();
+                    if !latency.is_empty() {
+                        msgs.push(json!({ "type": "latency", "projects": latency.into_iter().collect::<std::collections::BTreeMap<_, _>>() }).to_string());
+                    }
                     msgs
                 }
             };

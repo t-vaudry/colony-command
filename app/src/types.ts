@@ -329,3 +329,53 @@ export function costByProject(spend: Map<string, ProjectSpend>, now: number): Pr
   }
   return out.sort((a, b) => b.usd - a.usd);
 }
+
+/** How long agents waited on a human in one project, in ms. */
+export interface ProjectLatency {
+  name: string;
+  /** Bucket number (unix ms / BUCKET_MS) to the waits that ended in it. */
+  buckets: Record<string, number[]>;
+}
+
+export interface ProjectWait {
+  key: string;
+  name: string;
+  /** Median wait in ms per hour, oldest first; null when nothing was answered that hour. */
+  hours: (number | null)[];
+  /** Median over the whole window. */
+  median: number;
+  count: number;
+}
+
+export function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+/** Each project's median human wait over the last `COST_HOURS` hours, slowest first. */
+export function waitByProject(latency: Map<string, ProjectLatency>, now: number): ProjectWait[] {
+  const perHour = 60 * 60_000 / BUCKET_MS;
+  const nowBucket = Math.floor(now / BUCKET_MS);
+  const out: ProjectWait[] = [];
+  for (const [key, p] of latency) {
+    const per: number[][] = Array.from({ length: COST_HOURS }, () => []);
+    for (const [b, waits] of Object.entries(p.buckets)) {
+      const age = nowBucket - Number(b);
+      if (age < 0 || age >= COST_HOURS * perHour) continue;
+      per[COST_HOURS - 1 - Math.floor(age / perHour)].push(...waits);
+    }
+    const all = per.flat();
+    if (!all.length) continue;
+    out.push({ key, name: p.name, hours: per.map((w) => (w.length ? median(w) : null)), median: median(all), count: all.length });
+  }
+  return out.sort((a, b) => b.median - a.median);
+}
+
+/** 4_000 -> "4s", 150_000 -> "2m 30s", 7_500_000 -> "2h 5m". */
+export function waitText(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m${s % 60 ? ` ${s % 60}s` : ""}`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}

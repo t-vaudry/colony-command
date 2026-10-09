@@ -437,6 +437,7 @@ listed price still has its tokens counted but not its cost, and the UI says
 **partial**. Today and project totals come from a 48-hour ledger the daemon
 keeps in memory, so a restart rebuilds them from the transcripts.
 Click the top-bar total (or an empty side panel) for **cost by project**: an hourly bar chart per project over the last 24 hours, on one shared scale.
+**Time to respond** sits under it: for each project, the median time from an agent asking a question or for a permission to your answer. Colony starts counting from when this version first runs, and keeps 48 hours; waits that end because a session stopped or crashed don't count.
 `tools/synth` sends usage too (with an occasional unpriced model) for load tests.
 
 ## Where agents work
