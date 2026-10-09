@@ -644,3 +644,76 @@ fn agents_from_older_daemons_parse_without_usage_fields() {
     assert_eq!(a.cost_usd, 0.0);
     assert!(a.tokens.is_zero());
 }
+
+#[test]
+fn a_paused_session_stays_idle_through_its_process_ending_and_resumes() {
+    use colony_core::DomainEvent::{Paused, PauseRequested, SessionGone, TerminalAttached, TerminalExited};
+    let mut r = Run::new(HostId::Windows);
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into(), pid: Some(40) });
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    term(&mut r, PauseRequested);
+    assert!(r.colony.agents[SID].pause_pending);
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Done with part one."}));
+    assert!(r.colony.agents[SID].pause_pending, "the turn ending doesn't pause by itself; colonyd does");
+
+    // colonyd records the pause, then stops the process.
+    term(&mut r, Paused);
+    let a = &r.colony.agents[SID];
+    assert_eq!((a.state, a.pause_pending), (AgentState::Idle, false));
+    assert!(a.paused_at.is_some());
+    term(&mut r, TerminalExited { term_id: "t1".into(), requested: true });
+    term(&mut r, SessionGone { pid: 40 });
+    r.hook(json!({"hook_event_name": "SessionEnd", "reason": "other"}));
+    r.colony.tick(r.t + CRASH_GRACE_MS + 1);
+    let a = &r.colony.agents[SID];
+    assert_eq!(a.state, AgentState::Idle, "not ended or crashed");
+    assert_eq!(a.terminal, None);
+    assert!(a.paused_at.is_some());
+
+    // Resuming in a new terminal brings it back.
+    term(&mut r, TerminalAttached { term_id: "t2".into(), dir: r"C:\code\x".into(), pid: Some(41) });
+    let a = &r.colony.agents[SID];
+    assert_eq!((a.state, a.paused_at), (AgentState::Spawning, None));
+    assert_eq!(a.terminal.as_deref(), Some("t2"));
+}
+
+#[test]
+fn replayed_history_does_not_undo_a_pause_but_new_activity_does() {
+    use colony_core::DomainEvent::Paused;
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    // Pause as of a moment from now; events up to then are the old process's.
+    r.t += 5_000;
+    let at = r.t;
+    r.colony.apply(&Envelope { ts: at, host: r.host.clone(), session_id: SID.into(), cwd: None, event: Paused });
+    assert_eq!(r.state(SID), AgentState::Idle);
+    // A colonyd restart replays an older prompt: ignored.
+    r.colony.apply(&Envelope {
+        ts: at - 3_000,
+        host: r.host.clone(),
+        session_id: SID.into(),
+        cwd: None,
+        event: colony_core::DomainEvent::PromptSubmitted { preview: "go".into(), synthetic: false },
+    });
+    assert_eq!(r.state(SID), AgentState::Idle);
+    assert!(r.colony.agents[SID].paused_at.is_some());
+    // The conversation continuing somewhere else is real activity.
+    r.t = at + 10_000;
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "carry on"}));
+    assert_eq!(r.state(SID), AgentState::Working);
+    assert!(r.colony.agents[SID].paused_at.is_none());
+}
+
+#[test]
+fn a_pause_can_be_cancelled_and_only_applies_to_sessions_colony_owns() {
+    use colony_core::DomainEvent::{PauseCancelled, PauseRequested, TerminalAttached};
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    term(&mut r, PauseRequested);
+    assert!(!r.colony.agents[SID].pause_pending, "no terminal: Colony can't pause it");
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: r"C:\code\x".into(), pid: None });
+    term(&mut r, PauseRequested);
+    assert!(r.colony.agents[SID].pause_pending);
+    term(&mut r, PauseCancelled);
+    assert!(!r.colony.agents[SID].pause_pending);
+}

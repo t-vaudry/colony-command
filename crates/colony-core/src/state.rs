@@ -179,6 +179,13 @@ pub struct Agent {
     pub background_tasks: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub process_gone_at: Option<u64>,
+    /// Colony stopped this session between turns, at this time. It shows as
+    /// idle, not ended or crashed, until it is resumed.
+    #[serde(default)]
+    pub paused_at: Option<u64>,
+    /// A pause was asked for and waits for the current turn to end.
+    #[serde(default)]
+    pub pause_pending: bool,
     /// Tokens used so far, subagents included for a main agent.
     #[serde(default)]
     pub tokens: Tokens,
@@ -231,6 +238,8 @@ impl Agent {
             auth_need: None,
             background_tasks: 0,
             process_gone_at: None,
+            paused_at: None,
+            pause_pending: false,
             tokens: Tokens::default(),
             cost_usd: 0.0,
             cost_partial: false,
@@ -384,8 +393,22 @@ impl Colony {
                 | DomainEvent::PermissionAsked { .. }
                 | DomainEvent::PermissionSettled { .. }
                 | DomainEvent::AuthResolved
+                | DomainEvent::PauseRequested
+                | DomainEvent::PauseCancelled
+                | DomainEvent::Paused
         );
         if from_hooks {
+            if let Some(at) = main.paused_at {
+                // From before the pause: the stopped process's, or a replay of it.
+                if e.ts <= at {
+                    return changed;
+                }
+                // Its own SessionEnd is the pause taking effect; anything else
+                // means the session is running again somewhere.
+                if !matches!(e.event, DomainEvent::SessionEnded) {
+                    main.paused_at = None;
+                }
+            }
             main.hooks_seen = true;
             main.last_event_at = main.last_event_at.max(e.ts);
             main.process_gone_at = None;
@@ -428,7 +451,7 @@ impl Colony {
                     main.pid = main.pids.last().copied();
                 }
                 // Only the last copy going away can mean a crash.
-                if known && main.pids.is_empty() && main.terminal.is_none() && !main.is_finished() {
+                if known && main.pids.is_empty() && main.terminal.is_none() && !main.is_finished() && main.paused_at.is_none() {
                     main.process_gone_at = Some(e.ts);
                 }
             }
@@ -602,6 +625,24 @@ impl Colony {
                     main.reason = None;
                 }
             }
+            // A paused session's process ending is the pause, not the end.
+            DomainEvent::SessionEnded if main.paused_at.is_some() => {}
+            DomainEvent::PauseRequested => {
+                if main.terminal.is_some() && main.paused_at.is_none() {
+                    main.pause_pending = true;
+                }
+            }
+            DomainEvent::PauseCancelled => main.pause_pending = false,
+            DomainEvent::Paused => {
+                main.paused_at = Some(e.ts);
+                main.pause_pending = false;
+                main.background_tasks = 0;
+                main.permission = None;
+                main.current_tool = None;
+                main.process_gone_at = None;
+                main.set_state(AgentState::Idle, Some("Paused. Resume to carry on".into()), e.ts);
+                self.end_children(&sid, e.ts, &mut changed);
+            }
             DomainEvent::SessionEnded => {
                 main.background_tasks = 0;
                 main.permission = None;
@@ -660,7 +701,11 @@ impl Colony {
                 }
                 main.entrypoint.get_or_insert_with(|| "colony".into());
                 main.process_gone_at = None;
-                if main.is_finished() {
+                if main.paused_at.take().is_some() {
+                    // Resumed after a pause.
+                    main.pause_pending = false;
+                    main.set_state(AgentState::Spawning, None, e.ts);
+                } else if main.is_finished() {
                     // Resumed: the same session id comes back to life.
                     main.set_state(AgentState::Spawning, None, e.ts);
                 }
@@ -671,7 +716,10 @@ impl Colony {
                     main.terminal = None;
                     main.terminal_pid = None;
                     main.current_tool = None;
-                    if *requested {
+                    if main.paused_at.is_some() {
+                        // The pause took effect; the bot stays, idle.
+                        main.process_gone_at = None;
+                    } else if *requested {
                         main.process_gone_at = None;
                         main.set_state(AgentState::Ended, Some("ended from Colony".into()), e.ts);
                         self.end_children(&sid, e.ts, &mut changed);
