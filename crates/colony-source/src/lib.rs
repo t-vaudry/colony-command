@@ -42,6 +42,14 @@ pub fn colony_home() -> PathBuf {
     std::env::var_os("COLONY_HOME").map(PathBuf::from).unwrap_or_else(|| home_dir().join(".colony"))
 }
 
+/// Keep a log that is appended to forever from growing without bound: past
+/// 8 MB it becomes `<name>.1` (replacing the last one). Call before opening it.
+pub fn rotate_log(path: &std::path::Path) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > 8 * 1024 * 1024) {
+        let _ = std::fs::rename(path, path.with_extension("log.1"));
+    }
+}
+
 /// `~` for the current user: `USERPROFILE` on Windows, `HOME` elsewhere.
 pub fn home_dir() -> PathBuf {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })

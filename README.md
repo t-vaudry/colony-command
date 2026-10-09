@@ -50,7 +50,15 @@ To pick up code changes without ending sessions:
 
 It stops the window and colonyd, rebuilds, and relaunches; colony-ptyd and the
 sessions in it keep running. `-IncludeTerminalHost` also rebuilds colony-ptyd,
-which ends its sessions.
+which ends its sessions, so it refuses while any are live unless you add `-Force`.
+
+Anything that stops colony-ptyd (`taskkill /IM colony-ptyd.exe`, an installer,
+a reboot) ends the sessions in it: never stop it by image name, which also hits
+the real one when testing. Sessions cut off that way are kept on the map as
+crashed ("interrupted"), their worktrees are left alone, and colonyd resumes
+the ones Colony started (`--resume`, same folder) up to 3 times, 30 s, 2 min
+and 8 min apart (`~/.colony/sessions.json`). While terminals are live,
+colony-ptyd also keeps Windows from sleeping on idle.
 
 Set `COLONY_HOME` (and `COLONY_PORT` / `COLONY_PTYD_PORT`) to run an isolated
 second Colony, e.g. for tests.

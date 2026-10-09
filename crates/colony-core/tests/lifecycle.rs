@@ -291,6 +291,7 @@ fn colony_started_session_links_its_terminal() {
     assert_eq!(r.colony.agents[SID].terminal, None);
     r.colony.tick(r.t + CRASH_GRACE_MS + 1);
     assert_eq!(r.state(SID), AgentState::Crashed);
+    assert!(r.colony.agents[SID].reason.as_deref().is_some_and(|m| m.starts_with("interrupted")));
 
     // Resuming it in a new terminal brings the same bot back.
     term(&mut r, TerminalAttached { term_id: "t2".into(), dir: r"C:\Users\thoma\code\colony-command".into(), pid: None });

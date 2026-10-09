@@ -818,7 +818,7 @@ impl Colony {
             if let Some(gone) = a.process_gone_at {
                 if now.saturating_sub(gone) > CRASH_GRACE_MS && !a.is_finished() {
                     a.current_tool = None;
-                    a.set_state(AgentState::Crashed, Some("process exited without ending the session".into()), now);
+                    a.set_state(AgentState::Crashed, Some("interrupted: its process stopped without ending the session".into()), now);
                     crashed_sessions.push(a.session_id.clone());
                 }
             }

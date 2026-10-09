@@ -10,6 +10,7 @@ mod api;
 mod approvals;
 mod diffstat;
 mod pty;
+mod resume;
 mod needs;
 mod worktree;
 #[cfg(windows)]
@@ -183,6 +184,9 @@ async fn main() {
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
+
+    // Restart sessions that were cut off, a few times with growing pauses.
+    tokio::spawn(resume::supervise(shared.clone()));
 
     // Keep bots' branches current as origin/main moves.
     let syncer = shared.clone();
