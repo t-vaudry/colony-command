@@ -17,6 +17,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # whisper-rs (dictation) generates its bindings with bindgen, which needs libclang.
+  LIBCLANG_PATH: C:\Program Files\LLVM\bin
 
 jobs:
   test-windows:

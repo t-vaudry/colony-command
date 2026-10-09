@@ -405,6 +405,22 @@ message, or **Resume in Colony** to resume without one. If the session is still
 running in another terminal or the Claude desktop app, Colony first asks whether
 to end that copy, so two copies never write to one conversation.
 
+## Dictation
+
+Every message box in the app (the reply box, the first message of a new session,
+a resume reply, "type your own answer") gets a mic button in its corner while it
+has focus. Click it, or press Ctrl+Shift+M, to start recording; click again to
+stop and the text is inserted at the cursor. Esc cancels. Nothing is sent for you.
+
+Transcription runs on this computer with whisper.cpp (`app/src-tauri/src/speech.rs`),
+so audio never leaves it. The first use asks before downloading the English
+`ggml-base.en` model (about 150 MB) into the app's data folder. The microphone must
+be allowed in Windows Settings > Privacy > Microphone.
+
+Building the app needs CMake and LLVM (for bindgen) on the PATH, with
+`LIBCLANG_PATH` pointing at LLVM's `bin` folder:
+`winget install Kitware.CMake LLVM.LLVM`.
+
 ## Hook capture
 
 `colony-hook` replaces the capture spike. Set up Colony registers it (see Install); to do it by hand, build it

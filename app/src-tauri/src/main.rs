@@ -5,6 +5,7 @@ mod autostart;
 mod daemon;
 mod gating;
 mod notify;
+mod speech;
 mod tray;
 mod updater;
 
@@ -99,6 +100,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updater::Pending::default())
         .manage(notify::Patience::default())
+        .manage(speech::Speech::default())
         .setup(|app| {
             // The window starts hidden (tauri.conf.json) so a login start can stay
             // in the tray. Without a tray there'd be no way back, so show it then.
@@ -120,7 +122,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install])
+        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install, speech::speech_status, speech::speech_download, speech::speech_transcribe])
         .run(tauri::generate_context!())
         .expect("Colony Command failed to start");
 }

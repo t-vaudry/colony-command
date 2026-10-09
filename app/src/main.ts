@@ -8,6 +8,7 @@ import { TerminalPane } from "./terminal";
 import type { Agent } from "./types";
 import { PatienceNotifier } from "./patience";
 import { SetupDialog } from "./setup";
+import { initSpeech } from "./speech";
 import { initUpdateNotice } from "./update";
 import { World } from "./world";
 
@@ -131,5 +132,6 @@ syncPrefs();
 initLayout();
 new SetupDialog();
 initUpdateNotice();
+initSpeech();
 new PatienceNotifier(daemon, select);
 void world.init(document.getElementById("map")!).then(() => daemon.start());
