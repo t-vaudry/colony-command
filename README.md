@@ -18,6 +18,7 @@ Design spec: [`docs/design-spec.html`](docs/design-spec.html)
 | `app` | The map: PixiJS world + HUD, connects to colonyd |
 | `app/src-tauri` | Desktop app: the map in a window; starts colonyd if it isn't running |
 | `hooks/colony-approve.sh` | Approval hook: hands permission requests to colonyd for Allow/Deny on the map |
+| `tools/synth`, `tools/replay` | Synthetic fleet generator and event-log replay, for load and visual tests |
 | `spikes/capture` | Hook that records raw Claude Code hook payloads, for schema checks |
 | `docs/` | Design spec |
 
@@ -54,6 +55,28 @@ which ends its sessions.
 
 Set `COLONY_HOME` (and `COLONY_PORT` / `COLONY_PTYD_PORT`) to run an isolated
 second Colony, e.g. for tests.
+
+## Load and visual testing: `tools/synth` and `tools/replay`
+
+Both feed a **test** colonyd through `POST /api/ingest`, which the daemon only
+serves when started with `COLONY_INGEST=1` (otherwise 404). A real daemon never
+takes made-up events.
+
+    cargo build -p colonyd -p colony-synth -p colony-replay
+    target/debug/colony-synth --spawn --agents 50 --speed 5 --record fleet.jsonl
+    target/debug/colony-replay fleet.jsonl --spawn --speed 10
+
+`--spawn` starts an isolated colonyd in a temp `COLONY_HOME` on a free port (its
+user home is redirected too, and WSL distros aren't attached, so none of your
+real sessions appear) and stops it on exit. To watch it on the map, run the app
+with `COLONY_HOME` set to the folder `--spawn` prints. To feed a daemon you
+started yourself, run it with `COLONY_INGEST=1` and its own `COLONY_HOME` /
+`COLONY_PORT`, then pass `--home <that folder>`.
+
+- `colony-synth`: `--agents`, `--projects`, `--speed`, `--duration`, `--seed`
+  (same seed, same fleet). `--record` saves what it sent as JSON lines.
+- `colony-replay <log.jsonl>`: `--speed` (0 = as fast as possible),
+  `--keep-ts`, `--loop`. The log is one event envelope per line, oldest first.
 
 ## Dismissing sessions
 
