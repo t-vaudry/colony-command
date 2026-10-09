@@ -178,3 +178,33 @@ listed price still has its tokens counted but not its cost, and the UI says
 **partial**. Today and project totals come from a 48-hour ledger the daemon
 keeps in memory, so a restart rebuilds them from the transcripts.
 `tools/synth` sends usage too (with an occasional unpriced model) for load tests.
+
+## Where agents work
+
+**Buildings.** Inside each project district, a building appears for each
+directory working bots touch (Read, Edit, Write, Grep, Glob paths, relative to
+the project folder and rolled up to two levels: `src/auth`). Working bots walk
+to their building and a lit window shows for each one inside. A district holds
+at most six; beyond that new directories fold into their top folder. A building
+goes away five minutes after the last bot worked there. Bots with no file target
+yet, or targets outside the project, roam the district as before.
+
+**Edit collisions.** When two agents edit the same file within 2 minutes, or
+different files in the same folder within 30 seconds, an orange warning sign
+appears on the bots and the building, a dashed line joins the bots, and both
+inspectors show an **Overlap** row. Only editing tools count (Edit, MultiEdit,
+Write, NotebookEdit); reads never do, and a main agent and its own subagent are
+never flagged against each other. It is only a warning: nothing is blocked and no
+agent's state changes. It fades by itself once the editing stops. An edit counts once it has
+succeeded (a denied or failed one never warns). Paths are compared as written, so
+bots in separate worktrees of one repository are not compared with each other:
+only bots sharing a checkout are.
+
+**Changes on the dock.** For work ready to review, colonyd runs git (8 s timeout,
+off the reducer's path, read-only, no index locks) in the session's folder,
+through `wsl.exe` for WSL sessions, and shows `files · +added −removed` under the
+package and in a **Changes** inspector row. It counts uncommitted and untracked
+work, plus, for isolated sessions, commits since the branch left the default
+branch. If git can't say (not a repository, timeout, more than 30 untracked
+files) nothing is shown. Test daemons (`COLONY_INGEST=1`) show made-up counts.
+`tools/synth` now emits file paths so all of this can be seen under load.

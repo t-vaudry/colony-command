@@ -16,6 +16,7 @@ pub mod ptyproto;
 pub mod registry;
 pub mod state;
 pub mod usage;
+pub mod workdir;
 
 pub use event::{DomainEvent, Envelope, HostId};
 pub use hook::HookPayload;

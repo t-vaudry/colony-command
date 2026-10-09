@@ -19,6 +19,8 @@ const TOOLS: &[(&str, &str)] = &[
     ("Bash", "npm run build"),
     ("WebFetch", "https://docs.example.com"),
 ];
+const DIRS: &[&str] = &["src/auth", "src/api", "src/ui/components", "tests", "docs", "crates/core/src", "scripts"];
+const FILES: &[&str] = &["index.ts", "main.rs", "lib.rs", "README.md", "util.ts", "config.ts", "types.ts", "routes.rs", "handler.rs", "schema.sql", "App.tsx", "mod.rs"];
 const MODELS: &[&str] = &["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
 /// Now and then a session runs a model with no known price, so the "partial" cost shows.
 const UNPRICED_MODEL: &str = "claude-experimental-x";
@@ -82,6 +84,8 @@ struct Session {
     tools_left: u32,
     tool_n: u32,
     tool: (&'static str, &'static str),
+    /// What the current tool call is aimed at: a file path under the project for file tools.
+    target: String,
     /// The running subagent and how many tool calls it has left.
     sub: Option<(String, u32)>,
     turns_left: u32,
@@ -128,6 +132,23 @@ impl Fleet {
         DomainEvent::UsageUpdated { agent_id, seq, model: Some(model.into()), tokens }
     }
 
+    /// What the tool call is aimed at. File tools name a file in one of a few
+    /// folders of the project, so sessions in a project share places and
+    /// sometimes the same file, as real agents do.
+    fn target_for(&mut self, s: &Session) -> String {
+        if !matches!(s.tool.0, "Read" | "Edit" | "Write" | "Grep") {
+            return s.tool.1.to_string();
+        }
+        let dir = *self.rng.pick(DIRS);
+        let sep = if matches!(s.host, HostId::Windows) { '\\' } else { '/' };
+        let mut p = format!("{}{sep}{}", s.cwd, dir.replace('/', &sep.to_string()));
+        if s.tool.0 != "Grep" || self.rng.chance(50) {
+            p.push(sep);
+            p.push_str(self.rng.pick(FILES));
+        }
+        p
+    }
+
     fn scaled(&mut self, lo_ms: u64, hi_ms: u64) -> u64 {
         (self.rng.range(lo_ms, hi_ms) as f64 / self.cfg.speed) as u64
     }
@@ -151,6 +172,7 @@ impl Fleet {
             tools_left: 0,
             tool_n: 0,
             tool: TOOLS[0],
+            target: String::new(),
             sub: None,
             turns_left: self.rng.range(1, 4) as u32,
             usage_seq: 0,
@@ -210,10 +232,11 @@ impl Fleet {
             }
             Phase::ToolStart => {
                 s.tool = *self.rng.pick(TOOLS);
+                s.target = self.target_for(&s);
                 s.tool_n += 1;
                 // Edits and shell commands are what ask permission.
                 if matches!(s.tool.0, "Edit" | "Write" | "Bash") && self.rng.chance(12) {
-                    let ask = DomainEvent::PermissionRequested { agent_id: None, tool: s.tool.0.into(), target: Some(s.tool.1.into()) };
+                    let ask = DomainEvent::PermissionRequested { agent_id: None, tool: s.tool.0.into(), target: Some(s.target.clone()) };
                     out.push(env(&s, at, ask));
                     s.phase = Phase::Permission;
                     s.next_at = at + self.scaled(8_000, 60_000);
@@ -308,6 +331,7 @@ fn placeholder() -> Session {
         tools_left: 0,
         tool_n: 0,
         tool: TOOLS[0],
+        target: String::new(),
         sub: None,
         turns_left: 0,
         usage_seq: 0,
@@ -323,7 +347,7 @@ fn tool_started(s: &Session, sub: Option<(&str, &str)>) -> DomainEvent {
     DomainEvent::ToolStarted {
         agent_id: sub.map(|(a, _)| a.to_string()),
         tool: s.tool.0.into(),
-        target: Some(s.tool.1.into()),
+        target: Some(s.target.clone()),
         tool_use_id: Some(tool_use_id(s, sub)),
         background: false,
     }
