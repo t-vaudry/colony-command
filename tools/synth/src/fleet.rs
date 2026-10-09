@@ -20,7 +20,7 @@ const TOOLS: &[(&str, &str)] = &[
     ("WebFetch", "https://docs.example.com"),
 ];
 const DIRS: &[&str] = &["src/auth", "src/api", "src/ui/components", "tests", "docs", "crates/core/src", "scripts"];
-const FILES: &[&str] = &["index.ts", "main.rs", "lib.rs", "README.md", "util.ts"];
+const FILES: &[&str] = &["index.ts", "main.rs", "lib.rs", "README.md", "util.ts", "config.ts", "types.ts", "routes.rs", "handler.rs", "schema.sql", "App.tsx", "mod.rs"];
 const MODELS: &[&str] = &["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"];
 /// Now and then a session runs a model with no known price, so the "partial" cost shows.
 const UNPRICED_MODEL: &str = "claude-experimental-x";

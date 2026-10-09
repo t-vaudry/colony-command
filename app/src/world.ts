@@ -124,6 +124,8 @@ function hash(s: string): number {
 }
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
+/** Only bots at work show a collision: ones on the porch or dock are not editing. */
+const EDITING: AgentState[] = ["working"];
 const ATTENTION: AgentState[] = ["needs_input", "awaiting_reply", "blocked", "crashed"];
 
 export class World {
@@ -639,10 +641,11 @@ export class World {
     // Edit collisions: a dashed line between the bots, whatever they are doing.
     for (const [id, b] of this.bodies) {
       const a = agents.get(id);
-      if (!a?.collision) continue;
+      if (!a?.collision || !EDITING.includes(a.state)) continue;
       for (const w of a.collision.with) {
         const o = this.bodies.get(w);
-        if (!o || w < id) continue;
+        // Only while both are still at it, in one district: stale warnings stay off the map.
+        if (!o || w < id || !EDITING.includes(agents.get(w)?.state ?? "ended") || this.projectOf(agents.get(w)!) !== this.projectOf(a)) continue;
         this.dashed(g, b.x, b.y - 4, o.x, o.y - 4, b.alpha * o.alpha);
       }
     }
@@ -820,7 +823,7 @@ export class World {
     }
 
     // Edit collision: a small warning sign beside the head, whatever else it signals.
-    if (a.collision && !resting) {
+    if (a.collision && EDITING.includes(st)) {
       const wx = x - r - 8;
       const wy = oy - 2;
       g.poly([wx - 6, wy + 6, wx, wy - 6, wx + 6, wy + 6]).fill({ color: WARN, alpha: al }).stroke({ width: 1, color: p.ink, alpha: al });
