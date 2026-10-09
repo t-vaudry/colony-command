@@ -17,10 +17,12 @@ interface TargetStatus {
   error: string | null;
   components: Component[];
   warnings: string[];
+  missing_files: string[];
   settings_path: string | null;
 }
 interface Status {
   version: string;
+  fingerprint: string;
   targets: TargetStatus[];
 }
 interface Plan {
@@ -60,7 +62,8 @@ function invoker(): Invoke | null {
 }
 
 function needsAttention(s: TargetStatus): boolean {
-  return s.target.running && s.checked && s.components.some((c) => c.state === "missing" || c.state === "partial" || c.state === "outdated");
+  // Nothing to offer when the build lacks the files; the dialog explains that instead.
+  return s.target.running && s.checked && s.missing_files.length === 0 && s.components.some((c) => c.state === "missing" || c.state === "partial" || c.state === "outdated" || c.state === "changed");
 }
 
 function store(key: string, value?: string): string | null {
@@ -95,15 +98,15 @@ export class SetupDialog {
     // Esc while files are being written would hide the window mid-apply.
     this.dlg.addEventListener("cancel", (e) => {
       if (this.busy) e.preventDefault();
-      // Asked once per app version; the button stays for later.
-      else if (this.status) store(DISMISSED_KEY, this.status.version);
+      // Asked once per app version or hook build; the button stays for later.
+      else if (this.status) store(DISMISSED_KEY, this.status.fingerprint);
     });
     this.dlg.addEventListener("close", () => void this.refresh());
     this.body.addEventListener("click", (e) => this.click(e));
     this.body.addEventListener("change", (e) => this.change(e));
-    // First launch, and again after an update: offer once per app version.
+    // First launch, and again after an update: offer once per app version or hook build.
     void this.refresh().then(() => {
-      if (this.status && this.status.targets.some(needsAttention) && store(DISMISSED_KEY) !== this.status.version) void this.open();
+      if (this.status && this.status.targets.some(needsAttention) && store(DISMISSED_KEY) !== this.status.fingerprint) void this.open();
     });
   }
 
@@ -114,9 +117,10 @@ export class SetupDialog {
     } catch {
       return;
     }
-    const attn = this.status.targets.some(needsAttention);
+    const broken = this.status.targets.find((t) => t.target.running && t.missing_files.length > 0);
+    const attn = !!broken || this.status.targets.some(needsAttention);
     this.btn.classList.toggle("attn", attn);
-    this.btn.title = attn ? "Colony's hooks or probe aren't installed or are out of date" : "Install, repair or remove Colony's Claude Code hooks and WSL probe";
+    this.btn.title = broken ? `Set up can't run: ${broken.missing_files.join(", ")} missing from this build` : attn ? "Colony's hooks or probe aren't installed or are out of date" : "Install, repair or remove Colony's Claude Code hooks and WSL probe";
   }
 
   async open(): Promise<void> {
@@ -142,7 +146,7 @@ export class SetupDialog {
   }
 
   private close(dismiss: boolean): void {
-    if (dismiss && this.status) store(DISMISSED_KEY, this.status.version);
+    if (dismiss && this.status) store(DISMISSED_KEY, this.status.fingerprint);
     this.dlg.close();
   }
 
@@ -173,7 +177,8 @@ export class SetupDialog {
           </div>
           ${stopped ? `<p class="muted small">This distro isn't running. Including it starts it so Colony can look inside.</p>` : ""}
           ${t.error ? `<p class="error">${esc(t.error)}</p>` : ""}
-          ${t.warnings.map((w) => `<p class="su-warn small">${esc(w)}</p>`).join("")}
+          ${t.missing_files.length ? `<p class="error"><b>Can't install:</b> ${esc(t.missing_files.join(", "))} ${t.missing_files.length > 1 ? "are" : "is"} missing from this build of Colony.</p>` : ""}
+          ${t.warnings.map((w) => `<p class="${t.missing_files.length ? "error" : "su-warn"} small">${esc(w)}</p>`).join("")}
           ${rows}
         </section>`;
       })
@@ -273,6 +278,7 @@ export class SetupDialog {
     const doable = [...this.plans.values()].some((p) => !p.error && !p.nothing);
     this.body.innerHTML = `
       <h2>Review changes</h2>
+      ${[...this.plans.values()].some((p) => p.error) ? `<p class="error">Some targets can't be set up; the reason is under each one. ${doable ? "Apply will only change the others." : "Nothing can be applied."}</p>` : ""}
       ${sections || `<p class="muted">No targets selected.</p>`}
       <div class="actions">
         <button type="button" class="primary" data-act="apply" ${doable ? "" : "disabled"}>Apply these changes</button>
@@ -304,7 +310,7 @@ export class SetupDialog {
     const label = (id: string) => this.status?.targets.find((t) => t.target.id === id)?.target.label ?? id;
     const allOk = results.every((r) => r.ok);
     // Only a fully successful run counts as done for this version.
-    if (allOk) store(DISMISSED_KEY, this.status?.version ?? "");
+    if (allOk) store(DISMISSED_KEY, this.status?.fingerprint ?? "");
     this.body.innerHTML = `
       <h2>${allOk ? "Done" : "Finished with errors"}</h2>
       ${results

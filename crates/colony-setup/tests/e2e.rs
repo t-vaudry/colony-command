@@ -194,3 +194,45 @@ fn symlinked_settings_are_written_through_and_modes_kept() {
     assert_eq!(fs::read_to_string(&real).unwrap(), "{\"model\":\"x\"}\n");
     assert!(fs::symlink_metadata(s.settings()).unwrap().file_type().is_symlink());
 }
+
+#[test]
+fn a_missing_binary_is_named_and_reported_not_silent() {
+    let s = scratch("nobin-msg");
+    fs::remove_file(s.root.join("bundle/colony-hook.exe")).unwrap();
+    let windows = targets(&s.opts).into_iter().find(|t| t.id == "windows").unwrap();
+    let st = status(&s.opts, &windows);
+    assert_eq!(st.missing_files, vec!["colony-hook.exe".to_string()]);
+    assert!(st.warnings.iter().any(|w| w.contains("colony-hook.exe") && w.contains("Looked in")));
+    let p = plan(&s.opts, "windows", Selection::ALL);
+    let e = p.error.expect("plan must fail loudly");
+    assert!(e.contains("colony-hook.exe") && e.contains("cargo build"), "{e}");
+    let a = apply(&s.opts, "windows", Selection::ALL, None);
+    assert!(!a.ok && a.steps.iter().any(|st| !st.ok && st.detail.as_deref().is_some_and(|d| d.contains("colony-hook.exe"))));
+}
+
+#[test]
+fn applying_writes_a_hook_entry_for_every_event() {
+    let s = scratch("hooks-written");
+    let a = apply(&s.opts, "windows", Selection::ALL, None);
+    assert!(a.ok, "{:?}", a.steps);
+    let text = fs::read_to_string(s.settings()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let hooks = v["hooks"].as_object().expect("hooks object written");
+    for ev in ["SessionStart", "PreToolUse", "PostToolUse", "Stop", "PermissionRequest", "SessionEnd"] {
+        let cmds = hooks[ev].to_string();
+        assert!(cmds.contains("colony-hook.exe") && cmds.contains("colony-setup"), "{ev}: {cmds}");
+    }
+    assert_eq!(fs::read(s.bin("colony-hook.exe")).unwrap(), b"hook-binary-v1");
+}
+
+#[test]
+fn a_changed_hook_binary_changes_the_fingerprint_and_status() {
+    let s = scratch("fingerprint");
+    assert!(apply(&s.opts, "windows", Selection::ALL, None).ok);
+    let before = colony_setup::bundle_fingerprint(&s.opts);
+    fs::write(s.root.join("bundle/colony-hook.exe"), b"hook-binary-v2").unwrap();
+    assert_ne!(before, colony_setup::bundle_fingerprint(&s.opts));
+    let windows = targets(&s.opts).into_iter().find(|t| t.id == "windows").unwrap();
+    let st = status(&s.opts, &windows);
+    assert!(st.components.iter().any(|c| c.state != State::Current));
+}

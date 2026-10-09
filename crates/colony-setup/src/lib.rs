@@ -292,6 +292,23 @@ impl Bundle {
         Bundle { dirs }
     }
 
+    /// Names what is missing and where it was looked for, so the cause is visible.
+    fn missing_message(&self, names: &[String], kind: TargetKind, arch: &str) -> String {
+        let what = names.join(", ");
+        let arch = if kind == TargetKind::Wsl { format!(" (for {arch})") } else { String::new() };
+        let mut dirs: Vec<String> = Vec::new();
+        for d in &self.dirs {
+            let d = d.display().to_string();
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+        format!(
+            "{what} isn't in this build of Colony{arch}, so nothing was installed. Looked in: {}. In a development checkout, build it first: `cargo build -p colony-hook -p colony-setup -p colonyd -p colony-ptyd` (or start the app with `npm run tauri dev` in app/, which does it).",
+            dirs.join("; ")
+        )
+    }
+
     fn find(&self, file: FileId, kind: TargetKind, arch: &str) -> Option<PathBuf> {
         let name = file.dest_name(kind);
         let triple = format!("{arch}-unknown-linux-musl");
@@ -305,6 +322,18 @@ impl Bundle {
             candidates.into_iter().find(|p| p.is_file())
         })
     }
+}
+
+/// Identifies the hook binary this build would install (plus the version), so the app can
+/// tell it changed even when the version number didn't.
+pub fn bundle_fingerprint(opts: &Options) -> String {
+    let bundle = Bundle::discover(&opts.bundle_dirs);
+    let hash = bundle
+        .find(FileId::Hook, TargetKind::Windows, "x86_64")
+        .and_then(|p| std::fs::read(p).ok())
+        .map(|b| sha(&b)[..12].to_string())
+        .unwrap_or_else(|| "none".into());
+    format!("{VERSION}+{hash}")
 }
 
 fn sha(data: &[u8]) -> String {
@@ -344,6 +373,9 @@ pub struct TargetStatus {
     pub error: Option<String>,
     pub components: Vec<ComponentStatus>,
     pub warnings: Vec<String>,
+    /// Files Colony would install that this build doesn't contain (a dev checkout that
+    /// hasn't built them). Installing can't work until they exist.
+    pub missing_files: Vec<String>,
     pub settings_path: Option<String>,
 }
 
@@ -416,7 +448,7 @@ fn read_target(opts: &Options, id: &str) -> Result<(Box<dyn TargetFs>, Read), St
 }
 
 pub fn status(opts: &Options, target: &TargetInfo) -> TargetStatus {
-    let mut st = TargetStatus { target: target.clone(), checked: false, error: None, components: Vec::new(), warnings: Vec::new(), settings_path: None };
+    let mut st = TargetStatus { target: target.clone(), checked: false, error: None, components: Vec::new(), warnings: Vec::new(), missing_files: Vec::new(), settings_path: None };
     if !target.running {
         return st;
     }
@@ -439,6 +471,14 @@ fn status_inner(opts: &Options, target: &TargetInfo, st: &mut TargetStatus) -> R
         st.warnings.push("An older Colony capture hook is also registered in settings.json. It records the same events; remove it by hand (see spikes/capture/README.md).".into());
     }
     let bundle = Bundle::discover(&opts.bundle_dirs);
+    for f in files_for(l.kind, Selection::ALL).into_iter().filter(|f| !f.optional()) {
+        if bundle.find(f, l.kind, &l.arch).is_none() {
+            st.missing_files.push(f.dest_name(l.kind).to_string());
+        }
+    }
+    if !st.missing_files.is_empty() {
+        st.warnings.push(bundle.missing_message(&st.missing_files, l.kind, &l.arch));
+    }
     let installed_version = fs.read(&format!("{}/VERSION", l.bin_dir)).ok().flatten().map(|b| String::from_utf8_lossy(&b).trim().to_string());
     for (id, label, what) in components_for(l.kind) {
         let sel = selection_with(id);
@@ -561,11 +601,7 @@ fn prepare(opts: &Options, id: &str, sel: Selection) -> Result<(Box<dyn TargetFs
             if f.optional() {
                 continue;
             }
-            return Err(format!(
-                "{} isn't in this build of Colony{}",
-                f.dest_name(l.kind),
-                if l.kind == TargetKind::Wsl { format!(" (for {})", l.arch) } else { String::new() }
-            ));
+            return Err(bundle.missing_message(&[f.dest_name(l.kind).to_string()], l.kind, &l.arch));
         };
         let bytes = std::fs::read(&src).map_err(|e| format!("can't read {}: {e}", src.display()))?;
         let have = fs.read(&dest).map_err(|e| e.to_string())?;
