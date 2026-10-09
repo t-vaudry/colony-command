@@ -37,6 +37,9 @@ pub async fn update_check(app: AppHandle, state: State<'_, Pending>) -> Result<O
 /// takes over and this process exits; the new version starts when it finishes.
 #[tauri::command]
 pub async fn update_install(state: State<'_, Pending>) -> Result<(), String> {
-    let update = state.0.lock().unwrap_or_else(|e| e.into_inner()).take().ok_or("no update to install")?;
-    update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())
+    // Clone, so a failed download can be retried with the same pending update.
+    let update = state.0.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("no update to install")?;
+    update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
+    *state.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    Ok(())
 }
