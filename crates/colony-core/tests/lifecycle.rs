@@ -644,3 +644,139 @@ fn agents_from_older_daemons_parse_without_usage_fields() {
     assert_eq!(a.cost_usd, 0.0);
     assert!(a.tokens.is_zero());
 }
+
+// ---- where agents work ------------------------------------------------------
+
+const SID2: &str = "8f1c2d3e-0000-4000-8000-000000000002";
+const REPO: &str = "/mnt/c/Users/thoma/code/bingosync";
+
+fn edit(r: &mut Run, sid: &str, tool: &str, rel: &str) {
+    r.hook(json!({"hook_event_name": "PreToolUse", "session_id": sid, "tool_name": tool,
+                  "tool_input": {"file_path": format!("{REPO}/{rel}")}, "tool_use_id": format!("t{}", r.t)}));
+}
+
+fn two_sessions() -> Run {
+    let mut r = Run::new(HostId::Wsl("Ubuntu".into()));
+    for sid in [SID, SID2] {
+        r.hook(json!({"hook_event_name": "SessionStart", "session_id": sid, "source": "startup"}));
+        r.hook(json!({"hook_event_name": "UserPromptSubmit", "session_id": sid, "prompt": "go"}));
+    }
+    r
+}
+
+#[test]
+fn work_dir_follows_file_targets_rolled_up() {
+    let mut r = two_sessions();
+    edit(&mut r, SID, "Edit", "src/auth/jwt/sign.ts");
+    assert_eq!(r.colony.agents[SID].work_dir.as_deref(), Some("src/auth"));
+    edit(&mut r, SID, "Read", "README.md");
+    assert_eq!(r.colony.agents[SID].work_dir.as_deref(), Some(""));
+    // A command is not a place: the bot stays where it was.
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "/usr/bin/ls /tmp/x/y"}}));
+    assert_eq!(r.colony.agents[SID].work_dir.as_deref(), Some(""));
+    // Outside the project: ignored.
+    r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": "/etc/hosts"}}));
+    assert_eq!(r.colony.agents[SID].work_dir.as_deref(), Some(""));
+    // A subagent places itself on its own.
+    r.hook(json!({"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}));
+    r.hook(json!({"hook_event_name": "PreToolUse", "agent_id": "a1", "tool_name": "Grep",
+                  "tool_input": {"pattern": "x", "path": format!("{REPO}/crates/core/src")}}));
+    assert_eq!(r.colony.agents[&sub_id(SID, "a1")].work_dir.as_deref(), Some("crates/core"));
+    assert_eq!(r.colony.agents[SID].work_dir.as_deref(), Some(""));
+}
+
+#[test]
+fn same_file_edits_warn_both_then_decay() {
+    let mut r = two_sessions();
+    edit(&mut r, SID, "Edit", "src/a.ts");
+    assert!(r.colony.agents[SID].collision.is_none());
+    edit(&mut r, SID2, "Write", "src/a.ts");
+    let c1 = r.colony.agents[SID].collision.clone().expect("first agent warned");
+    let c2 = r.colony.agents[SID2].collision.clone().expect("second agent warned");
+    assert_eq!(c1.scope, colony_core::workdir::CollisionScope::File);
+    assert_eq!(c1.with, vec![SID2.to_string()]);
+    assert_eq!(c2.with, vec![SID.to_string()]);
+    // Never a state change.
+    assert_eq!(r.state(SID), AgentState::Working);
+    assert_eq!(r.state(SID2), AgentState::Working);
+    // Fades once nobody keeps editing.
+    let changed = r.colony.tick(r.t + colony_core::workdir::FILE_WINDOW_MS + 1);
+    assert!(changed.contains(&SID.to_string()));
+    assert!(r.colony.agents[SID].collision.is_none());
+    assert!(r.colony.agents[SID2].collision.is_none());
+}
+
+#[test]
+fn reads_and_one_agents_repeat_edits_do_not_warn() {
+    let mut r = two_sessions();
+    edit(&mut r, SID, "Read", "src/a.ts");
+    edit(&mut r, SID2, "Read", "src/a.ts");
+    edit(&mut r, SID, "Edit", "src/b.ts");
+    edit(&mut r, SID, "Edit", "src/b.ts");
+    edit(&mut r, SID2, "Read", "src/b.ts");
+    assert!(r.colony.agents[SID].collision.is_none());
+    assert!(r.colony.agents[SID2].collision.is_none());
+}
+
+#[test]
+fn different_files_in_one_folder_warn_softly_and_quickly_fade() {
+    let mut r = two_sessions();
+    edit(&mut r, SID, "Edit", "src/a.ts");
+    edit(&mut r, SID2, "Edit", "src/b.ts");
+    let c = r.colony.agents[SID].collision.clone().expect("folder warning");
+    assert_eq!(c.scope, colony_core::workdir::CollisionScope::Dir);
+    assert!(c.path.ends_with("/src"), "{}", c.path);
+    r.colony.tick(r.t + colony_core::workdir::DIR_WINDOW_MS + 1);
+    assert!(r.colony.agents[SID].collision.is_none());
+}
+
+#[test]
+fn a_main_agent_and_its_subagent_do_not_collide() {
+    let mut r = two_sessions();
+    r.hook(json!({"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"}));
+    edit(&mut r, SID, "Edit", "src/a.ts");
+    r.hook(json!({"hook_event_name": "PreToolUse", "agent_id": "a1", "tool_name": "Edit",
+                  "tool_input": {"file_path": format!("{REPO}/src/a.ts")}}));
+    assert!(r.colony.agents[SID].collision.is_none());
+    assert!(r.colony.agents[&sub_id(SID, "a1")].collision.is_none());
+}
+
+#[test]
+fn a_collision_ends_when_the_other_agent_does() {
+    let mut r = two_sessions();
+    edit(&mut r, SID, "Edit", "src/a.ts");
+    edit(&mut r, SID2, "Edit", "src/a.ts");
+    r.hook(json!({"hook_event_name": "SessionEnd", "session_id": SID2}));
+    r.colony.tick(r.t + 1);
+    assert!(r.colony.agents[SID].collision.is_none());
+}
+
+#[test]
+fn diff_stat_applies_only_to_the_review_it_was_counted_for() {
+    use colony_core::workdir::DiffStat;
+    let mut r = two_sessions();
+    let stat = DiffStat { files: 3, added: 40, removed: 7 };
+    // Still working: nothing to attach it to.
+    assert!(r.colony.set_diff_stat(SID, 0, stat).is_empty());
+    r.hook(json!({"hook_event_name": "Stop", "last_assistant_message": "Done."}));
+    let since = r.colony.agents[SID].state_since;
+    assert_eq!(r.state(SID), AgentState::ReadyToReview);
+    assert!(r.colony.set_diff_stat(SID, since + 5, stat).is_empty(), "stale count ignored");
+    assert_eq!(r.colony.set_diff_stat(SID, since, stat), vec![SID.to_string()]);
+    assert_eq!(r.colony.agents[SID].diff_stat, Some(stat));
+    // Back to work: the count no longer describes it.
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "also this"}));
+    assert_eq!(r.colony.agents[SID].diff_stat, None);
+}
+
+#[test]
+fn agents_from_older_daemons_parse_without_work_fields() {
+    let mut r = Run::new(HostId::Windows);
+    r.hook(json!({"hook_event_name": "SessionStart", "source": "startup"}));
+    let mut v = serde_json::to_value(&r.colony.agents[SID]).unwrap();
+    for k in ["work_dir", "collision", "diff_stat"] {
+        v.as_object_mut().unwrap().remove(k);
+    }
+    let a: colony_core::Agent = serde_json::from_value(v).unwrap();
+    assert!(a.work_dir.is_none() && a.collision.is_none() && a.diff_stat.is_none());
+}

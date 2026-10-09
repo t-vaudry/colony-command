@@ -13,6 +13,7 @@ use crate::names;
 use crate::paths;
 use crate::prices;
 use crate::usage::{ProjectSpend, Tokens, BUCKET_MS, LEDGER_KEEP_MS};
+use crate::workdir::{self, Collision, CollisionScope, DiffStat};
 
 /// A session with no prompt this long after starting is idle.
 pub const SPAWN_TO_IDLE_MS: u64 = 60_000;
@@ -188,6 +189,18 @@ pub struct Agent {
     /// Some tokens were from a model without a known price, so `cost_usd` is low.
     #[serde(default)]
     pub cost_partial: bool,
+    /// The folder it is working in, relative to its project folder and rolled
+    /// up to a couple of levels (`src/auth`; empty for the project folder).
+    /// Follows the files its tool calls name; kept after the call finishes.
+    #[serde(default)]
+    pub work_dir: Option<String>,
+    /// Another agent is editing the same file or folder. A warning only.
+    #[serde(default)]
+    pub collision: Option<Collision>,
+    /// Files and lines changed, once the work is ready to review and the
+    /// daemon has counted them.
+    #[serde(default)]
+    pub diff_stat: Option<DiffStat>,
 }
 
 impl Agent {
@@ -234,6 +247,9 @@ impl Agent {
             tokens: Tokens::default(),
             cost_usd: 0.0,
             cost_partial: false,
+            work_dir: None,
+            collision: None,
+            diff_stat: None,
         }
     }
 
@@ -241,6 +257,8 @@ impl Agent {
         if self.state != state {
             self.state = state;
             self.state_since = ts;
+            // A count describes the work as it was when it was ready.
+            self.diff_stat = None;
         }
         self.reason = reason;
     }
@@ -314,6 +332,19 @@ pub struct Colony {
     /// Projects whose ledger changed since the last `take_spend_changes`.
     #[serde(skip)]
     spend_dirty: std::collections::BTreeSet<String>,
+    /// Recent edits by file and by folder, to notice agents on the same one.
+    #[serde(skip)]
+    edits: BTreeMap<String, Vec<Touch>>,
+    #[serde(skip)]
+    dir_edits: BTreeMap<String, Vec<Touch>>,
+}
+
+/// One agent's edit, for collision checks.
+#[derive(Debug, Clone)]
+struct Touch {
+    agent: String,
+    file: String,
+    ts: u64,
 }
 
 pub fn sub_id(session_id: &str, agent_id: &str) -> String {
@@ -499,6 +530,8 @@ impl Colony {
                 if agent_id.is_some() {
                     self.wake_main(&sid, e.ts);
                 }
+                let id = agent_id.as_deref().map_or_else(|| sid.clone(), |a| sub_id(&sid, a));
+                self.track_work(e, &id, tool, target.as_deref(), &mut changed);
             }
             DomainEvent::ToolFinished { agent_id, tool, tool_use_id, ok, error } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
@@ -787,6 +820,7 @@ impl Colony {
         for sid in crashed_sessions {
             self.end_children(&sid, now, &mut changed);
         }
+        self.decay_collisions(now, &mut changed);
         let expired: Vec<String> = self
             .agents
             .values()
@@ -808,6 +842,140 @@ impl Colony {
         }
         self.spend.retain(|_, p| !p.buckets.is_empty());
         changed
+    }
+
+    /// Note which folder a tool call works in and whether it edits something
+    /// another agent is editing. Informational only: never touches state.
+    fn track_work(&mut self, e: &Envelope, id: &str, tool: &str, target: Option<&str>, changed: &mut Vec<String>) {
+        let Some(target) = target else { return };
+        if !workdir::is_placing_tool(tool) {
+            return;
+        }
+        let dir = self
+            .agents
+            .get(&e.session_id)
+            .and_then(|m| m.project_dir.as_deref())
+            .and_then(|root| workdir::building(tool, root, target));
+        if let (Some(dir), Some(a)) = (dir, self.agents.get_mut(id)) {
+            if a.work_dir.as_deref() != Some(dir.as_str()) {
+                a.work_dir = Some(dir);
+                changed.push(id.to_string());
+            }
+        }
+        if !workdir::is_editing_tool(tool) {
+            return;
+        }
+        let Some((file, dir, shown_dir)) = workdir::edit_keys(&e.host, target) else { return };
+        let ts = e.ts;
+        // Others' recent edits of this file, and of other files in its folder.
+        let mut same_file: Vec<String> = Vec::new();
+        if let Some(v) = self.edits.get_mut(&file) {
+            v.retain(|t| ts.saturating_sub(t.ts) <= workdir::FILE_WINDOW_MS);
+            same_file.extend(v.iter().filter(|t| t.agent != id).map(|t| t.agent.clone()));
+        }
+        let mut same_dir: Vec<String> = Vec::new();
+        if let Some(v) = self.dir_edits.get_mut(&dir) {
+            v.retain(|t| ts.saturating_sub(t.ts) <= workdir::DIR_WINDOW_MS);
+            same_dir.extend(v.iter().filter(|t| t.agent != id && t.file != file).map(|t| t.agent.clone()));
+        }
+        // Record this edit.
+        let mine = self.edits.entry(file.clone()).or_default();
+        mine.retain(|t| t.agent != id);
+        mine.push(Touch { agent: id.to_string(), file: file.clone(), ts });
+        let mine = self.dir_edits.entry(dir).or_default();
+        mine.retain(|t| !(t.agent == id && t.file == file));
+        mine.push(Touch { agent: id.to_string(), file, ts });
+
+        same_file.retain(|o| self.collidable(id, o));
+        same_dir.retain(|o| self.collidable(id, o));
+        same_file.sort();
+        same_file.dedup();
+        same_dir.sort();
+        same_dir.dedup();
+        let (scope, path, others) = if !same_file.is_empty() {
+            (CollisionScope::File, target.to_string(), same_file)
+        } else if !same_dir.is_empty() {
+            (CollisionScope::Dir, shown_dir, same_dir)
+        } else {
+            return;
+        };
+        for o in &others {
+            self.warn(id, scope, &path, o, ts, changed);
+            self.warn(o, scope, &path, id, ts, changed);
+        }
+    }
+
+    /// Two agents can collide unless one is waiting on the other: a main agent
+    /// and its own subagent hand work back and forth, they don't compete.
+    fn collidable(&self, a: &str, b: &str) -> bool {
+        match (self.agents.get(a), self.agents.get(b)) {
+            (Some(x), Some(y)) => {
+                !x.is_finished()
+                    && !y.is_finished()
+                    && !(x.session_id == y.session_id && (x.kind == AgentKind::Main || y.kind == AgentKind::Main))
+            }
+            _ => false,
+        }
+    }
+
+    /// Record on `id` that it collides with `other`.
+    fn warn(&mut self, id: &str, scope: CollisionScope, path: &str, other: &str, ts: u64, changed: &mut Vec<String>) {
+        let Some(a) = self.agents.get_mut(id) else { return };
+        let before = a.collision.clone();
+        match &mut a.collision {
+            Some(c) if c.scope == scope && c.path == path => {
+                if !c.with.iter().any(|w| w == other) {
+                    c.with.push(other.to_string());
+                }
+                c.at = c.at.max(ts);
+            }
+            // A file collision outranks a folder one while it lasts.
+            Some(c) if c.scope == CollisionScope::File && scope == CollisionScope::Dir && ts.saturating_sub(c.at) <= c.scope.window_ms() => {}
+            _ => a.collision = Some(Collision { scope, path: path.to_string(), with: vec![other.to_string()], at: ts }),
+        }
+        if a.collision != before {
+            changed.push(id.to_string());
+        }
+    }
+
+    /// Warnings fade when the editing stops or the other agent is gone.
+    fn decay_collisions(&mut self, now: u64, changed: &mut Vec<String>) {
+        let live: std::collections::BTreeSet<String> =
+            self.agents.values().filter(|a| !a.is_finished()).map(|a| a.id.clone()).collect();
+        for a in self.agents.values_mut() {
+            let finished = a.is_finished();
+            let Some(c) = &mut a.collision else { continue };
+            let before = c.with.len();
+            c.with.retain(|w| live.contains(w));
+            if finished || c.with.is_empty() || now.saturating_sub(c.at) > c.scope.window_ms() {
+                a.collision = None;
+                changed.push(a.id.clone());
+            } else if c.with.len() != before {
+                changed.push(a.id.clone());
+            }
+        }
+        let file_cut = now.saturating_sub(workdir::FILE_WINDOW_MS);
+        self.edits.retain(|_, v| {
+            v.retain(|t| t.ts >= file_cut);
+            !v.is_empty()
+        });
+        let dir_cut = now.saturating_sub(workdir::DIR_WINDOW_MS);
+        self.dir_edits.retain(|_, v| {
+            v.retain(|t| t.ts >= dir_cut);
+            !v.is_empty()
+        });
+    }
+
+    /// Store the counted changes of work ready to review. Ignored if the agent
+    /// has since moved on (the count would describe something else).
+    pub fn set_diff_stat(&mut self, id: &str, state_since: u64, stat: DiffStat) -> Vec<String> {
+        match self.agents.get_mut(id) {
+            Some(a) if a.state == AgentState::ReadyToReview && a.state_since == state_since && a.diff_stat != Some(stat) => {
+                a.diff_stat = Some(stat);
+                vec![id.to_string()]
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The user is done with a session: take it and its subagents off the map
