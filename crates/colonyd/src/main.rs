@@ -8,6 +8,7 @@
 
 mod api;
 mod approvals;
+mod classifier;
 mod diffstat;
 mod eventlog;
 mod latency_store;
@@ -15,6 +16,7 @@ mod needs;
 mod pause;
 mod policy;
 mod pty;
+mod quality;
 mod resume;
 mod timelapse;
 mod worktree;
@@ -51,6 +53,8 @@ pub struct Shared {
     pub events: mpsc::Sender<Envelope>,
     /// Permission requests held for the map to answer.
     pub approvals: Arc<approvals::Approvals>,
+    /// Settings the map can change (`~/.colony/settings.json`).
+    pub settings: std::sync::Mutex<quality::Settings>,
 }
 
 pub fn log(msg: impl AsRef<str>) {
@@ -107,6 +111,8 @@ async fn main() {
         colony: RwLock::new({
             let mut c = Colony::with_dismissed(api::load_dismissed());
             c.latency = latency_store::load(&latency_store::path(), now_ms());
+            c.thresholds = quality::load_thresholds(&quality::thresholds_path());
+            quality::log_loaded(&c.thresholds);
             c
         }),
         deltas,
@@ -116,6 +122,7 @@ async fn main() {
         wsl_wake: Notify::new(),
         events: ev_tx.clone(),
         approvals: Arc::default(),
+        settings: std::sync::Mutex::new(quality::Settings::load(&quality::settings_path())),
     });
 
     // This machine's sessions.
@@ -150,7 +157,10 @@ async fn main() {
         // Response times are saved shortly after they change, not on every one.
         let mut latency_dirty = false;
         let mut latency_saved = std::time::Instant::now();
+        let transport: Arc<dyn classifier::Transport> = Arc::new(classifier::Http);
         loop {
+            // Agents the events just changed, for the optional classifier.
+            let mut touched: Vec<String> = Vec::new();
             let changed = tokio::select! {
                 Some(e) = ev_rx.recv() => {
                     let mut colony = reducer.colony.write().await;
@@ -164,6 +174,7 @@ async fn main() {
                     events.flush();
                     changed.sort();
                     changed.dedup();
+                    touched = changed.clone();
                     reducer.approvals.release_answered(&colony);
                     delta_messages(&colony, &changed)
                 }
@@ -200,6 +211,9 @@ async fn main() {
                 // No connected maps is fine.
                 let _ = reducer.deltas.send(msg);
             }
+            if !touched.is_empty() {
+                classifier::consider(&reducer, &touched, transport.clone()).await;
+            }
         }
     });
 
@@ -214,6 +228,8 @@ async fn main() {
     });
     // Files and lines changed, for work ready to review.
     tokio::spawn(diffstat::run(shared.clone()));
+    // A long tool call whose processes are still computing is not a stall.
+    tokio::spawn(quality::watch_cpu(shared.clone()));
 
     // Worktrees of sessions that ended without being dismissed.
     let sweeper = shared.clone();

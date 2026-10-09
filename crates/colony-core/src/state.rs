@@ -38,6 +38,63 @@ pub const SUB_ENDED_TTL_MS: u64 = 60_000;
 /// How long a dismissal is remembered. Longer than colonyd's history replay,
 /// so a restart doesn't bring dismissed sessions back.
 pub const DISMISSED_KEEP_MS: u64 = 24 * 60 * 60_000;
+/// A tool call counts as making progress if its process tree used CPU this recently.
+pub const CPU_ACTIVE_GRACE_MS: u64 = 30_000;
+/// How much of the end of a message is searched for a question.
+pub const QUESTION_TAIL_CHARS: usize = 400;
+/// Text allowed after the last `?` for it to still count as the closing question.
+pub const QUESTION_TRAILING_CHARS: usize = 160;
+/// A question shorter than this is not one ("ok?").
+pub const QUESTION_MIN_CHARS: usize = 6;
+
+/// The limits that decide stalls and question-versus-done. The defaults are the
+/// constants above; `~/.colony/thresholds.json` can override any of them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Thresholds {
+    /// Working with no events and no tool running for this long is stuck.
+    pub stall_ms: u64,
+    /// One tool call running this long (with no CPU use) is stuck.
+    pub tool_stall_ms: u64,
+    pub question_tail_chars: usize,
+    pub question_trailing_chars: usize,
+    pub question_min_chars: usize,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Thresholds {
+            stall_ms: STALL_MS,
+            tool_stall_ms: TOOL_STALL_MS,
+            question_tail_chars: QUESTION_TAIL_CHARS,
+            question_trailing_chars: QUESTION_TRAILING_CHARS,
+            question_min_chars: QUESTION_MIN_CHARS,
+        }
+    }
+}
+
+impl Thresholds {
+    /// Read overrides from JSON text. Missing keys keep their defaults;
+    /// nonsense (too small, unparseable) is ignored rather than trusted.
+    pub fn from_json(text: &str) -> Thresholds {
+        let mut t: Thresholds = serde_json::from_str(text).unwrap_or_default();
+        let d = Thresholds::default();
+        // A stall under a minute would flag every pause between tool calls.
+        if t.stall_ms < 60_000 {
+            t.stall_ms = d.stall_ms;
+        }
+        if t.tool_stall_ms < 60_000 {
+            t.tool_stall_ms = d.tool_stall_ms;
+        }
+        if t.question_tail_chars == 0 {
+            t.question_tail_chars = d.question_tail_chars;
+        }
+        if t.question_min_chars == 0 {
+            t.question_min_chars = d.question_min_chars;
+        }
+        t
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -173,6 +230,10 @@ pub struct Agent {
     pub state_since: u64,
     /// Why the agent is in its state: the question, permission, or error.
     pub reason: Option<String>,
+    /// How the state was decided, in a sentence: the rule that fired or what
+    /// the classifier said. Shown beside the reason so a wrong state can be traced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<String>,
     /// First prompt of the session, or the subagent's type.
     pub objective: Option<String>,
     pub last_prompt: Option<String>,
@@ -257,6 +318,14 @@ pub struct Agent {
     /// was answered and taken by the colony into its latency ledger.
     #[serde(skip)]
     pub answered_after: Option<u64>,
+    /// The last time the session's processes were seen using CPU, reported by
+    /// the daemon. A long tool call that is still computing is not a stall.
+    #[serde(skip)]
+    pub cpu_active_at: Option<u64>,
+    /// The turn ended in a way the rules are unsure about; the daemon may ask
+    /// a classifier. Taken by `take_ambiguous`.
+    #[serde(skip)]
+    pub ambiguous_ending: bool,
 }
 
 impl Agent {
@@ -281,6 +350,7 @@ impl Agent {
             state: AgentState::Spawning,
             state_since: e.ts,
             reason: None,
+            basis: None,
             objective: None,
             last_prompt: None,
             objective_full: None,
@@ -312,6 +382,8 @@ impl Agent {
             collision: None,
             diff_stat: None,
             answered_after: None,
+            cpu_active_at: None,
+            ambiguous_ending: false,
         }
     }
 
@@ -330,6 +402,7 @@ impl Agent {
             self.diff_stat = None;
         }
         self.reason = reason;
+        self.basis = None;
     }
 
     fn log(&mut self, at: u64, kind: ActivityKind, text: String, ok: Option<bool>, tool_use_id: Option<String>) {
@@ -419,6 +492,9 @@ pub struct Colony {
     edits: BTreeMap<String, Vec<Touch>>,
     #[serde(skip)]
     dir_edits: BTreeMap<String, Vec<Touch>>,
+    /// Stall and question limits (defaults unless the daemon loaded overrides).
+    #[serde(skip)]
+    pub thresholds: Thresholds,
 }
 
 /// One agent's edit, for collision checks.
@@ -692,6 +768,7 @@ impl Colony {
                     if let Some(need) = error.as_deref().and_then(crate::auth::detect) {
                         // Waiting on a person, not on retries: don't wait for three failures.
                         a.set_state(AgentState::Blocked, Some(need.reason()), e.ts);
+                        a.basis = Some("Rule: a tool failed with a sign-in or missing-program message.".into());
                         a.auth_need = Some(need);
                     } else if a.consecutive_failures >= FAILURES_TO_BLOCK {
                         let why = format!(
@@ -701,6 +778,7 @@ impl Colony {
                             error.as_deref().map(|s| format!(": {}", preview(s))).unwrap_or_default()
                         );
                         a.set_state(AgentState::Blocked, Some(why), e.ts);
+                        a.basis = Some(format!("Rule: {FAILURES_TO_BLOCK} tool calls in a row failed."));
                     } else if a.state == AgentState::NeedsInput {
                         // A denied permission comes back as a failure.
                         a.set_state(AgentState::Working, None, e.ts);
@@ -718,6 +796,7 @@ impl Colony {
                     None => tool.clone(),
                 };
                 a.set_state(AgentState::NeedsInput, Some(what), e.ts);
+                a.basis = Some("Rule: Claude Code asked for permission to run this tool.".into());
             }
             DomainEvent::Notified { kind, message } => match kind.as_deref() {
                 Some("permission_prompt") | Some("agent_needs_input") | Some("elicitation_dialog") => {
@@ -752,14 +831,33 @@ impl Colony {
                 if let Some(m) = main.last_message_full.clone().filter(|m| !m.trim().is_empty()) {
                     main.log(e.ts, ActivityKind::Reply, trim_text(&m, ACTIVITY_MESSAGE_CHARS), None, None);
                 }
-                match last_message.as_deref().and_then(question_in) {
-                    Some(q) => main.set_state(AgentState::AwaitingReply, Some(q), e.ts),
+                let th = self.thresholds.clone();
+                let rule = last_message.as_deref().and_then(|m| question_in_with(m, &th));
+                let unsure = last_message.as_deref().is_some_and(|m| ending_is_ambiguous(m, rule.is_some(), &th));
+                main.ambiguous_ending = false;
+                match rule {
+                    Some(q) => {
+                        main.set_state(AgentState::AwaitingReply, Some(q), e.ts);
+                        main.basis = Some(format!(
+                            "Rule: the last message has a question mark within its final {} characters.",
+                            th.question_tail_chars
+                        ));
+                        main.ambiguous_ending = unsure;
+                    }
                     // Stopped to wait on a background run: not finished, and
                     // Claude Code wakes it when the run reports back.
                     None if main.background_tasks > 0 => {
-                        main.set_state(AgentState::Working, Some(WAITING_ON_BACKGROUND.into()), e.ts)
+                        main.set_state(AgentState::Working, Some(WAITING_ON_BACKGROUND.into()), e.ts);
+                        main.basis = Some("Rule: the turn ended while a background task was still running.".into());
                     }
-                    None => main.set_state(AgentState::ReadyToReview, main.last_message.clone(), e.ts),
+                    None => {
+                        main.set_state(AgentState::ReadyToReview, main.last_message.clone(), e.ts);
+                        main.basis = Some(format!(
+                            "Rule: the turn ended and no question mark was found in the final {} characters of its last message.",
+                            th.question_tail_chars
+                        ));
+                        main.ambiguous_ending = unsure;
+                    }
                 }
                 self.end_children(&sid, e.ts, &mut changed);
             }
@@ -773,7 +871,10 @@ impl Colony {
                         main.set_state(AgentState::Blocked, Some(need.reason()), e.ts);
                         main.auth_need = Some(need);
                     }
-                    None => main.set_state(AgentState::Blocked, Some(format!("API error: {error}")), e.ts),
+                    None => {
+                        main.set_state(AgentState::Blocked, Some(format!("API error: {error}")), e.ts);
+                        main.basis = Some("Rule: the turn ended with an API error.".into());
+                    }
                 }
             }
             DomainEvent::Compacting => main.reason = Some("compacting context".into()),
@@ -980,6 +1081,7 @@ impl Colony {
     fn tick_inner(&mut self, now: u64) -> Vec<String> {
         let mut changed = Vec::new();
         let mut crashed_sessions = Vec::new();
+        let th = self.thresholds.clone();
         for a in self.agents.values_mut() {
             let before = (a.state, a.reason.clone());
             match a.state {
@@ -994,14 +1096,24 @@ impl Colony {
                 }
                 AgentState::Working => {
                     let quiet = now.saturating_sub(a.last_event_at);
+                    // A tool whose processes are still using CPU is working, however long it takes.
+                    let computing = a.cpu_active_at.is_some_and(|c| now.saturating_sub(c) <= CPU_ACTIVE_GRACE_MS);
                     match &a.current_tool {
                         // Waiting on a background run is quiet by design.
-                        None if a.hooks_seen && quiet > if a.background_tasks > 0 { TOOL_STALL_MS } else { STALL_MS } => {
+                        None if a.hooks_seen && quiet > if a.background_tasks > 0 { th.tool_stall_ms.max(th.stall_ms) } else { th.stall_ms } => {
                             a.set_state(AgentState::Blocked, Some(format!("no activity for {} min", quiet / 60_000)), now);
+                            a.basis = Some(format!(
+                                "Rule: working with no events and no tool running for over {} min.",
+                                th.stall_ms / 60_000
+                            ));
                         }
-                        Some(t) if now.saturating_sub(t.started_at) > TOOL_STALL_MS => {
+                        Some(t) if now.saturating_sub(t.started_at) > th.tool_stall_ms && !computing => {
                             let mins = now.saturating_sub(t.started_at) / 60_000;
                             a.set_state(AgentState::Blocked, Some(format!("{} running for {mins} min", t.name)), now);
+                            a.basis = Some(format!(
+                                "Rule: one tool call ran over {} min and its processes were not using CPU.",
+                                th.tool_stall_ms / 60_000
+                            ));
                         }
                         _ => {}
                     }
@@ -1195,6 +1307,50 @@ impl Colony {
         }
     }
 
+    /// The daemon saw this agent's processes using CPU at `now`. Only a running
+    /// tool call cares, so nothing is reported as changed.
+    pub fn note_cpu_active(&mut self, id: &str, now: u64) {
+        if let Some(a) = self.agents.get_mut(id) {
+            a.cpu_active_at = Some(now);
+        }
+    }
+
+    /// If the agent's turn just ended somewhere the rules are unsure about,
+    /// clear the flag and return what a classifier needs: when the state began
+    /// (to ignore a verdict that arrives late) and the whole last message.
+    pub fn take_ambiguous(&mut self, id: &str) -> Option<(u64, String)> {
+        let a = self.agents.get_mut(id).filter(|a| a.ambiguous_ending)?;
+        a.ambiguous_ending = false;
+        let message = a.last_message_full.clone().filter(|m| !m.trim().is_empty())?;
+        Some((a.state_since, message))
+    }
+
+    /// A classifier's answer for an ambiguous ending. Ignored if the agent has
+    /// moved on since (a later prompt or turn) or the verdict agrees with the rules.
+    pub fn apply_verdict(&mut self, id: &str, state_since: u64, verdict: &QuestionVerdict) -> Vec<String> {
+        let Some(a) = self.agents.get_mut(id) else { return Vec::new() };
+        if a.state_since != state_since {
+            return Vec::new();
+        }
+        let source = "Claude Haiku read the last message";
+        match (a.state, verdict.asks_user) {
+            (AgentState::ReadyToReview, true) => {
+                let q = verdict.question.as_deref().map(preview).filter(|q| !q.trim().is_empty()).or_else(|| a.last_message.clone());
+                a.set_state(AgentState::AwaitingReply, q, state_since);
+                a.basis = Some(format!("{source} and found it is waiting for an answer."));
+            }
+            (AgentState::AwaitingReply, false) => {
+                a.set_state(AgentState::ReadyToReview, a.last_message.clone(), state_since);
+                a.basis = Some(format!("{source} and found no question for you (the rules saw a question mark)."));
+            }
+            (AgentState::ReadyToReview | AgentState::AwaitingReply, _) => {
+                a.basis = Some(format!("{source} and agreed with the rules."));
+            }
+            _ => return Vec::new(),
+        }
+        vec![id.to_string()]
+    }
+
     /// The user is done with a session: take it and its subagents off the map
     /// now, and ignore what it sends from here on unless it's resumed. Ending
     /// its processes is the caller's job.
@@ -1349,23 +1505,74 @@ fn registry_state(status: &str) -> Option<AgentState> {
 /// If the end of an assistant message asks the user something, return that
 /// question. Rules only; an optional model classifier can refine this later.
 pub fn question_in(message: &str) -> Option<String> {
-    let tail: String = {
-        let trimmed = message.trim_end();
-        let n = trimmed.chars().count();
-        trimmed.chars().skip(n.saturating_sub(400)).collect()
-    };
+    question_in_with(message, &Thresholds::default())
+}
+
+/// The last `n` characters of a message, trailing whitespace dropped.
+fn tail_of(message: &str, n: usize) -> String {
+    let trimmed = message.trim_end();
+    let len = trimmed.chars().count();
+    trimmed.chars().skip(len.saturating_sub(n)).collect()
+}
+
+/// `question_in` with tunable limits.
+pub fn question_in_with(message: &str, th: &Thresholds) -> Option<String> {
+    let tail = tail_of(message, th.question_tail_chars);
     let last_q = tail.rfind('?')?;
     // Only count a question near the end, not one quoted mid-report.
     let after = tail[last_q + 1..].trim();
-    if after.chars().count() > 160 {
+    if after.chars().count() > th.question_trailing_chars {
         return None;
     }
     let start = tail[..last_q].rfind(['.', '!', '?', '\n']).map(|i| i + 1).unwrap_or(0);
     let q = tail[start..=last_q].trim().trim_start_matches(['*', '-', '#', ' ']).trim();
-    if q.chars().count() < 6 {
+    if q.chars().count() < th.question_min_chars {
         return None;
     }
     Some(preview(q))
+}
+
+/// Phrases that ask for an answer without a question mark.
+const ASKING_CUES: &[&str] = &[
+    "let me know",
+    "would you like",
+    "do you want",
+    "want me to",
+    "shall i",
+    "should i",
+    "please confirm",
+    "which one",
+    "which option",
+    "your call",
+    "up to you",
+    "tell me if",
+    "awaiting your",
+    "waiting for your",
+];
+
+/// Whether the end of a message is one the rules may get wrong, so a
+/// classifier is worth asking. `rules_say_question` is the rules' verdict.
+///
+/// Two cases: a question mark that is not the very end of the message
+/// (rhetorical, quoted, or followed by a wrap-up), and no question mark but a
+/// request in words ("let me know if you want...").
+pub fn ending_is_ambiguous(message: &str, rules_say_question: bool, th: &Thresholds) -> bool {
+    let tail = tail_of(message, th.question_tail_chars);
+    if rules_say_question {
+        return tail.rfind('?').is_some_and(|i| !tail[i + 1..].trim().is_empty());
+    }
+    let lower = tail.to_lowercase();
+    ASKING_CUES.iter().any(|c| lower.contains(c))
+}
+
+/// What a classifier says about the end of a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionVerdict {
+    /// The message waits for the user to answer or decide something.
+    pub asks_user: bool,
+    /// The thing it asks, when it does.
+    #[serde(default)]
+    pub question: Option<String>,
 }
 
 #[cfg(test)]

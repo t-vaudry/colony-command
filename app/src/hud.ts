@@ -9,7 +9,7 @@ import { detail, playheadX, REPLAY_FRAMES, timelapse } from "./timelapse";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { md } from "./markdown";
 import { repoDir, resumeWarning, worktreeName, type Prefill } from "./dialog";
-import { compact, diffText, money, MODELS, modelLabel, ruleLabel, severity, spentToday, STATE_LABEL, stateLabel, type Agent, type AgentState, type PermissionChoice } from "./types";
+import { compact, diffText, money, MODELS, modelLabel, ruleLabel, severity, spentToday, STATE_LABEL, stateLabel, whyText, WRONG_STATE_CHOICES, type Agent, type AgentState, type PermissionChoice } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -236,6 +236,23 @@ export class Hud {
   }
 
   /** The bot's model, a switcher for sessions Colony started, and any hint. */
+  /** Why the bot is in this state, with a one-click way to say it is wrong. */
+  private whyRow(a: Agent): string {
+    const choices = WRONG_STATE_CHOICES.filter(([s]) => s !== a.state)
+      .map(([s, label]) => `<button type="button" data-wrong-for="${esc(a.id)}" data-wrong-is="${s}">${esc(label)}</button>`)
+      .join("");
+    return `<div class="fact why"><span class="k">Why</span><span>${esc(whyText(a))}
+      <details class="menu" data-sec="wrong"${this.openSecs.has("wrong") ? " open" : ""}><summary title="Tell Colony what this bot should have shown. It is saved to ~/.colony/feedback.jsonl on this machine.">Wrong state?</summary><div class="menu-list">${choices}</div></details></span></div>`;
+  }
+
+  /** The opt-in Haiku classifier for unclear question-or-done endings. */
+  private classifierRow(): string {
+    const s = this.daemon.settings;
+    return `<div class="fact"><span class="k">Unclear endings</span><span>
+      <button type="button" data-classifier="${s.haiku_classifier ? "off" : "on"}" aria-pressed="${s.haiku_classifier}" title="Off by default. When on, only a bot's last message is sent to the Claude API (claude-haiku-5-5) to tell a question from a finished job, and only when the rules are unsure. Needs ANTHROPIC_API_KEY in the environment or ~/.colony/settings.json.">Haiku classifier: ${s.haiku_classifier ? "on" : "off"}</button>
+      ${s.haiku_classifier && !s.haiku_key_present ? `<span class="muted small">No API key found: the rules decide.</span>` : ""}</span></div>`;
+  }
+
   private modelRows(a: Agent): string {
     if (a.kind !== "main") return "";
     const current = modelLabel(a.model);
@@ -598,6 +615,7 @@ export class Hud {
       ${bar ? `<div class="actions bar">${bar}</div>` : ""}
       ${card}
       ${showReason ? field(REASON_LABEL[a.state] ?? "Note", "reason", text(a.reason), "short reason") : ""}
+      ${main ? this.whyRow(a) : ""}
       ${
         a.auth_need
           ? `<div class="choice ask" role="group" aria-label="${a.auth_need.kind === "install" ? "Install needed" : "Sign-in needed"}">
@@ -635,6 +653,7 @@ export class Hud {
           ${fact("Tool calls", a.tool_calls ? String(a.tool_calls) : null)}
           ${fact("Session id", a.session_id, "mono")}
         </div>
+        ${main ? this.classifierRow() : ""}
       </details>
       ${!a.hooks_seen && !a.terminal ? `<p class="muted small">Seen through the session registry only, so state is coarse. New sessions report full detail through hooks.</p>` : ""}
       ${
@@ -955,6 +974,14 @@ export class Hud {
       el.setAttribute("disabled", "");
     }
     if (el.dataset.ack && !this.daemon.ack(el.dataset.ack)) el.textContent = "Not connected; try again";
+    if (el.dataset.wrongFor && el.dataset.wrongIs) {
+      this.openSecs.delete("wrong");
+      if (!this.daemon.stateFeedback(el.dataset.wrongFor, el.dataset.wrongIs)) this.toast("Not connected to colonyd.");
+      this.schedule();
+    }
+    if (el.dataset.classifier) {
+      if (!this.daemon.setClassifier(el.dataset.classifier === "on")) this.toast("Not connected to colonyd.");
+    }
     if (el.dataset.copy) {
       const menu = el.closest(".menu") !== null;
       try {

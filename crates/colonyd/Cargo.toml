@@ -15,4 +15,5 @@ axum.workspace = true
 futures-util.workspace = true
 uuid.workspace = true
 base64.workspace = true
+ureq = "3.4.2"
 

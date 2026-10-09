@@ -74,7 +74,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "leftovers": crate::worktree::leftovers(), "rules": shared.approvals.policy.list(), "offers": shared.approvals.offers() }).to_string()
+    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "leftovers": crate::worktree::leftovers(), "rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
@@ -167,6 +167,10 @@ enum Command {
     Dismiss { id: String },
     /// A time-lapse of the logged events between two times (unix ms), sampled in `frames` steps.
     Replay { from: u64, to: u64, frames: usize },
+    /// "Wrong state": log what the bot was shown as and what the user says it should be.
+    StateFeedback { id: String, should_be: String },
+    /// Turn the optional Haiku question-or-done classifier on or off.
+    SetClassifier { enabled: bool },
     /// Show a leftover worktree's folder in the file manager.
     OpenWorktree { session_id: String },
     /// Delete a leftover worktree and its branch, uncommitted work and all.
@@ -269,6 +273,28 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         Command::Replay { from, to, frames } => {
             let events = tokio::task::spawn_blocking(move || crate::eventlog::read_window(&crate::eventlog::path(), from, to)).await.unwrap_or_default();
             Ok(Some(crate::timelapse::build(&events, from, to, frames).to_string()))
+        }
+        Command::StateFeedback { id, should_be } => {
+            let agent = shared.colony.read().await.agents.get(&id).cloned();
+            match agent {
+                None => Err("that bot is gone".into()),
+                Some(a) => {
+                    let path = crate::quality::feedback_path();
+                    tokio::task::spawn_blocking(move || crate::quality::record_feedback(&path, &a, &should_be, now_ms()))
+                        .await
+                        .unwrap_or_else(|_| Err("could not write the feedback log".into()))
+                        .map(|_| Some(json!({ "type": "notice", "message": "Thanks: noted in ~/.colony/feedback.jsonl" }).to_string()))
+                }
+            }
+        }
+        Command::SetClassifier { enabled } => {
+            let saved = {
+                let mut s = shared.settings.lock().unwrap();
+                s.haiku_classifier = enabled;
+                (s.save(&crate::quality::settings_path()), s.public())
+            };
+            let _ = shared.deltas.send(json!({ "type": "settings", "settings": saved.1 }).to_string());
+            saved.0.map(|_| None).map_err(|e| format!("could not save settings: {e}"))
         }
         Command::OpenWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Open).await.map(|_| None),
         Command::DiscardWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Discard).await.map(|_| None),

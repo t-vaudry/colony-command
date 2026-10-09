@@ -18,6 +18,13 @@ pub fn lineage(pid: u32) -> Vec<u32> {
     imp::chain(pid, LINEAGE_DEPTH, false)
 }
 
+/// Total CPU time (user + kernel, in milliseconds) used so far by a process and
+/// everything it started. A reading that rises between two looks means the
+/// tree is computing; `None` if the process can't be read.
+pub fn tree_cpu_ms(pid: u32) -> Option<u64> {
+    imp::tree_cpu_ms(pid)
+}
+
 /// The whole parent chain, for deciding what must never be touched.
 pub fn ancestry(pid: u32) -> Vec<u32> {
     imp::chain(pid, MAX_DEPTH, false)
@@ -63,6 +70,8 @@ const LINEAGE_DEPTH: usize = 4;
 /// How far up to look for a session's window: claude, a shell, maybe a
 /// launcher, then the terminal.
 const WINDOW_DEPTH: usize = 8;
+/// Most processes looked at when adding up a session's CPU use.
+const MAX_TREE: usize = 512;
 /// Cycle guard for walking the whole chain.
 const MAX_DEPTH: usize = 64;
 
@@ -111,6 +120,58 @@ mod imp {
 
     pub fn colony_term(_pid: u32) -> Option<String> {
         None
+    }
+
+    pub fn tree_cpu_ms(pid: u32) -> Option<u64> {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+        };
+        let mut children: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap == INVALID_HANDLE_VALUE {
+                return None;
+            }
+            let mut e: PROCESSENTRY32W = std::mem::zeroed();
+            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut ok = Process32FirstW(snap, &mut e) != 0;
+            while ok {
+                children.entry(e.th32ParentProcessID).or_default().push(e.th32ProcessID);
+                ok = Process32NextW(snap, &mut e) != 0;
+            }
+            CloseHandle(snap);
+        }
+        let mut seen = vec![pid];
+        let mut i = 0;
+        while i < seen.len() && seen.len() < super::MAX_TREE {
+            for c in children.get(&seen[i]).into_iter().flatten() {
+                if !seen.contains(c) {
+                    seen.push(*c);
+                }
+            }
+            i += 1;
+        }
+        let mut total = 0u64;
+        let mut read_any = false;
+        for p in seen {
+            unsafe {
+                let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, p);
+                if h.is_null() {
+                    continue;
+                }
+                let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+                let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+                if GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user) != 0 {
+                    let ft = |f: FILETIME| (f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64;
+                    // 100 ns units.
+                    total += (ft(kernel) + ft(user)) / 10_000;
+                    read_any = true;
+                }
+                CloseHandle(h);
+            }
+        }
+        read_any.then_some(total)
     }
 
     struct Search<'a> {
@@ -232,6 +293,39 @@ mod imp {
         chain
     }
 
+    /// CPU ticks are 1/100 s on every Linux this runs on.
+    pub fn tree_cpu_ms(pid: u32) -> Option<u64> {
+        let stat = |p: u32| -> Option<(u32, u64)> {
+            let s = std::fs::read_to_string(format!("/proc/{p}/stat")).ok()?;
+            // After "pid (comm) ": state ppid ... utime(14) stime(15) counted from 1.
+            let rest: Vec<&str> = s.rsplit_once(')')?.1.split_whitespace().collect();
+            let ppid = rest.get(1)?.parse().ok()?;
+            let ticks = rest.get(11)?.parse::<u64>().ok()? + rest.get(12)?.parse::<u64>().ok()?;
+            Some((ppid, ticks * 10))
+        };
+        let own = stat(pid)?;
+        let mut children: std::collections::HashMap<u32, Vec<(u32, u64)>> = std::collections::HashMap::new();
+        for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+            let Some(p) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+            if let Some((ppid, ms)) = stat(p) {
+                children.entry(ppid).or_default().push((p, ms));
+            }
+        }
+        let mut seen = vec![pid];
+        let mut total = own.1;
+        let mut i = 0;
+        while i < seen.len() && seen.len() < super::MAX_TREE {
+            for (c, ms) in children.get(&seen[i]).into_iter().flatten() {
+                if !seen.contains(c) {
+                    seen.push(*c);
+                    total += ms;
+                }
+            }
+            i += 1;
+        }
+        Some(total)
+    }
+
     pub fn colony_term(pid: u32) -> Option<String> {
         // Check the process and its parents: Colony starts `bash -lc 'exec claude'`.
         chain(pid, super::LINEAGE_DEPTH, false).into_iter().find_map(|p| {
@@ -252,6 +346,20 @@ mod tests {
         let chain = lineage(std::process::id());
         assert_eq!(chain[0], std::process::id());
         assert!(chain.len() >= 2, "test runner has a parent: {chain:?}");
+    }
+
+    #[test]
+    fn cpu_time_of_this_process_grows_when_it_computes() {
+        let before = tree_cpu_ms(std::process::id()).expect("readable");
+        let start = std::time::Instant::now();
+        let mut x = 1u64;
+        while start.elapsed() < std::time::Duration::from_millis(300) {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+        }
+        std::hint::black_box(x);
+        let after = tree_cpu_ms(std::process::id()).expect("readable");
+        assert!(after > before, "{before} -> {after}");
+        assert!(tree_cpu_ms(u32::MAX - 7).is_none());
     }
 
     #[test]
