@@ -9,6 +9,7 @@
 mod api;
 mod approvals;
 mod diffstat;
+mod latency_store;
 mod needs;
 mod pause;
 mod policy;
@@ -101,7 +102,11 @@ async fn main() {
     let (deltas, _) = broadcast::channel(4096);
     let (ev_tx, mut ev_rx) = mpsc::channel::<Envelope>(8192);
     let shared = Arc::new(Shared {
-        colony: RwLock::new(Colony::with_dismissed(api::load_dismissed())),
+        colony: RwLock::new({
+            let mut c = Colony::with_dismissed(api::load_dismissed());
+            c.latency = latency_store::load(&latency_store::path(), now_ms());
+            c
+        }),
         deltas,
         token: token.clone(),
         pty: PtyHost::new(ev_tx.clone()),
@@ -139,6 +144,9 @@ async fn main() {
     let reducer = shared.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        // Response times are saved shortly after they change, not on every one.
+        let mut latency_dirty = false;
+        let mut latency_saved = std::time::Instant::now();
         loop {
             let changed = tokio::select! {
                 Some(e) = ev_rx.recv() => {
@@ -166,6 +174,17 @@ async fn main() {
                     let latency = colony.take_latency_changes();
                     if !latency.is_empty() {
                         msgs.push(json!({ "type": "latency", "projects": latency.into_iter().collect::<std::collections::BTreeMap<_, _>>() }).to_string());
+                        latency_dirty = true;
+                    }
+                    if latency_dirty && latency_saved.elapsed() >= Duration::from_secs(10) {
+                        latency_dirty = false;
+                        latency_saved = std::time::Instant::now();
+                        let ledger = colony.latency.clone();
+                        tokio::task::spawn_blocking(move || {
+                            if let Err(e) = latency_store::save(&latency_store::path(), &ledger) {
+                                log(format!("could not save response times: {e}"));
+                            }
+                        });
                     }
                     msgs
                 }
@@ -229,5 +248,16 @@ async fn main() {
         log(format!("could not write {}: {e}", info_path.display()));
     }
     log(format!("listening on http://127.0.0.1:{port} (details in {})", info_path.display()));
-    axum::serve(listener, api::router(shared)).await.expect("server runs");
+    let saver = shared.clone();
+    axum::serve(listener, api::router(shared))
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await
+        .expect("server runs");
+    // A clean stop keeps the response times from the last few seconds too.
+    let ledger = saver.colony.read().await.latency.clone();
+    if let Err(e) = latency_store::save(&latency_store::path(), &ledger) {
+        log(format!("could not save response times: {e}"));
+    }
 }
