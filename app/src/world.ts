@@ -4,7 +4,7 @@
 
 import { Application, Container, Graphics, Text } from "pixi.js";
 import type { Daemon } from "./daemon";
-import type { Agent, AgentState } from "./types";
+import { money, spentToday, type Agent, type AgentState } from "./types";
 
 interface Palette {
   ground: number;
@@ -117,6 +117,8 @@ export class World {
   private pal!: Palette;
   private districts = new Map<string, District>();
   private districtLabels = new Map<string, Text>();
+  /** Estimated spend today, right-aligned in the district header. */
+  private districtCosts = new Map<string, Text>();
   private projectOrder: string[] = [];
   private bodies = new Map<string, Body>();
   private sparks: Spark[] = [];
@@ -289,6 +291,10 @@ export class World {
       const working = agents.filter((a) => a.state === "working").length;
       text.text = `${hosts.join(" + ") || "—"} · ${agents.length} session${agents.length === 1 ? "" : "s"} · ${working} working`;
     }
+    for (const [key, text] of this.districtCosts) {
+      const spent = spentToday(this.daemon.spend, this.daemon.now(), key);
+      text.text = spent.tokens > 0 ? `${money(spent.usd)} today${spent.partial ? " · partial" : ""}` : "";
+    }
   }
 
   private drawGround(): void {
@@ -296,6 +302,7 @@ export class World {
     const p = this.pal;
     g.clear();
     for (const t of this.groundText.removeChildren()) t.destroy();
+    this.districtCosts.clear();
     this.districtLabels.clear();
     const x0 = -MARGIN;
     const y0 = -MARGIN;
@@ -315,6 +322,9 @@ export class World {
       g.roundRect(d.x + 14, d.y + 16, 10, 10, 2).fill({ color: d.color });
       title(d.name, d.x + 32, d.y + 13);
       this.districtLabels.set(d.key, title("", d.x + 14, d.y + 34, p.muted, 11, "400"));
+      const cost = title("", d.x + d.w - 14, d.y + 14, p.muted, 11, "400");
+      cost.anchor.set(1, 0);
+      this.districtCosts.set(d.key, cost);
     }
     g.roundRect(this.porch.x, this.porch.y, this.porch.w, this.porch.h, 12)
       .fill({ color: p.porch })

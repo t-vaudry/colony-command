@@ -63,6 +63,12 @@ export interface Agent {
   model_hint: ModelHint | null;
   /** A tool failed on a missing login or program; the map offers to sign in or install. */
   auth_need?: { kind: "sign_in" | "install"; provider: string; label: string } | null;
+  /** Tokens used so far (subagents included on a main agent). Absent from older daemons. */
+  tokens?: Tokens;
+  /** Estimated cost in USD at list prices. */
+  cost_usd?: number;
+  /** Some tokens were from a model without a known price, so the cost is low. */
+  cost_partial?: boolean;
 }
 
 export interface ModelHint {
@@ -164,4 +170,58 @@ export interface Leftover {
   kept: string | null;
   /** The folder is gone; only the branch, with unmerged commits, remains. */
   folder_gone: boolean;
+}
+
+export interface Tokens {
+  input: number;
+  output: number;
+  cache_read: number;
+  cache_creation: number;
+}
+
+/** Spend in one 15-minute ledger bucket. */
+export interface Spend {
+  tokens: Tokens;
+  cost_usd: number;
+  /** Includes a model without a known price: the cost is low. */
+  partial: boolean;
+}
+
+export interface ProjectSpend {
+  name: string;
+  /** Bucket number (unix ms / BUCKET_MS) to the spend in it. */
+  buckets: Record<string, Spend>;
+}
+
+export const BUCKET_MS = 15 * 60_000;
+
+/** An estimate, so always shown with "~". */
+export function money(usd: number): string {
+  if (usd > 0 && usd < 0.01) return "~<$0.01";
+  return `~$${usd.toFixed(2)}`;
+}
+
+/** 1234 -> "1.2k", 3_400_000 -> "3.4M". */
+export function compact(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+/** What a project (or everything, with no key) spent since local midnight. */
+export function spentToday(spend: Map<string, ProjectSpend>, now: number, key?: string): { usd: number; partial: boolean; tokens: number } {
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  const from = midnight.getTime() / BUCKET_MS;
+  const out = { usd: 0, partial: false, tokens: 0 };
+  for (const [k, p] of spend) {
+    if (key !== undefined && k !== key) continue;
+    for (const [b, s] of Object.entries(p.buckets)) {
+      if (Number(b) < from) continue;
+      out.usd += s.cost_usd;
+      out.partial ||= s.partial;
+      out.tokens += s.tokens.input + s.tokens.output + s.tokens.cache_read + s.tokens.cache_creation;
+    }
+  }
+  return out;
 }

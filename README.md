@@ -157,3 +157,24 @@ Colony also suggests a model when recent work fits another one better: mostly
 reading and searching on a big model (Haiku), planning on a lighter one
 (Opus), or editing and running code on Haiku (Sonnet). Suggestions never
 switch anything on their own. The rules are in `crates/colony-core/src/models.rs`.
+
+## Token and cost tracking
+
+Colony reads each session's transcript (`~/.claude/projects/**/*.jsonl`, on
+Windows and inside each WSL distro through the probe) and counts the `usage` on
+every assistant message: input, output, cache-read and cache-creation tokens,
+per model. Lines are deduplicated on their uuid, a response written as several
+lines counts once, a half-written last line waits for its newline, and a
+transcript that grows while it is read is picked up where it left off.
+Subagents' tokens roll up into their parent. Colony keeps only the numbers, not
+transcript text.
+
+Shown as **estimates** (the `~`): the top bar has everything spent today (since
+local midnight), each district header has that project's total, and the
+inspector has one Usage row per bot. Cost is tokens times list prices, in
+`crates/colony-core/src/prices.rs` (with where the prices came from); it
+ignores subscription plans, discounts, and 1-hour cache writes. A model with no
+listed price still has its tokens counted but not its cost, and the UI says
+**partial**. Today and project totals come from a 48-hour ledger the daemon
+keeps in memory, so a restart rebuilds them from the transcripts.
+`tools/synth` sends usage too (with an occasional unpriced model) for load tests.

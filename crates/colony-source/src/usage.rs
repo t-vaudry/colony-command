@@ -350,7 +350,7 @@ mod tests {
         fs::write(d.join(format!("projects/C--code-api/{SID}.jsonl")), MAIN).unwrap();
         let ev = reader(&d).scan();
         let got: Vec<_> = ev.iter().map(usage_of).collect();
-        // Three responses: the repeated uuid, the synthetic message, the user
+        // Four usage lines from three responses: the repeated uuid, the synthetic message, the user
         // line, the garbage line and the usage-less line are all skipped.
         assert_eq!(got.len(), 4, "{got:?}");
         assert!(ev.iter().all(|e| e.session_id == SID && e.cwd.as_deref() == Some("C:\\code\\api")));

@@ -2,7 +2,7 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type HostOption, type Leftover, type PermissionChoice, type SpawnRequest } from "./types";
+import { severity, type Agent, type HostOption, type Leftover, type PermissionChoice, type ProjectSpend, type SpawnRequest } from "./types";
 
 interface DaemonInfo {
   port: number;
@@ -10,7 +10,8 @@ interface DaemonInfo {
 }
 
 type Message =
-  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[] }
+  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; spend?: Record<string, ProjectSpend> }
+  | { type: "spend"; projects: Record<string, ProjectSpend> }
   | { type: "leftovers"; items: Leftover[] }
   | { type: "upsert"; agent: Agent }
   | { type: "remove"; id: string }
@@ -44,6 +45,8 @@ function decode(b64: string): Uint8Array {
 export class Daemon {
   agents = new Map<string, Agent>();
   hosts: HostOption[] = [];
+  /** Estimated spend per project key, in 15-minute buckets. */
+  spend = new Map<string, ProjectSpend>();
   /** Worktrees left behind for the user to decide on. */
   leftovers: Leftover[] = [];
   status: ConnectionStatus = "connecting";
@@ -120,6 +123,7 @@ export class Daemon {
       case "snapshot":
         this.agents = new Map(m.agents.map((a) => [a.id, a]));
         this.hosts = m.hosts ?? this.hosts;
+        this.spend = new Map(Object.entries(m.spend ?? {}));
         this.leftovers = m.leftovers ?? [];
         this.skew = m.now - Date.now();
         this.status = "live";
@@ -128,6 +132,9 @@ export class Daemon {
         break;
       case "leftovers":
         this.leftovers = m.items;
+        break;
+      case "spend":
+        for (const [k, p] of Object.entries(m.projects)) this.spend.set(k, p);
         break;
       case "upsert":
         this.agents.set(m.agent.id, m.agent);
