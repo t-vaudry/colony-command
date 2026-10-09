@@ -61,7 +61,7 @@ or untick items in Set up Colony. By hand: delete the entries in
 ones are harmless, they only run if `~/.colony/bin/colony-hook` still exists).
 `~/.colony` (your history and logs) is left in place.
 
-If you answer No to removing the hooks, the uninstaller still deletes `%USERPROFILE%.colonybinlony-hook.exe` (including a copy you built yourself) so the leftover entries do nothing. A `colony-ptyd` that has sessions in it keeps running, renamed aside as `colony-ptyd.<n>.old`, so the install folder may remain until those sessions end.
+If you answer No to removing the hooks, the uninstaller still deletes `~/.colony/bin/colony-hook.exe` (including a copy you built yourself) so the leftover entries do nothing. A `colony-ptyd` that has sessions in it keeps running, renamed aside as `colony-ptyd.<n>.old`, so the install folder may remain until those sessions end.
 
 ### Command line
 
