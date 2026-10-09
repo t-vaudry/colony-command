@@ -103,10 +103,10 @@ export class PatienceNotifier {
     const attended = document.hasFocus() && !document.hidden;
     try {
       const shown = await this.invoke!<Notice[]>("patience_tick", { now: this.daemon.now(), items, settings: this.settings, attended });
-      // A desktop toast can't tell us it was clicked, so remember the newest bot
-      // and select it when the window next gets focus.
+      // A desktop toast can't tell us it was clicked, so remember the bot that has
+      // waited longest (shown longest first) and select it when the window next gets focus.
       if (shown.length) {
-        const one = shown.filter((n) => n.agent).pop();
+        const one = shown.find((n) => n.agent);
         this.last = one?.agent ? { agent: one.agent, at: Date.now() } : null;
       }
     } catch {

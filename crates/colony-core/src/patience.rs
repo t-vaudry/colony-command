@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use crate::AgentState;
 
 const MIN_MS: u64 = 60_000;
+/// How long an announced wait is remembered for a bot that has vanished from the list.
+const KEEP_MS: u64 = 24 * 60 * MIN_MS;
 /// More than this many due at once collapse into one summary notification.
 pub const MAX_INDIVIDUAL: usize = 3;
 
@@ -111,9 +113,11 @@ impl Notifier {
     /// nothing is marked, so an item that is still overdue when the user looks
     /// away is announced then.
     pub fn due(&mut self, now: u64, items: &[Item], settings: &Settings, attended: bool) -> Vec<Due> {
-        // Forget waits that are over, so the item can be announced again next time.
-        let live: HashSet<&str> = items.iter().filter(|i| Kind::of(i.state).is_some()).map(|i| i.id.as_str()).collect();
-        self.announced.retain(|id, _| live.contains(id.as_str()));
+        // Forget a wait once the bot is seen not waiting, so its next wait is announced.
+        // A bot missing from the list (dropped and re-added by a reconnect) keeps its
+        // entry, so the same wait isn't announced twice; old entries age out.
+        let not_waiting: HashSet<&str> = items.iter().filter(|i| Kind::of(i.state).is_none()).map(|i| i.id.as_str()).collect();
+        self.announced.retain(|id, since| !not_waiting.contains(id.as_str()) && now.saturating_sub(*since) < KEEP_MS);
         if attended {
             return Vec::new();
         }
@@ -217,6 +221,17 @@ mod tests {
         assert_eq!(n.due(6 * M, &[item("p", AgentState::NeedsInput, 0)], &s, false).len(), 1);
         // Straight from a permission to a question, so never seen as not waiting.
         assert_eq!(n.due(30 * M, &[item("p", AgentState::AwaitingReply, 10 * M)], &s, false).len(), 1);
+    }
+
+    #[test]
+    fn a_bot_dropped_and_re_added_keeps_its_announcement() {
+        let mut n = Notifier::default();
+        let s = Settings::default();
+        let waiting = [item("p", AgentState::NeedsInput, 0)];
+        assert_eq!(n.due(6 * M, &waiting, &s, false).len(), 1);
+        // A reconnect empties the list for a moment, then the same wait is back.
+        assert!(n.due(7 * M, &[], &s, false).is_empty());
+        assert!(n.due(8 * M, &waiting, &s, false).is_empty());
     }
 
     #[test]
