@@ -61,9 +61,9 @@ function invoker(): Invoke | null {
   return t?.core?.invoke ?? null;
 }
 
-function needsAttention(s: TargetStatus): boolean {
+function needsAttention(s: TargetStatus, withChanged = true): boolean {
   // Nothing to offer when the build lacks the files; the dialog explains that instead.
-  return s.target.running && s.checked && s.missing_files.length === 0 && s.components.some((c) => c.state === "missing" || c.state === "partial" || c.state === "outdated" || c.state === "changed");
+  return s.target.running && s.checked && s.missing_files.length === 0 && s.components.some((c) => c.state === "missing" || c.state === "partial" || c.state === "outdated" || (withChanged && c.state === "changed"));
 }
 
 function store(key: string, value?: string): string | null {
@@ -106,7 +106,7 @@ export class SetupDialog {
     this.body.addEventListener("change", (e) => this.change(e));
     // First launch, and again after an update: offer once per app version or hook build.
     void this.refresh().then(() => {
-      if (this.status && this.status.targets.some(needsAttention) && store(DISMISSED_KEY) !== this.status.fingerprint) void this.open();
+      if (this.status && this.status.targets.some((t) => needsAttention(t)) && store(DISMISSED_KEY) !== this.status.fingerprint) void this.open();
     });
   }
 
@@ -118,7 +118,7 @@ export class SetupDialog {
       return;
     }
     const broken = this.status.targets.find((t) => t.target.running && t.missing_files.length > 0);
-    const attn = !!broken || this.status.targets.some(needsAttention);
+    const attn = !!broken || this.status.targets.some((t) => needsAttention(t, store(DISMISSED_KEY) !== this.status!.fingerprint));
     this.btn.classList.toggle("attn", attn);
     this.btn.title = broken ? `Set up can't run: ${broken.missing_files.join(", ")} missing from this build` : attn ? "Colony's hooks or probe aren't installed or are out of date" : "Install, repair or remove Colony's Claude Code hooks and WSL probe";
   }
