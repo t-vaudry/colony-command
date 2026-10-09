@@ -102,7 +102,16 @@ pub enum DomainEvent {
     },
     /// colonyd is holding a permission request from a session's approval hook
     /// until someone answers it on the map.
-    PermissionAsked { request_id: String, agent_id: Option<String>, tool: String, target: Option<String> },
+    PermissionAsked {
+        request_id: String,
+        agent_id: Option<String>,
+        tool: String,
+        target: Option<String>,
+        /// The tool call's full input (long strings trimmed), so the map can
+        /// show a question's options or a diff rather than one line.
+        #[serde(default)]
+        input: Option<serde_json::Value>,
+    },
     /// That request was answered on the map, timed out, or its hook gave up.
     PermissionSettled { request_id: String },
     /// That terminal's process exited. `requested`: the user ended it from

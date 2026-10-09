@@ -85,6 +85,9 @@ pub struct PermissionAsk {
     pub request_id: String,
     pub tool: String,
     pub target: Option<String>,
+    /// The tool call's input, with long strings trimmed.
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
     pub asked_at: u64,
 }
 
@@ -132,6 +135,9 @@ pub struct Agent {
     pub objective: Option<String>,
     pub last_prompt: Option<String>,
     pub last_message: Option<String>,
+    /// The whole of that message (capped), for reading a question in full.
+    #[serde(default)]
+    pub last_message_full: Option<String>,
     pub current_tool: Option<CurrentTool>,
     pub tool_calls: u64,
     pub consecutive_failures: u32,
@@ -188,6 +194,7 @@ impl Agent {
             objective: None,
             last_prompt: None,
             last_message: None,
+            last_message_full: None,
             current_tool: None,
             tool_calls: 0,
             consecutive_failures: 0,
@@ -496,6 +503,7 @@ impl Colony {
                 settle_if_after(main, e.ts);
                 main.current_tool = None;
                 main.last_message = last_message.as_deref().map(preview);
+                main.last_message_full = last_message.as_deref().map(|m| trim_text(m, FULL_TEXT_CHARS));
                 match last_message.as_deref().and_then(question_in) {
                     Some(q) => main.set_state(AgentState::AwaitingReply, Some(q), e.ts),
                     None => main.set_state(AgentState::ReadyToReview, main.last_message.clone(), e.ts),
@@ -519,12 +527,13 @@ impl Colony {
                 main.set_state(AgentState::Ended, None, e.ts);
                 self.end_children(&sid, e.ts, &mut changed);
             }
-            DomainEvent::PermissionAsked { request_id, agent_id, tool, target } => {
+            DomainEvent::PermissionAsked { request_id, agent_id, tool, target, input } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
                 a.permission = Some(PermissionAsk {
                     request_id: request_id.clone(),
                     tool: tool.clone(),
                     target: target.clone(),
+                    input: input.clone(),
                     asked_at: e.ts,
                 });
                 let what = match target {
@@ -750,6 +759,29 @@ impl Colony {
             .collect();
         q.sort_by_key(|a| (a.state.severity(), a.state_since));
         q
+    }
+}
+
+/// Longest text kept whole for the map to show in full.
+const FULL_TEXT_CHARS: usize = 6000;
+
+fn trim_text(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(max).collect();
+        format!("{cut}…")
+    }
+}
+
+/// A copy of a JSON value with every string trimmed to a size the map can hold.
+pub fn trim_strings(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => Value::String(trim_text(s, FULL_TEXT_CHARS)),
+        Value::Array(a) => Value::Array(a.iter().map(trim_strings).collect()),
+        Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), trim_strings(v))).collect()),
+        other => other.clone(),
     }
 }
 

@@ -2,6 +2,7 @@
 // reply box for sessions Colony started.
 
 import type { Daemon } from "./daemon";
+import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { resumeWarning, type Prefill } from "./dialog";
 import { MODELS, modelLabel, severity, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
 
@@ -23,7 +24,15 @@ const since = (ts: number) => `<span data-since="${ts}"></span>`;
  *  to a re-render between mousedown and mouseup. */
 function setHtml(el: HTMLElement, html: string): void {
   if (el.dataset.html !== html) {
+    // Keep the caret in an answer field the user is typing in.
+    const f = document.activeElement as HTMLInputElement | null;
+    const typing = f && el.contains(f) && f.dataset.other ? { q: f.dataset.other, at: f.selectionStart } : null;
     el.innerHTML = html;
+    if (typing) {
+      const n = el.querySelector<HTMLInputElement>(`[data-other="${typing.q}"]`);
+      n?.focus();
+      if (typing.at != null) n?.setSelectionRange(typing.at, typing.at);
+    }
     el.dataset.html = html;
   }
 }
@@ -91,6 +100,8 @@ export class Hud {
   private moveChoice: string | null = null;
   /** Model hints set aside with "Not now", by agent, until a different hint comes up. */
   private hintsDismissed = new Map<string, string>();
+  /** Answers chosen so far for held questions, by request id. */
+  private picks = new Map<string, Pick[]>();
   private scheduled = false;
 
   constructor(
@@ -110,6 +121,15 @@ export class Hud {
       if (id) this.actions.select(id);
     });
     this.panel.addEventListener("click", (e) => void this.action(e));
+    this.panel.addEventListener("input", (e) => {
+      const el = e.target as HTMLInputElement;
+      if (!el.dataset.other || !el.dataset.req) return;
+      this.pickFor(el.dataset.req, Number(el.dataset.other)).other = el.value;
+      // Only the send button's enabled state changes, so the field keeps focus.
+      const btn = this.panel.querySelector<HTMLButtonElement>("[data-answer]");
+      const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
+      if (btn && a) btn.disabled = !answersFrom(questionsOf(a), this.picks.get(el.dataset.req) ?? []);
+    });
     this.reply.addEventListener("input", () => {
       if (this.composeTarget) this.drafts.set(this.composeTarget, this.reply.value);
     });
@@ -140,6 +160,12 @@ export class Hud {
     });
     document.getElementById("perm-allow")!.addEventListener("click", () => this.press(KEYS.enter));
     document.getElementById("perm-deny")!.addEventListener("click", () => this.press(KEYS.esc));
+  }
+
+  private pickFor(req: string, qi: number): Pick {
+    const list = this.picks.get(req) ?? [];
+    this.picks.set(req, list);
+    return (list[qi] ??= { labels: [], other: "" });
   }
 
   private press(seq: string | undefined): void {
@@ -306,6 +332,7 @@ export class Hud {
   private renderPanel(): void {
     const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
     this.renderCompose(a);
+    document.getElementById("inspector")!.classList.toggle("wide", needsWide(a));
     if (!a) {
       const idle = this.idleSessions().length;
       setHtml(this.panel, `<div class="k">Inspector</div><h2>Click a bot</h2>
@@ -322,6 +349,7 @@ export class Hud {
     const parent = a.parent_id ? this.daemon.agents.get(a.parent_id) : undefined;
     const kids = a.children.map((c) => this.daemon.agents.get(c)).filter((k): k is Agent => !!k);
     const sev = severity(a.state);
+    const card = askCard(a, a.permission ? this.picks.get(a.permission.request_id) ?? [] : []);
     const row = (k: string, v: string | null | undefined, cls = "") =>
       v ? `<div class="row"><span class="k">${k}</span><span class="${cls}">${esc(v)}</span></div>` : "";
     const target = a.current_tool?.target?.replace(/\s+/g, " ");
@@ -334,19 +362,7 @@ export class Hud {
       <div class="k">${a.kind === "subagent" ? `Subagent of ${esc(parent?.name ?? "?")}` : esc(a.project_name ?? "unknown project")}</div>
       <h2>${esc(a.name)}</h2>
       <div><span class="pill ${sev ?? a.state}">${esc(STATE_LABEL[a.state])}</span> <span class="muted">for ${since(a.state_since)}</span></div>
-      ${
-        a.permission
-          ? `<div class="choice ask" role="group" aria-label="Permission request">
-              <p><b>Claude wants to use ${esc(a.permission.tool)}</b></p>
-              ${a.permission.target ? `<pre class="ask-target">${esc(a.permission.target)}</pre>` : ""}
-              <div class="actions">
-                <button type="button" class="primary" data-decide="allow" data-req="${esc(a.permission.request_id)}">Allow</button>
-                <button type="button" data-decide="allow_always" data-req="${esc(a.permission.request_id)}" title="Allow, and add Claude Code's suggested rule so it won't ask again for this">Always allow</button>
-                <button type="button" class="danger" data-decide="deny" data-req="${esc(a.permission.request_id)}">Deny</button>
-              </div>
-            </div>`
-          : row(REASON_LABEL[a.state] ?? "Note", a.reason, "reason")
-      }
+      ${card || row(REASON_LABEL[a.state] ?? "Note", a.reason, "reason")}
       ${row("Session", a.title)}
       ${row("Objective", a.objective)}
       ${a.last_prompt !== a.objective ? row("Last prompt", a.last_prompt) : ""}
@@ -408,6 +424,27 @@ export class Hud {
     if (!el) return;
     if (el.dataset.select) this.actions.select(el.dataset.select);
     if (el.dataset.decide && el.dataset.req) this.decide(el, el.dataset.req, el.dataset.decide as PermissionChoice);
+    if (el.dataset.pick) {
+      const qi = Number(el.dataset.q);
+      const p = this.pickFor(el.dataset.pick, qi);
+      const label = el.dataset.label!;
+      if (el.dataset.multi) p.labels = p.labels.includes(label) ? p.labels.filter((l) => l !== label) : [...p.labels, label];
+      else p.labels = [label];
+      p.other = "";
+      this.schedule();
+    }
+    if (el.dataset.answer) {
+      const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
+      const answers = a && answersFrom(questionsOf(a), this.picks.get(el.dataset.answer) ?? []);
+      if (!answers) return;
+      if (!this.daemon.decide(el.dataset.answer, "allow", answers)) this.toast("Not connected to colonyd.");
+      else el.closest(".actions")?.querySelectorAll("button").forEach((b) => b.setAttribute("disabled", ""));
+    }
+    if (el.dataset.terminalAnswer) {
+      const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
+      if (!this.daemon.decide(el.dataset.terminalAnswer, "pass")) this.toast("Not connected to colonyd.");
+      else if (a) this.actions.showTerminal(a);
+    }
     if (el.dataset.newHere) {
       const a = this.daemon.agents.get(el.dataset.newHere);
       this.actions.newSession({ dir: a?.project_dir ?? a?.cwd ?? undefined, host: a?.host });

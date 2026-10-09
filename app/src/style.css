@@ -628,3 +628,119 @@ button[disabled] {
   font-family: var(--f-mono);
   font-size: 11.5px;
 }
+
+/* Questions and permissions get room: the inspector widens while a session
+   is waiting on you, and the request scrolls on its own. */
+.stage:has(#inspector.wide) {
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 46vw, 640px);
+}
+@media (max-width: 760px) {
+  .stage:has(#inspector.wide) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 70%;
+  }
+}
+.choice.big {
+  gap: 10px;
+  border-left-color: var(--input);
+}
+.ask-title {
+  font-size: 15px;
+}
+.ask-block {
+  margin: 0;
+  padding: 8px 10px;
+  font-family: var(--f-mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 45vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.ask-block.del {
+  border-left: 3px solid var(--crit);
+}
+.ask-block.add {
+  border-left: 3px solid var(--ok);
+}
+.ask-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.5;
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.q {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.q legend {
+  padding: 0;
+}
+.chip-h {
+  font-family: var(--f-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.q-text {
+  font-size: 15px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.opts {
+  display: grid;
+  gap: 6px;
+}
+.opt {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.opt:hover {
+  border-color: var(--accent);
+}
+.opt.on {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.opt-label {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.opt-desc {
+  font-size: 12.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+input.other {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
