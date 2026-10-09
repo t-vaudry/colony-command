@@ -18,7 +18,7 @@ be installed (on Windows, in WSL, or both).
 2. Run it. It installs for your user only (no administrator prompt) under
    `%LOCALAPPDATA%\Colony Command` and adds a Start menu entry.
 3. Start **Colony Command**. On first launch the **Set up Colony** window opens
-   (it is also the **Set up Colony** button at the map's bottom-left corner).
+   (it is also the **Set up Colony** button in the footer, at the bottom right).
    It lists Windows and each WSL distro (running or stopped) with a checklist:
 
    | Item | What it does |

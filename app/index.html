@@ -26,12 +26,6 @@
     <main class="stage">
       <div class="map-col">
         <div id="map"></div>
-        <button type="button" class="chip" id="setup-btn" title="Install, repair or remove Colony's Claude Code hooks and WSL probe">Set up Colony</button>
-        <div id="update-notice" hidden>
-          <span class="msg"></span>
-          <button type="button" class="primary install">Install</button>
-          <button type="button" class="later">Later</button>
-        </div>
         <section id="term-pane" hidden>
           <div class="splitter h" id="split-h" role="separator" aria-orientation="horizontal" aria-label="Resize terminal" tabindex="0" title="Drag to resize · double-click to reset"></div>
           <div class="term-head">
@@ -73,7 +67,15 @@
         </div>
       </aside>
     </main>
-    <footer id="porch-strip"></footer>
+    <footer class="foot">
+      <div id="porch-strip"></div>
+      <div id="update-notice" hidden>
+        <span class="msg"></span>
+        <button type="button" class="primary install">Install</button>
+        <button type="button" class="later">Later</button>
+      </div>
+      <button type="button" class="chip" id="setup-btn" title="Install, repair or remove Colony's Claude Code hooks and WSL probe">Set up Colony</button>
+    </footer>
     <div id="toast" role="status" hidden></div>
 
     <dialog id="setup">

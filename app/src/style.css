@@ -292,14 +292,22 @@ kbd {
 .actions button:hover {
   border-color: var(--accent);
 }
+.foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 16px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
 #porch-strip {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
   padding: 8px 16px;
-  border-top: 1px solid var(--line);
-  background: var(--surface);
   font-size: 13px;
   min-height: 44px;
 }
@@ -794,22 +802,16 @@ input.other {
   border: 0;
   background: none;
 }
-/* Set up Colony: a button over the map's corner, and its dialog. */
+/* Set up Colony: a button in the footer, and its dialog. */
 .map-col {
   position: relative;
 }
 #setup-btn {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  z-index: 3;
+  flex: none;
   background: var(--surface);
 }
 #update-notice {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  z-index: 3;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
