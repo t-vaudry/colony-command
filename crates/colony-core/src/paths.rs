@@ -6,8 +6,35 @@
 
 use crate::event::HostId;
 
+/// Where Colony puts the git worktrees it makes for isolated sessions,
+/// relative to the repository root.
+pub const WORKTREE_DIR: &str = ".colony/worktrees";
+
+/// For a folder inside one of Colony's worktrees, the repository it belongs to
+/// and the worktree's name: `/r/api/.colony/worktrees/fix-1a2b/src` ->
+/// (`/r/api`, `fix-1a2b`). Bots in worktrees stay in their repository's district.
+pub fn worktree_split(path: &str) -> Option<(String, String)> {
+    let p = path.replace('\\', "/");
+    let mark = format!("/{WORKTREE_DIR}/");
+    let at = p.find(&mark)?;
+    let name = p[at + mark.len()..].split('/').next().filter(|s| !s.is_empty())?;
+    Some((p[..at].to_string(), name.to_string()))
+}
+
+/// The folder with any Colony worktree stripped back to its repository.
+fn repo_dir(cwd: &str) -> &str {
+    let mark = format!("/{WORKTREE_DIR}/");
+    let norm_at = cwd.replace('\\', "/").find(&mark);
+    match norm_at {
+        // Byte offsets are unchanged: `\` and `/` are both one byte.
+        Some(at) => &cwd[..at],
+        None => cwd,
+    }
+}
+
 /// Stable key for the project a session's cwd belongs to.
 pub fn project_key(host: &HostId, cwd: &str) -> String {
+    let cwd = repo_dir(cwd);
     if let Some(win) = windows_form(cwd) {
         return win;
     }
@@ -19,6 +46,7 @@ pub fn project_key(host: &HostId, cwd: &str) -> String {
 
 /// Short display name: the last path component.
 pub fn project_name(cwd: &str) -> String {
+    let cwd = repo_dir(cwd);
     cwd.trim_end_matches(['/', '\\'])
         .rsplit(['/', '\\'])
         .next()
@@ -79,6 +107,18 @@ mod tests {
         assert_eq!(to_wsl_path(r"C:\Users\thoma\code\colony-command"), "/mnt/c/Users/thoma/code/colony-command");
         assert_eq!(to_wsl_path("D:/"), "/mnt/d");
         assert_eq!(to_wsl_path("/home/thomas"), "/home/thomas");
+    }
+
+    #[test]
+    fn worktree_bots_share_their_repos_district() {
+        let host = HostId::Windows;
+        let repo = project_key(&host, r"C:\code\api");
+        assert_eq!(project_key(&host, r"C:\code\api\.colony\worktrees\fix-1a2b\src"), repo);
+        assert_eq!(project_name(r"C:\code\api\.colony\worktrees\fix-1a2b"), "api");
+        let wsl = HostId::Wsl("Ubuntu".into());
+        assert_eq!(project_key(&wsl, "/home/t/api/.colony/worktrees/x-1/"), project_key(&wsl, "/home/t/api"));
+        assert_eq!(worktree_split("/home/t/api/.colony/worktrees/x-1/src"), Some(("/home/t/api".into(), "x-1".into())));
+        assert_eq!(worktree_split("/home/t/api"), None);
     }
 
     #[test]

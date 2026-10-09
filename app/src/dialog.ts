@@ -21,6 +21,22 @@ interface Folder {
 
 const OTHER = "__other__";
 
+const WORKTREE_MARK = "/.colony/worktrees/";
+
+/** A folder inside one of Colony's worktrees, as its repository's folder. */
+export function repoDir<T extends string | null | undefined>(dir: T): T {
+  if (!dir) return dir;
+  const at = dir.replace(/\\/g, "/").indexOf(WORKTREE_MARK);
+  return (at < 0 ? dir : dir.slice(0, at)) as T;
+}
+
+/** The worktree a folder is in, if it's one of Colony's. */
+export function worktreeName(dir: string | null | undefined): string | null {
+  const p = dir?.replace(/\\/g, "/");
+  const at = p?.indexOf(WORKTREE_MARK) ?? -1;
+  return p && at >= 0 ? p.slice(at + WORKTREE_MARK.length).split("/")[0] || null : null;
+}
+
 function hostLabel(host: string): string {
   return host === "win" ? "Windows" : host.replace("wsl:", "WSL · ");
 }
@@ -36,6 +52,7 @@ export class NewSessionDialog {
   private mode = document.getElementById("ns-mode") as HTMLSelectElement;
   private model = document.getElementById("ns-model") as HTMLSelectElement;
   private chrome = document.getElementById("ns-chrome") as HTMLInputElement;
+  private isolate = document.getElementById("ns-isolate") as HTMLInputElement;
   private prompt = document.getElementById("ns-prompt") as HTMLTextAreaElement;
   private error = document.getElementById("ns-error")!;
   private start = document.getElementById("ns-start") as HTMLButtonElement;
@@ -72,6 +89,8 @@ export class NewSessionDialog {
     this.title.textContent = this.resume ? `Resume ${prefill.resumeLabel ?? "session"} in Colony` : "New session";
     this.start.textContent = this.resume ? "Resume" : "Start";
     this.name.closest("label")!.hidden = !!this.resume;
+    // A resumed session keeps the folder (and worktree) it already has.
+    this.isolate.closest("label")!.hidden = !!this.resume;
     this.error.textContent = "";
     this.name.value = "";
     this.prompt.value = "";
@@ -87,7 +106,8 @@ export class NewSessionDialog {
     // Known project folders, most recently active first.
     const seen = new Map<string, Folder & { at: number }>();
     for (const a of this.daemon.agents.values()) {
-      const dir = a.project_dir ?? a.cwd;
+      // A bot in a Colony worktree stands for its repository's folder.
+      const dir = repoDir(a.project_dir ?? a.cwd);
       if (a.kind !== "main" || !dir || !a.project_key) continue;
       const prev = seen.get(a.project_key);
       if (!prev || prev.at < a.last_event_at) {
@@ -124,6 +144,14 @@ export class NewSessionDialog {
     const usable = (id?: string) => this.daemon.hosts.some((h) => h.id === id && h.available);
     if (usable(want)) this.host.value = want!;
     else this.host.value = this.daemon.hosts.find((h) => h.available)?.id ?? "";
+    this.isolate.checked = !isOther && this.othersWorking(this.folder.value);
+  }
+
+  /** Whether bots are already live in this folder's district: a new one should not share their checkout. */
+  private othersWorking(dir: string): boolean {
+    const key = this.daemon.agents && [...this.daemon.agents.values()].find((a) => repoDir(a.project_dir ?? a.cwd) === dir)?.project_key;
+    if (!key) return false;
+    return [...this.daemon.agents.values()].some((a) => a.kind === "main" && a.project_key === key && a.state !== "ended" && a.state !== "crashed");
   }
 
   private async submit(): Promise<void> {
@@ -147,6 +175,7 @@ export class NewSessionDialog {
         resume: this.resume ?? undefined,
         permission_mode: this.mode.value || undefined,
         model: this.model.value || undefined,
+        isolate: this.resume ? undefined : this.isolate.checked,
         // Off unless ticked, which also skips Claude in Chrome's first-run question.
         chrome: this.chrome.checked,
         ...this.termSize(),

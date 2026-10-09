@@ -183,7 +183,7 @@ async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<
             let wsl = matches!(req.host, colony_core::HostId::Wsl(_));
             let chosen = req.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
             let host = req.host.clone();
-            match pty.spawn(req).await {
+            match spawn_session(shared, req).await {
                 Ok(s) => {
                     if let Some(name) = chosen {
                         let _ = shared
@@ -301,6 +301,73 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket) {
     }
 }
 
+/// Remove the worktrees of sessions that have ended without being dismissed
+/// (the terminal closed, Claude exited, a crash). A worktree with uncommitted
+/// changes is never removed, and a branch is only deleted once merged, so this
+/// is safe to retry; a session resumed later gets its worktree back.
+pub async fn sweep_worktrees(shared: &Shared, reported: &mut std::collections::HashSet<String>) {
+    for w in crate::worktree::all() {
+        let ended = {
+            let colony = shared.colony.read().await;
+            let mut mains = colony.agents.values().filter(|a| a.session_id == w.session_id && a.kind == colony_core::AgentKind::Main).peekable();
+            if mains.peek().is_none() {
+                // Left the map's history: ended long ago.
+                now_ms().saturating_sub(w.created_at) > crate::REPLAY_MS
+            } else {
+                mains.all(|a| a.terminal.is_none() && matches!(a.state, colony_core::AgentState::Ended | colony_core::AgentState::Crashed))
+            }
+        };
+        if !ended {
+            continue;
+        }
+        match crate::worktree::remove(&w).await {
+            Ok(()) => {
+                crate::worktree::forget(&w.session_id);
+                reported.remove(&w.path);
+            }
+            // Say so once, not every minute.
+            Err(e) => {
+                if reported.insert(w.path.clone()) {
+                    log(format!("left worktree {} of ended session {}: {e}", w.path, w.session_id));
+                }
+            }
+        }
+    }
+}
+
+/// Start a session, first giving it its own git worktree when asked. If the
+/// terminal can't start, the worktree made for it is removed again.
+async fn spawn_session(shared: &Shared, mut req: SpawnRequest) -> Result<crate::pty::Spawned, String> {
+    let mut made = None;
+    // Resuming a bot whose worktree was cleaned up while it was ended.
+    if let Some(w) = req.resume.as_deref().and_then(crate::worktree::find) {
+        crate::worktree::restore(&w).await?;
+    }
+    if req.isolate && req.resume.is_none() {
+        let sid = req.session_id.get_or_insert_with(|| uuid::Uuid::new_v4().to_string()).clone();
+        let label = req.name.clone().unwrap_or_default();
+        let created = crate::worktree::create(&req.host, &req.dir, &sid, &label).await?;
+        req.dir = created.dir;
+        made = Some(created.record);
+    }
+    // A restart on another model reuses this request; it must not make a second worktree.
+    req.isolate = false;
+    match shared.pty.spawn(req).await {
+        Ok(s) => {
+            if let Some(w) = made {
+                crate::worktree::remember(w);
+            }
+            Ok(s)
+        }
+        Err(e) => {
+            if let Some(w) = made {
+                let _ = crate::worktree::remove(&w).await;
+            }
+            Err(e)
+        }
+    }
+}
+
 /// End the copies of a session that Colony didn't start (for example one the
 /// Claude desktop app keeps running in the background), so it can be resumed
 /// here without two copies writing to one conversation. Each pid is re-checked
@@ -335,6 +402,15 @@ async fn dismiss(shared: &Shared, id: &str) -> Result<(), String> {
         // Already closed is fine: there's nothing left to end.
         if let Err(e) = shared.pty.kill(term) {
             log(format!("dismiss {id}: terminal {term}: {e}"));
+        }
+        // Windows won't remove a folder a process is still in.
+        shared.pty.closed(term, Duration::from_secs(10)).await;
+    }
+    if let Some(w) = crate::worktree::find(&c.session_id) {
+        match crate::worktree::remove(&w).await {
+            Ok(()) => crate::worktree::forget(&c.session_id),
+            // Uncommitted work: leave it where it is rather than lose it.
+            Err(e) => log(format!("dismiss {id}: kept worktree {}: {e}", w.path)),
         }
     }
     let msgs = {
@@ -536,6 +612,7 @@ async fn set_model(shared: &Shared, id: &str, model: &str) -> Result<(), String>
         chrome: Some(false),
         session_id: None,
         model: None,
+        isolate: false,
         cols: 120,
         rows: 32,
     });

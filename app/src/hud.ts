@@ -3,7 +3,7 @@
 
 import type { Daemon } from "./daemon";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
-import { resumeWarning, type Prefill } from "./dialog";
+import { repoDir, resumeWarning, worktreeName, type Prefill } from "./dialog";
 import { MODELS, modelLabel, severity, STATE_LABEL, type Agent, type AgentState, type PermissionChoice } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -370,6 +370,7 @@ export class Hud {
       ${this.modelRows(a)}
       ${row("Where", `${hostLabel(a.host)} · ${originLabel(a)}${a.pid ? ` · pid ${a.pid}` : ""}`)}
       ${row("Folder", a.cwd, "mono")}
+      ${row("Worktree", worktreeName(a.project_dir ?? a.cwd) && `${worktreeName(a.project_dir ?? a.cwd)} (branch colony/${worktreeName(a.project_dir ?? a.cwd)})`, "mono")}
       ${row("Tool calls", a.tool_calls ? String(a.tool_calls) : null)}
       ${
         kids.length
@@ -447,7 +448,7 @@ export class Hud {
     }
     if (el.dataset.newHere) {
       const a = this.daemon.agents.get(el.dataset.newHere);
-      this.actions.newSession({ dir: a?.project_dir ?? a?.cwd ?? undefined, host: a?.host });
+      this.actions.newSession({ dir: repoDir(a?.project_dir ?? a?.cwd) ?? undefined, host: a?.host });
     }
     if (el.dataset.resume) {
       const a = this.daemon.agents.get(el.dataset.resume);

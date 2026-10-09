@@ -1,6 +1,6 @@
 import "./style.css";
 import { Daemon } from "./daemon";
-import { NewSessionDialog, type Prefill } from "./dialog";
+import { NewSessionDialog, repoDir, type Prefill } from "./dialog";
 import { Hud } from "./hud";
 import { TerminalPane } from "./terminal";
 import type { Agent } from "./types";
@@ -48,7 +48,7 @@ const dialog = new NewSessionDialog(
 
 document.getElementById("new-session-btn")!.addEventListener("click", () => {
   const a = world.selected ? daemon.agents.get(world.selected) : undefined;
-  newSession(a ? { dir: a.project_dir ?? a.cwd ?? undefined, host: a.host } : undefined);
+  newSession(a ? { dir: repoDir(a.project_dir ?? a.cwd) ?? undefined, host: a.host } : undefined);
 });
 
 // After a daemon restart, re-subscribe the terminal pane. And if the agent in

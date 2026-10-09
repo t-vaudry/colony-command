@@ -102,6 +102,10 @@
             <span>Browser tools (Claude in Chrome)</span>
           </label>
         </div>
+        <label class="check" id="ns-isolate-row" title="Gives this bot its own checkout and branch, so bots on one repository don't edit the same files. Removed when the bot is dismissed, unless it has uncommitted changes.">
+          <input id="ns-isolate" type="checkbox" />
+          <span>Own git worktree and branch</span>
+        </label>
         <label>
           <span class="k">Name (optional)</span>
           <input id="ns-name" type="text" placeholder="Shown as the session title" />

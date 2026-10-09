@@ -9,6 +9,7 @@
 mod api;
 mod approvals;
 mod pty;
+mod worktree;
 #[cfg(windows)]
 mod wsl;
 
@@ -155,6 +156,18 @@ async fn main() {
                 // No connected maps is fine.
                 let _ = reducer.deltas.send(msg);
             }
+        }
+    });
+
+    // Worktrees of sessions that ended without being dismissed.
+    let sweeper = shared.clone();
+    tokio::spawn(async move {
+        let mut reported = std::collections::HashSet::new();
+        // Let the first replay of history settle before judging anything ended.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        loop {
+            api::sweep_worktrees(&sweeper, &mut reported).await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
         }
     });
 

@@ -116,6 +116,8 @@ export interface SpawnRequest {
   permission_mode?: string;
   chrome?: boolean;
   model?: string;
+  /** Start in its own git worktree and branch. */
+  isolate?: boolean;
   cols?: number;
   rows?: number;
 }

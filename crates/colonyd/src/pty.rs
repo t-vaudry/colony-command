@@ -61,6 +61,10 @@ pub struct SpawnRequest {
     /// `--model`: an alias ("opus", "sonnet", "haiku") or a full model id.
     #[serde(default)]
     pub model: Option<String>,
+    /// Start a new conversation in its own git worktree and branch, so bots
+    /// on one repository don't share a checkout. Handled before `spawn`.
+    #[serde(default)]
+    pub isolate: bool,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
