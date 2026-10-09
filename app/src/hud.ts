@@ -525,6 +525,11 @@ export class Hud {
     const diffRow = a.diff_stat
       ? `<div class="fact"><span class="k">Changes</span><span title="Uncommitted and untracked work in the session's folder, plus commits on its worktree branch">${esc(diffText(a.diff_stat))}</span></div>`
       : "";
+    // Sessions Colony didn't start: its controls are limited, and the panel says so up front.
+    const adopted = a.kind === "main" && !a.terminal && !a.paused_at;
+    const live = a.state !== "ended" && a.state !== "crashed";
+    const ours = !!a.terminal || !!a.paused_at || a.entrypoint === "colony";
+    const originBadge = `<div class="origin ${ours ? "colony" : "adopted"}" title="${esc(ours ? "Colony started this session and can type into it." : "Colony found this session running. It can watch it, but not type into it.")}">${esc(ours ? "Started by Colony" : `Adopted · ${originLabel(a)}`)}</div>`;
     const resume = `claude --resume ${a.session_id}`;
     const wt = worktreeName(a.project_dir ?? a.cwd);
     const reply = a.last_message_full ?? a.last_message;
@@ -544,11 +549,13 @@ export class Hud {
           ? `<button type="button" data-cancel-pause="${esc(a.id)}">Cancel pause</button>`
           : `<button type="button" data-pause="${esc(a.id)}" title="${esc(a.state === "working" ? "Waits for this turn to end, then stops the session. Resume carries on with the conversation intact." : "Stops the session now (it is between turns). Resume carries on with the conversation intact.")}">Pause</button>`
         : "",
+      adopted && live && a.host === "win" && a.pid ? `<button type="button" data-focus="${esc(a.id)}" title="Bring the terminal window this session runs in to the front (best effort)">Focus terminal</button>` : "",
       main && !a.terminal && !a.paused_at ? `<button type="button" class="primary" data-resume="${esc(a.id)}" title="Start this session in a Colony terminal so you can talk to it from here">Resume in Colony</button>` : "",
       main
         ? `<details class="menu" data-sec="more"${secOpen("more")}><summary>More</summary><div class="menu-list">
             <button type="button" data-new-here="${esc(a.id)}">New session here</button>
             ${!a.terminal ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
+            ${adopted && live && (a.pids.length || a.pid) ? `<button type="button" class="danger" data-kill="${esc(a.id)}" title="Ends this session's claude process (and its tools) and nothing else. The conversation stays on disk and can be resumed.">Kill process</button>` : ""}
             ${a.terminal ? `<button type="button" class="danger" data-end="${esc(a.id)}" title="Stop the session's process. It stays on the map as ended.">End session</button>` : ""}
             <button type="button" class="danger" data-dismiss="${esc(a.id)}" title="End every copy of this session and clear it off the map. The conversation stays on disk and can still be resumed.">Dismiss from map</button>
           </div></details>`
@@ -557,6 +564,7 @@ export class Hud {
 
     setHtml(this.panel, `
       <div class="head">
+        ${main ? originBadge : ""}
         <div class="k">${a.kind === "subagent" ? `Subagent of ${esc(parent?.name ?? "?")}` : esc(a.project_name ?? "unknown project")}</div>
         <h2>${esc(a.name)}</h2>
         <div><span class="pill ${sev ?? a.state}">${esc(stateLabel(a))}</span> <span class="muted">for ${since(a.state_since)}</span></div>
@@ -634,9 +642,9 @@ export class Hud {
       }
       ${
         main && !a.terminal && !a.paused_at
-          ? `<p class="muted small">Colony didn't start this session, so it can't type into it or pause it (it only stops sessions it owns). ${
+          ? `<p class="muted small"><b>Can't type here.</b> Colony didn't start this session, so it can only watch it (and Kill or Dismiss it). ${
               a.state === "ready_to_review" ? "Mark reviewed only moves it off the dock. " : ""
-            }Resume it here to talk to it from the map, or reply in ${a.entrypoint === "claude-desktop" ? "the Claude desktop app" : "its terminal"}.</p>`
+            }Use <b>Resume in Colony</b> to talk to it from the map, or reply in ${a.entrypoint === "claude-desktop" ? "the Claude desktop app" : "its terminal"}.</p>`
           : ""
       }`);
   }
@@ -799,6 +807,14 @@ export class Hud {
     if (el.dataset.endOther) {
       if (!this.daemon.terminate(el.dataset.endOther)) this.toast("Not connected to colonyd.");
       else el.textContent = "Ending…";
+    }
+    if (el.dataset.focus && !this.daemon.focus(el.dataset.focus)) this.toast("Not connected to colonyd.");
+    if (el.dataset.kill) {
+      const a = this.daemon.agents.get(el.dataset.kill);
+      const busy = a && (a.state === "working" || a.state === "needs_input" || a.state === "awaiting_reply");
+      if (!confirmed(el, busy ? "Still in use. Click again to kill it" : "Click again to kill its process")) return;
+      if (!this.daemon.terminate(el.dataset.kill)) this.toast("Not connected to colonyd.");
+      else el.setAttribute("disabled", "");
     }
     if (el.dataset.cancelMove) {
       this.moveChoice = null;
