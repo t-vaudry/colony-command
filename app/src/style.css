@@ -677,7 +677,6 @@ button[disabled] {
   border-left: 3px solid var(--ok);
 }
 .ask-message {
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 14px;
   line-height: 1.5;
@@ -752,4 +751,38 @@ input.other {
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 6px 8px;
+}
+
+/* Rendered Markdown in questions and messages */
+.md p,
+.md ul,
+.md ol {
+  margin: 0 0 8px;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md ul,
+.md ol {
+  padding-left: 20px;
+}
+.md code,
+.opt-label code,
+.opt-desc code {
+  font-family: var(--f-mono);
+  font-size: 0.9em;
+}
+.md code {
+  padding: 1px 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.md pre.ask-block {
+  margin: 0 0 8px;
+}
+.md pre code {
+  padding: 0;
+  border: 0;
+  background: none;
 }

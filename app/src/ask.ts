@@ -2,6 +2,7 @@
 // options, a command or diff awaiting permission, or the full text of a
 // question Claude asked at the end of a turn.
 
+import { md, mdInline } from "./markdown";
 import type { Agent } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -89,13 +90,13 @@ function questionCard(a: Agent, qs: Question[], picks: Pick[]): string {
         const pick = picks[qi];
         return `<fieldset class="q">
           <legend>${q.header ? `<span class="chip-h">${esc(q.header)}</span>` : ""}</legend>
-          <p class="q-text">${esc(q.question)}</p>
+          <div class="q-text md">${md(q.question)}</div>
           ${q.multiSelect ? `<p class="muted small">Choose any that apply.</p>` : ""}
           <div class="opts">${q.options
             .map((o) => {
               const on = pick?.labels.includes(o.label);
               return `<button type="button" class="opt${on ? " on" : ""}" aria-pressed="${!!on}" data-pick="${req}" data-q="${qi}" data-label="${esc(o.label)}" data-multi="${q.multiSelect ? 1 : ""}">
-                <span class="opt-label">${esc(o.label)}</span>${o.description ? `<span class="opt-desc">${esc(o.description)}</span>` : ""}
+                <span class="opt-label">${mdInline(o.label)}</span>${o.description ? `<span class="opt-desc">${mdInline(o.description)}</span>` : ""}
               </button>`;
             })
             .join("")}</div>
@@ -131,7 +132,7 @@ export function askCard(a: Agent, picks: Pick[]): string {
   if (a.state === "awaiting_reply" && (a.last_message_full || a.last_message)) {
     return `<div class="choice ask big" role="group" aria-label="Question from Claude">
       <p class="ask-title"><b>${esc(a.name)} asked</b></p>
-      <div class="ask-message">${esc(a.last_message_full ?? a.last_message ?? "")}</div>
+      <div class="ask-message md">${md(a.last_message_full ?? a.last_message ?? "")}</div>
       <p class="muted small">Answer in the box below.</p>
     </div>`;
   }
