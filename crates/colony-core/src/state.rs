@@ -298,6 +298,11 @@ impl Colony {
             a.name = self.unique_name(&a.name);
             self.agents.insert(sid.clone(), a);
         }
+        // A name the user chose when starting the session replaces the drawn one.
+        if let DomainEvent::Renamed { name } = &e.event {
+            let name = self.unique_name_except(name.trim(), &sid);
+            self.agents.get_mut(&sid).expect("inserted above").name = name;
+        }
         let main = self.agents.get_mut(&sid).expect("inserted above");
         match (&e.event, &e.cwd) {
             // Registry cwd is handled below as the project folder.
@@ -382,6 +387,7 @@ impl Colony {
                     }
                 }
             }
+            DomainEvent::Renamed { .. } => {}
             DomainEvent::ModelSet { model } => {
                 main.model = Some(model.clone());
                 main.model_hint = models::suggest(main.model.as_deref(), &main.recent_tools);
@@ -672,7 +678,12 @@ impl Colony {
     /// Names come from a fixed list, so two sessions can draw the same one.
     /// The later one gets a number: "Indigo 2".
     fn unique_name(&self, base: &str) -> String {
-        let taken = |n: &str| self.agents.values().any(|a| a.kind == AgentKind::Main && a.name == n);
+        self.unique_name_except(base, "")
+    }
+
+    /// As `unique_name`, ignoring the session being named.
+    fn unique_name_except(&self, base: &str, session_id: &str) -> String {
+        let taken = |n: &str| self.agents.values().any(|a| a.kind == AgentKind::Main && a.session_id != session_id && a.name == n);
         if !taken(base) {
             return base.to_string();
         }

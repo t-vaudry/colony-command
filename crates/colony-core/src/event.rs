@@ -71,6 +71,8 @@ pub enum DomainEvent {
     },
     /// The session switched models (through Colony, or a model-switch hook).
     ModelSet { model: String },
+    /// The user named the session when starting it in Colony.
+    Renamed { name: String },
     /// `synthetic`: injected by Claude Code (task notifications, slash-command
     /// wrappers) rather than typed, so it is not the session's objective.
     PromptSubmitted {
