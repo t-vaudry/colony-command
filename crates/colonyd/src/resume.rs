@@ -30,10 +30,14 @@ const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 const FIRST_PAUSE_MS: u64 = 30_000;
 /// A restarted session that has run this long counts as healthy again.
 const HEALTHY_AFTER_MS: u64 = 10 * 60 * 1000;
-/// A record whose session isn't on the map (yet, or any more) is kept this long.
+/// A record whose session isn't on the map (yet, or any more) is kept this long
+/// after it was last seen there or colonyd started, whichever is later.
 const UNSEEN_GRACE_MS: u64 = 15 * 60 * 1000;
 /// What the restarted bot is told, since `--resume` alone just waits at the prompt.
 pub const RESUME_PROMPT: &str = "Colony restarted this session because its terminal was interrupted (not by you or the user). Continue the task from where you left off; if you were waiting for the user's answer, say so again briefly.";
+/// Restarts begun in one pass; the rest wait for the next, so a reboot doesn't
+/// start every bot at once.
+const PER_PASS: usize = 2;
 const EVERY: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,8 +48,14 @@ pub struct Record {
     #[serde(default)]
     pub last_attempt_at: u64,
     /// When Colony first started the session.
-    #[serde(default = "now_ms")]
+    #[serde(default)]
     pub created_at: u64,
+    /// Last time the session was on the map.
+    #[serde(default)]
+    pub last_seen_at: u64,
+    /// It was idle or waiting for review when last seen: nothing to carry on with.
+    #[serde(default)]
+    pub quiet: bool,
     /// Times of restarts in the last 24 hours.
     #[serde(default)]
     pub recent: Vec<u64>,
@@ -86,16 +96,16 @@ fn pause_ms(attempts: u32) -> u64 {
     }
 }
 
-/// `worktrees`: sessions that still have a worktree listed. `quiet`: sessions
-/// last seen idle or waiting for review, which have nothing to carry on with.
-pub fn plan(records: &Records, agents: &HashMap<String, View>, worktrees: &HashSet<String>, quiet: &HashSet<String>, now: u64) -> Plan {
+/// `worktrees`: sessions that still have a worktree listed. `started`: when
+/// this colonyd began, since replay takes a while to put sessions on the map.
+pub fn plan(records: &Records, agents: &HashMap<String, View>, worktrees: &HashSet<String>, started: u64, now: u64) -> Plan {
     let mut p = Plan::default();
     for (sid, r) in records {
         match agents.get(sid) {
             // Not on the map: not known to be over. Replay may not have got
             // to it, or the machine was off longer than the replay reaches.
             None => {
-                if now.saturating_sub(r.created_at) > UNSEEN_GRACE_MS && !worktrees.contains(sid) {
+                if now.saturating_sub(r.created_at.max(r.last_seen_at).max(started)) > UNSEEN_GRACE_MS && !worktrees.contains(sid) {
                     p.forget.push(sid.clone());
                 }
             }
@@ -106,7 +116,7 @@ pub fn plan(records: &Records, agents: &HashMap<String, View>, worktrees: &HashS
                     if !r.gave_up {
                         p.give_up.push(sid.clone());
                     }
-                } else if !quiet.contains(sid) {
+                } else if !r.quiet {
                     // From the later of the last restart and this crash.
                     let from = r.last_attempt_at.max(v.since);
                     if now.saturating_sub(from) >= pause_ms(r.attempts) {
@@ -114,7 +124,7 @@ pub fn plan(records: &Records, agents: &HashMap<String, View>, worktrees: &HashS
                     }
                 }
             }
-            Some(v) if v.has_terminal => {
+            Some(v) if v.has_terminal && v.state != AgentState::Crashed => {
                 if (r.attempts > 0 || r.gave_up) && now.saturating_sub(r.last_attempt_at) >= HEALTHY_AFTER_MS {
                     p.reset.push(sid.clone());
                 }
@@ -172,6 +182,13 @@ pub fn remember(session_id: &str, req: &SpawnRequest) {
     update(|all| note(all, session_id, req, now_ms()));
 }
 
+/// Whether a restart of this session is still wanted: dismissing or ending it
+/// removes the record. Checked just before a restart's terminal is launched.
+pub fn still_wanted(session_id: &str) -> bool {
+    let _g = lock();
+    load().contains_key(session_id)
+}
+
 /// Never restart this session (dismissed, ended, or its worktree dealt with).
 pub fn forget(session_id: &str) {
     update(|all| {
@@ -189,7 +206,7 @@ fn note(all: &mut Records, session_id: &str, req: &SpawnRequest, now: u64) {
     match all.get_mut(session_id) {
         Some(r) => r.request = request,
         None => {
-            all.insert(session_id.to_string(), Record { request, attempts: 0, last_attempt_at: 0, created_at: now, recent: Vec::new(), gave_up: false });
+            all.insert(session_id.to_string(), Record { request, attempts: 0, last_attempt_at: 0, created_at: now, last_seen_at: now, quiet: false, recent: Vec::new(), gave_up: false });
         }
     }
 }
@@ -228,8 +245,7 @@ fn mark_gave_up(session_id: &str) {
 pub async fn supervise(shared: std::sync::Arc<crate::Shared>) {
     // Let the first replay of history settle before judging anything crashed.
     tokio::time::sleep(Duration::from_secs(60)).await;
-    // Sessions last seen idle or waiting for review.
-    let mut quiet: HashSet<String> = HashSet::new();
+    let started = now_ms();
     loop {
         let records = {
             let _g = lock();
@@ -245,15 +261,28 @@ pub async fn supervise(shared: std::sync::Arc<crate::Shared>) {
                     .map(|a| (a.session_id.clone(), View { state: a.state, has_terminal: a.terminal.is_some(), since: a.state_since }))
                     .collect()
             };
-            for (sid, v) in &agents {
-                match v.state {
-                    AgentState::Idle | AgentState::ReadyToReview => quiet.insert(sid.clone()),
-                    AgentState::Crashed => false,
-                    _ => quiet.remove(sid),
-                };
-            }
+            update(|all| {
+                let now = now_ms();
+                for (sid, r) in all.iter_mut() {
+                    let Some(v) = agents.get(sid) else { continue };
+                    // Written when it changes, not every pass.
+                    if now.saturating_sub(r.last_seen_at) > 5 * 60 * 1000 {
+                        r.last_seen_at = now;
+                    }
+                    match v.state {
+                        AgentState::Idle | AgentState::ReadyToReview => r.quiet = true,
+                        AgentState::Crashed => {}
+                        _ => r.quiet = false,
+                    }
+                }
+            });
+            // The plan sees what was just noted.
+            let records = {
+                let _g = lock();
+                load()
+            };
             let worktrees: HashSet<String> = crate::worktree::all().into_iter().map(|w| w.session_id).collect();
-            let p = plan(&records, &agents, &worktrees, &quiet, now_ms());
+            let p = plan(&records, &agents, &worktrees, started, now_ms());
             update(|all| {
                 for s in &p.forget {
                     all.remove(s);
@@ -272,7 +301,7 @@ pub async fn supervise(shared: std::sync::Arc<crate::Shared>) {
                 crate::api::notice(&shared, format!("{name}: was interrupted and Colony has stopped restarting it automatically; resume it yourself"));
             }
             let enabled = !colony_home().join("no-auto-resume").exists();
-            for sid in p.resume.into_iter().filter(|_| enabled) {
+            for sid in p.resume.into_iter().filter(|_| enabled).take(PER_PASS) {
                 // Dismissed, ended or resumed by hand since the plan was made?
                 let still = {
                     let colony = shared.colony.read().await;
@@ -288,6 +317,7 @@ pub async fn supervise(shared: std::sync::Arc<crate::Shared>) {
                 let mut req = r.request.clone();
                 req.resume = Some(sid.clone());
                 req.prompt = Some(RESUME_PROMPT.into());
+                req.auto = true;
                 if let Err(e) = crate::api::spawn_session(&shared, req).await {
                     log(format!("could not resume session {sid}: {e}"));
                     if e == crate::pty::NOT_CONNECTED {
@@ -321,11 +351,12 @@ mod tests {
             isolate: false,
             cols: 120,
             rows: 32,
+            auto: false,
         }
     }
 
     fn rec(attempts: u32, last: u64) -> Record {
-        Record { request: request(), attempts, last_attempt_at: last, created_at: 0, recent: Vec::new(), gave_up: false }
+        Record { request: request(), attempts, last_attempt_at: last, created_at: 0, last_seen_at: 0, quiet: false, recent: Vec::new(), gave_up: false }
     }
 
     fn view(state: AgentState, has_terminal: bool, since: u64) -> View {
@@ -333,13 +364,13 @@ mod tests {
     }
 
     fn run(v: Option<View>, r: Record) -> Plan {
-        run_with(v, r, &HashSet::new(), &HashSet::new())
+        run_with(v, r, &HashSet::new(), 0)
     }
 
-    fn run_with(v: Option<View>, r: Record, worktrees: &HashSet<String>, quiet: &HashSet<String>) -> Plan {
+    fn run_with(v: Option<View>, r: Record, worktrees: &HashSet<String>, started: u64) -> Plan {
         let records: Records = [("s".to_string(), r)].into();
         let agents: HashMap<_, _> = v.into_iter().map(|v| ("s".to_string(), v)).collect();
-        plan(&records, &agents, worktrees, quiet, NOW)
+        plan(&records, &agents, worktrees, started, NOW)
     }
 
     fn crashed(since: u64) -> Option<View> {
@@ -385,14 +416,20 @@ mod tests {
         fresh.created_at = NOW - 1_000;
         assert_eq!(run(None, fresh), Plan::default());
         let wt: HashSet<String> = ["s".to_string()].into();
-        assert_eq!(run_with(None, rec(0, 0), &wt, &HashSet::new()), Plan::default(), "its worktree is still listed");
+        assert_eq!(run_with(None, rec(0, 0), &wt, 0), Plan::default(), "its worktree is still listed");
         assert_eq!(run(None, rec(0, 0)).forget, ["s"]);
+        // Just after colonyd started, replay may not have reached it; nor if it was seen lately.
+        assert_eq!(run_with(None, rec(0, 0), &HashSet::new(), NOW - 1_000), Plan::default());
+        let mut seen = rec(0, 0);
+        seen.last_seen_at = NOW - 1_000;
+        assert_eq!(run(None, seen), Plan::default());
     }
 
     #[test]
     fn idle_and_finished_bots_are_not_restarted() {
-        let quiet: HashSet<String> = ["s".to_string()].into();
-        assert_eq!(run_with(crashed(NOW - 6_000), rec(0, 0), &HashSet::new(), &quiet), Plan::default());
+        let mut r = rec(0, 0);
+        r.quiet = true;
+        assert_eq!(run(crashed(NOW - 6_000), r), Plan::default());
     }
 
     #[test]
@@ -402,7 +439,8 @@ mod tests {
         assert_eq!(run(working, rec(2, NOW - 60_000)), Plan::default());
         assert_eq!(run(working, rec(2, 0)).reset, ["s"]);
         // Mid-restart: crashed state but a terminal is already back.
-        assert!(run(Some(view(AgentState::Crashed, true, 0)), rec(1, 0)).resume.is_empty());
+        let mid = run(Some(view(AgentState::Crashed, true, 0)), rec(1, 0));
+        assert_eq!(mid, Plan::default());
     }
 
     #[test]

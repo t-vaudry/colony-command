@@ -796,6 +796,7 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
         isolate: false,
         cols: 120,
         rows: 32,
+        auto: false,
     });
     if has_conversation {
         req.resume = Some(session_id.clone());
@@ -805,6 +806,7 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
         req.session_id = Some(session_id.clone());
     }
     req.prompt = prompt;
+    req.auto = false;
     req.name = None;
     if model.is_some() {
         req.model = model.clone();

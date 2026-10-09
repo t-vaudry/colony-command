@@ -69,6 +69,10 @@ pub struct SpawnRequest {
     pub cols: u16,
     #[serde(default = "default_rows")]
     pub rows: u16,
+    /// A restart by colonyd's supervisor, not the user: it must not bring back
+    /// a record that was removed meanwhile (the session was dismissed).
+    #[serde(skip)]
+    pub auto: bool,
 }
 
 pub fn default_cols() -> u16 {
@@ -228,9 +232,14 @@ impl PtyHost {
             }
         };
 
+        if req.auto && !crate::resume::still_wanted(&session_id) {
+            return Err("that session was dismissed or ended; not restarting it".into());
+        }
         let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows).await?;
         log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
-        crate::resume::remember(&session_id, &req);
+        if !req.auto {
+            crate::resume::remember(&session_id, &req);
+        }
         self.requests.lock().unwrap().insert(term_id.clone(), req);
         Ok(Spawned { term_id, session_id })
     }
