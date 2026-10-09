@@ -30,6 +30,8 @@ fn setup_options(app: &tauri::AppHandle) -> Options {
 struct SetupStatus {
     /// The version this app installs.
     version: &'static str,
+    /// Version plus the hook binary's hash: changes when the hook does, even in a dev build.
+    fingerprint: String,
     targets: Vec<TargetStatus>,
 }
 
@@ -49,7 +51,7 @@ async fn setup_status(app: tauri::AppHandle, include_stopped: Vec<String>) -> Re
                 colony_setup::status(&opts, &t)
             })
             .collect();
-        SetupStatus { version: colony_setup::VERSION, targets }
+        SetupStatus { version: colony_setup::VERSION, fingerprint: colony_setup::bundle_fingerprint(&opts), targets }
     })
     .await
     .map_err(|e| e.to_string())

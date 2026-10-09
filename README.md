@@ -121,6 +121,19 @@ Or inside Ubuntu:
 
 ## Run the app
 
+For development with hot reload:
+
+    cd app
+    npm install
+    npm run tauri dev
+
+`tauri dev` first builds `colony-hook`, `colony-setup`, `colonyd` and `colony-ptyd`
+into `target/debug` (the `dev:stage` script), which is where the app and Set up Colony
+look for them, so setup works in a dev checkout. With a plain `cargo build`, build
+them yourself: `cargo build -p colony-hook -p colony-setup -p colonyd -p colony-ptyd`.
+If one is missing, Set up Colony names the file and where it looked, and installs
+nothing. It is offered again whenever the hook binary changes.
+
     powershell -File scripts/build-app.ps1
     target/release/colony-command.exe
 
