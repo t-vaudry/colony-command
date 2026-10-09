@@ -1321,3 +1321,70 @@ details.menu[open] > summary {
 
 .cost-row { margin: 8px 0; }
 .cost-row svg { display: block; margin-top: 2px; }
+
+/* Dictation: one mic button that floats over the focused message box. */
+#mic {
+  position: fixed;
+  z-index: 50;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  cursor: pointer;
+}
+#mic[hidden] {
+  display: none;
+}
+#mic:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+#mic[data-mode="idle"]::before {
+  content: "";
+  width: 8px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-radius: 5px;
+  box-sizing: border-box;
+}
+#mic[data-mode="recording"] {
+  color: #fff;
+  background: var(--crit);
+  border-color: var(--crit);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+#mic[data-mode="recording"]::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  background: currentColor;
+  border-radius: 2px;
+}
+#mic[data-mode="downloading"] {
+  width: auto;
+  padding: 0 8px;
+  border-radius: 13px;
+}
+@keyframes mic-pulse {
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--crit) 25%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #mic[data-mode="recording"] {
+    animation: none;
+  }
+}
+/* Room for the mic button in the corner of the boxes it dictates into. */
+#reply,
+#new-session textarea,
+textarea.resume-reply {
+  padding-right: 38px;
+}

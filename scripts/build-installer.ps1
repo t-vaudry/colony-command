@@ -15,6 +15,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 $tauri = Join-Path $root "app\src-tauri"
 $env:PATH = "C:\Program Files\nodejs;$env:USERPROFILE\.cargo\bin;$env:PATH"
+. (Join-Path $PSScriptRoot "build-prereqs.ps1")
 
 # Windows binaries, named the way Tauri's externalBin wants them.
 $triple = (rustc -vV | Select-String '^host: (.+)$').Matches[0].Groups[1].Value
