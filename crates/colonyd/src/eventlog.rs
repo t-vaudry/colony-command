@@ -18,11 +18,57 @@ pub fn path() -> PathBuf {
     colony_source::colony_home().join("events.jsonl")
 }
 
+/// Longest free text kept from a message or error.
+const KEEP_CHARS: usize = 300;
+
+/// The last `KEEP_CHARS` characters: the end of a reply is where its question
+/// and its "Done." are.
+fn tail(s: &str) -> String {
+    let n = s.chars().count();
+    if n <= KEEP_CHARS {
+        s.to_string()
+    } else {
+        s.chars().skip(n - KEEP_CHARS).collect()
+    }
+}
+
+/// What replay needs of an event: its kind and the flags that move a session
+/// between states. Prompts, tool targets and inputs (commands, file paths,
+/// anything a secret could be in) are dropped, and free text is cut short.
+fn redact(e: &Envelope) -> Envelope {
+    let mut e = e.clone();
+    match &mut e.event {
+        DomainEvent::PromptSubmitted { preview, full, .. } => {
+            preview.clear();
+            *full = None;
+        }
+        DomainEvent::ToolStarted { target, .. } | DomainEvent::PermissionRequested { target, .. } => *target = None,
+        DomainEvent::PermissionAsked { target, input, .. } => {
+            *target = None;
+            *input = None;
+        }
+        DomainEvent::ToolFinished { error, .. } => *error = error.as_deref().map(tail),
+        DomainEvent::Notified { message, .. } => *message = message.as_deref().map(tail),
+        DomainEvent::SubagentStopped { last_message, .. } | DomainEvent::TurnEnded { last_message } => *last_message = last_message.as_deref().map(tail),
+        DomainEvent::TurnFailed { error } => *error = tail(error),
+        _ => {}
+    }
+    e
+}
+
+/// How often a running daemon trims the file.
+const TRIM_EVERY_MS: u64 = 60 * 60_000;
+/// Or sooner, once this much has been written since the last trim.
+const TRIM_AFTER_BYTES: u64 = 8 * 1024 * 1024;
+
 pub struct EventLog {
+    path: PathBuf,
     out: Option<BufWriter<std::fs::File>>,
     /// Events at or before this were already logged by an earlier run: the
     /// daemon replays recent captures at startup and must not log them twice.
     floor: u64,
+    last_trim: u64,
+    written: u64,
 }
 
 impl EventLog {
@@ -30,8 +76,13 @@ impl EventLog {
     /// that fails the daemon runs on without a log.
     pub fn open(path: &Path, now_ms: u64) -> EventLog {
         let floor = trim(path, now_ms);
-        let out = std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(BufWriter::new);
-        EventLog { out, floor }
+        let mut log = EventLog { path: path.to_path_buf(), out: None, floor, last_trim: now_ms, written: 0 };
+        log.reopen();
+        log
+    }
+
+    fn reopen(&mut self) {
+        self.out = std::fs::OpenOptions::new().create(true).append(true).open(&self.path).ok().map(BufWriter::new);
     }
 
     pub fn record(&mut self, e: &Envelope) {
@@ -39,8 +90,10 @@ impl EventLog {
             return;
         }
         let Some(out) = self.out.as_mut() else { return };
-        if serde_json::to_writer(&mut *out, e).is_ok() {
-            let _ = out.write_all(b"\n");
+        let Ok(mut line) = serde_json::to_vec(&redact(e)) else { return };
+        line.push(b'\n');
+        if out.write_all(&line).is_ok() {
+            self.written += line.len() as u64;
         }
     }
 
@@ -48,6 +101,21 @@ impl EventLog {
         if let Some(out) = self.out.as_mut() {
             let _ = out.flush();
         }
+    }
+
+    /// Trim the file again if it has been an hour, or a lot has been written,
+    /// since the last time. A daemon that stays up for days would otherwise
+    /// outgrow the window and the size cap.
+    pub fn maybe_trim(&mut self, now_ms: u64) {
+        if now_ms.saturating_sub(self.last_trim) < TRIM_EVERY_MS && self.written < TRIM_AFTER_BYTES {
+            return;
+        }
+        self.flush();
+        self.out = None;
+        trim(&self.path, now_ms);
+        self.last_trim = now_ms;
+        self.written = 0;
+        self.reopen();
     }
 }
 
@@ -153,6 +221,45 @@ mod tests {
         assert_eq!(kept.iter().map(|e| e.ts).collect::<Vec<_>>(), vec![now - 2_000, now + 500]);
     }
 
+
+    #[test]
+    fn prompts_commands_and_long_messages_are_not_kept_verbatim() {
+        let p = tmp();
+        let mut log = EventLog::open(&p, 1_000);
+        log.record(&ev(2_000, DomainEvent::PromptSubmitted { preview: "use key sk-secret".into(), synthetic: false, task_ended: false, full: Some("use key sk-secret".into()) }));
+        log.record(&ev(
+            3_000,
+            DomainEvent::ToolStarted { agent_id: None, tool: "Bash".into(), target: Some("curl -H 'Authorization: sk-secret'".into()), tool_use_id: None, background: false },
+        ));
+        let long = format!("{}Should I continue?", "x".repeat(2_000));
+        log.record(&ev(4_000, DomainEvent::TurnEnded { last_message: Some(long) }));
+        log.flush();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("sk-secret"), "{text}");
+        assert!(text.contains("Bash"));
+        let events = read_window(&p, 0, u64::MAX);
+        let DomainEvent::TurnEnded { last_message: Some(m) } = &events[2].event else { panic!("{:?}", events[2]) };
+        assert_eq!(m.chars().count(), KEEP_CHARS);
+        assert!(m.ends_with("Should I continue?"));
+    }
+
+    #[test]
+    fn a_running_log_is_trimmed_after_an_hour() {
+        let p = tmp();
+        let now = 10 * RETAIN_MS;
+        let mut log = EventLog::open(&p, now - RETAIN_MS - 10_000);
+        log.record(&ev(now - RETAIN_MS - 5_000, started()));
+        log.record(&ev(now - 1_000, started()));
+        log.flush();
+        log.maybe_trim(now - RETAIN_MS);
+        assert_eq!(read_window(&p, 0, u64::MAX).len(), 2, "too soon to trim");
+        log.maybe_trim(now);
+        assert_eq!(read_window(&p, 0, u64::MAX).len(), 1);
+        // Still writable afterwards.
+        log.record(&ev(now + 1_000, started()));
+        log.flush();
+        assert_eq!(read_window(&p, 0, u64::MAX).len(), 2);
+    }
     #[test]
     fn usage_updates_are_not_logged() {
         let p = tmp();

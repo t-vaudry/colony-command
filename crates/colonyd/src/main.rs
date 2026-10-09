@@ -168,6 +168,7 @@ async fn main() {
                     delta_messages(&colony, &changed)
                 }
                 _ = tick.tick() => {
+                    tokio::task::block_in_place(|| events.maybe_trim(now_ms()));
                     let mut colony = reducer.colony.write().await;
                     let changed = colony.tick(now_ms());
                     reducer.approvals.release_answered(&colony);

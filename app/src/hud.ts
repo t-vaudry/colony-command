@@ -489,6 +489,8 @@ export class Hud {
 
   private renderPanel(): void {
     // A new time-lapse arrived: start it from the beginning.
+    // A request lost with the connection never answers.
+    if (this.replayLoading && this.daemon.status !== "live") this.replayLoading = false;
     if (this.daemon.replay !== this.replayShown) {
       this.replayShown = this.daemon.replay;
       this.replayLoading = false;
@@ -732,6 +734,12 @@ export class Hud {
       return;
     }
     this.replayLoading = true;
+    window.setTimeout(() => {
+      if (!this.replayLoading) return;
+      this.replayLoading = false;
+      this.toast("The time-lapse did not load. Try again.");
+      this.schedule();
+    }, 15_000);
     this.schedule();
   }
 
