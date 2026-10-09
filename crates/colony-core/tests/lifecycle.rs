@@ -454,3 +454,15 @@ fn model_and_hint_follow_the_work() {
     assert_eq!(r.colony.agents[SID].model.as_deref(), Some("haiku"));
     assert!(r.colony.agents[SID].model_hint.is_none());
 }
+
+#[test]
+fn a_name_chosen_at_spawn_replaces_the_drawn_one() {
+    use colony_core::DomainEvent::{Renamed, TerminalAttached};
+    let mut r = Run::new(HostId::Windows);
+    term(&mut r, TerminalAttached { term_id: "t1".into(), dir: "C:/x".into(), pid: None });
+    term(&mut r, Renamed { name: " Ada ".into() });
+    assert_eq!(r.colony.agents[SID].name, "Ada");
+    // Naming it again does not make it collide with itself.
+    term(&mut r, Renamed { name: "Ada".into() });
+    assert_eq!(r.colony.agents[SID].name, "Ada");
+}

@@ -173,8 +173,16 @@ async fn handle_command(shared: &Shared, conn: &mut Conn, text: &str) -> Option<
         }
         Command::Spawn(req) => {
             let wsl = matches!(req.host, colony_core::HostId::Wsl(_));
+            let chosen = req.name.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+            let host = req.host.clone();
             match pty.spawn(req).await {
                 Ok(s) => {
+                    if let Some(name) = chosen {
+                        let _ = shared
+                            .events
+                            .send(Envelope { ts: now_ms(), host, session_id: s.session_id.clone(), cwd: None, event: DomainEvent::Renamed { name } })
+                            .await;
+                    }
                     if wsl {
                         shared.wsl_wake.notify_one();
                     }
