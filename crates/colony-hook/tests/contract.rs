@@ -269,6 +269,46 @@ fn a_stdin_that_never_closes_does_not_hold_the_session() {
 }
 
 #[test]
+fn a_payload_that_arrives_late_is_still_recorded() {
+    // Claude Code can be slow to write the payload on a busy machine; it must not be dropped.
+    let home = tmp("late");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_colony-hook"))
+        .env("COLONY_HOME", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    thread::sleep(Duration::from_millis(300));
+    stdin.write_all(br#"{"session_id":"late","hook_event_name":"UserPromptSubmit"}"#).unwrap();
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    assert_eq!(files(&home.join("spool")).len(), 1, "the late payload was dropped");
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_complete_payload_is_recorded_even_if_stdin_stays_open() {
+    // Claude Code can write the payload at once and close the pipe late.
+    let home = tmp("open");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_colony-hook"))
+        .env("COLONY_HOME", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(br#"{"session_id":"open","hook_event_name":"SessionStart"}"#).unwrap();
+    stdin.flush().unwrap();
+    let start = Instant::now();
+    assert!(child.wait().unwrap().success()); // stdin is still open here
+    assert!(start.elapsed() < Duration::from_millis(900), "waited for the end of stdin");
+    assert_eq!(files(&home.join("spool")).len(), 1, "the payload was dropped");
+    drop(stdin);
+    let _ = fs::remove_dir_all(&home);
+}
+
+#[test]
 fn spooled_files_become_events_once_a_source_starts() {
     let home = tmp("drain");
     hook(&home, r#"{"session_id":"s","hook_event_name":"Stop","last_assistant_message":"done"}"#);
