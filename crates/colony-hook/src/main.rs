@@ -33,7 +33,10 @@ fn main() {
             match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 Ok(chunk) => {
                     buf.extend_from_slice(&chunk);
-                    if serde_json::from_slice::<serde_json::Value>(&buf).is_ok() {
+                    // Only a buffer that ends like a JSON object is worth parsing (a big payload
+                    // arrives in many chunks; parsing each prefix would be quadratic).
+                    let ends = buf.iter().rev().find(|b| !b.is_ascii_whitespace()) == Some(&b'}');
+                    if ends && serde_json::from_slice::<serde_json::Value>(&buf).is_ok() {
                         break;
                     }
                 }
