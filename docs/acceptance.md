@@ -201,13 +201,22 @@ What was slow and what changed (`app/src/world.ts`, `app/src/daemon.ts`,
 - The attention-budget motion ceiling (`HEALTHY`) and reduced-motion behaviour
   are unchanged; far-zoom dots do not move any differently.
 
-Still open at 500 sessions: 31 fps and a 133 ms p99. The "needs you" tray in the
-HUD grows with the number of waiting sessions (132 chips at 500) until it fills
-the window, leaving the map about 100 px tall, and rebuilds its HTML on each
-update (`setHtml` in `hud.ts` shows in the profile). It should cap its height and
-scroll, and render only when the set changes. That is outside this change's
-files. The remaining per-frame cost is mostly pixi's own per-element work for
-about 1400 particles plus the HUD's DOM updates.
+**HUD "needs you" tray (`hud.ts`, `style.css`).** At 500 sessions the tray
+listed ~130 chips, filled the window, and rebuilt its HTML on every update
+(`setHtml` was the top HUD entry in the profile, 241 ms self time). It now shows
+the first 12 chips plus a "+N more" chip that expands the list ("show less"
+collapses it), the strip is capped at 96 px and scrolls, and the HTML is only
+built when a cheap signature of the queue (ids, names, states, since,
+permission, selection, expanded) changes. Focus mode and reduced motion are
+untouched.
+
+| 500 sessions | fps | frame p99 | frames over 20 ms | page task / script per frame | JS heap |
+|---|---|---|---|---|---|
+| before | 41.2 (30.7 in the table above; noisy shared machine) | 66.9 ms | 33.8 % | 23.1 ms / 10.8 ms | 39 MB |
+| after | 59.9 | 17.0 ms | 0.1 % | 8.4 ms / 6.5 ms | 64 MB |
+
+`setHtml` no longer appears in the top self-time list. The remaining per-frame
+cost is mostly pixi's own per-element work for about 1400 particles.
 
 ## Gaps
 
