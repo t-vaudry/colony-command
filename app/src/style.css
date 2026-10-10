@@ -310,6 +310,9 @@ kbd {
   padding: 8px 16px;
   font-size: 13px;
   min-height: 44px;
+  /* Expanded lists scroll instead of eating the map. */
+  max-height: 96px;
+  overflow-y: auto;
 }
 .strip-label {
   font-family: var(--f-mono);

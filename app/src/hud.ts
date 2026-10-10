@@ -144,6 +144,11 @@ export class Hud {
         this.decide(el, el.dataset.req, el.dataset.decide as PermissionChoice);
         return;
       }
+      if (el && "stripMore" in el.dataset) {
+        this.stripOpen = !this.stripOpen;
+        this.schedule();
+        return;
+      }
       const id = el?.dataset.id;
       if (id) this.actions.select(id);
     });
@@ -382,6 +387,9 @@ export class Hud {
       : "";
   }
 
+  private stripSig = "";
+  private stripOpen = false;
+
   schedule(): void {
     if (this.scheduled) return;
     this.scheduled = true;
@@ -414,20 +422,31 @@ export class Hud {
     const queue = all
       .filter((a) => severity(a.state) === "critical" || severity(a.state) === "input")
       .sort((a, b) => (severity(a.state) === "critical" ? 0 : 1) - (severity(b.state) === "critical" ? 0 : 1) || a.state_since - b.state_since);
-    setHtml(this.strip, queue.length
-      ? `<span class="strip-label">Needs you</span>` +
-        queue
-          .map(
-            (a) =>
-              `<button type="button" class="porch-item ${severity(a.state)}${a.id === this.selected ? " sel" : ""}" data-id="${esc(a.id)}">` +
-              `<b>${esc(a.name)}</b> ${esc(stateLabel(a))} · ${since(a.state_since)}</button>` +
-              (a.permission
-                ? `<span class="quick"><button type="button" class="primary" data-decide="allow" data-req="${esc(a.permission.request_id)}" title="Allow ${esc(a.permission.tool)}">Allow</button><button type="button" class="danger" data-decide="deny" data-req="${esc(a.permission.request_id)}">Deny</button></span>`
-                : ""),
-          )
-          .join("") +
-        `<span class="hint">Space: next</span>`
-      : `<span class="strip-label calm">Nothing needs you right now.</span>`);
+    // Cheap signature of what the tray shows: skip building ~130 chips of HTML when nothing changed.
+    const CAP = 12;
+    let sig = `${this.selected}|${this.stripOpen}|${queue.length}`;
+    for (const a of queue) sig += `|${a.id},${a.name},${a.state},${a.state_since},${a.reason ?? ""},${a.permission?.request_id ?? ""}`;
+    if (sig !== this.stripSig) {
+      this.stripSig = sig;
+      const shown = this.stripOpen || queue.length <= CAP ? queue : queue.slice(0, CAP);
+      const more = queue.length - shown.length;
+      setHtml(this.strip, queue.length
+        ? `<span class="strip-label">Needs you</span>` +
+          shown
+            .map(
+              (a) =>
+                `<button type="button" class="porch-item ${severity(a.state)}${a.id === this.selected ? " sel" : ""}" data-id="${esc(a.id)}">` +
+                `<b>${esc(a.name)}</b> ${esc(stateLabel(a))} · ${since(a.state_since)}</button>` +
+                (a.permission
+                  ? `<span class="quick"><button type="button" class="primary" data-decide="allow" data-req="${esc(a.permission.request_id)}" title="Allow ${esc(a.permission.tool)}">Allow</button><button type="button" class="danger" data-decide="deny" data-req="${esc(a.permission.request_id)}">Deny</button></span>`
+                  : ""),
+            )
+            .join("") +
+          (more > 0 ? `<button type="button" class="chip" data-strip-more>+${more} more</button>` : "") +
+          (this.stripOpen && queue.length > CAP ? `<button type="button" class="chip" data-strip-more>show less</button>` : "") +
+          `<span class="hint">Space: next</span>`
+        : `<span class="strip-label calm">Nothing needs you right now.</span>`);
+    }
 
     this.renderPanel();
     this.tickDurations();
