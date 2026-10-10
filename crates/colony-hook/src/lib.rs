@@ -23,9 +23,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-/// How long the hook waits for stdin. Only a stdin that never closes pays all of it; a writer
-/// that is merely slow (a cold start, a loaded or scanning machine) must not lose its payload.
-pub const STDIN_BUDGET: Duration = Duration::from_millis(300);
+/// How long the hook waits for stdin. Claude Code writes the payload right after starting the hook,
+/// but on a busy machine (several sessions starting, antivirus scanning) the write can land a few
+/// hundred ms late; at 40 ms the payload was dropped silently, and with it the session's first
+/// events and permission prompts (found with real Claude Code, scripts/acceptance.mjs real-windows).
+/// This only costs time when stdin never closes, which Claude Code doesn't do.
+pub const STDIN_BUDGET: Duration = Duration::from_millis(1000);
 /// How long it waits for colonyd to accept a connection (loopback, so a live
 /// daemon answers at once and a dead port refuses at once).
 const CONNECT_BUDGET: Duration = Duration::from_millis(15);

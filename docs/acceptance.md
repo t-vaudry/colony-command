@@ -25,7 +25,7 @@ builds.
 | 50 sessions render at 60 fps | 60 fps | 59.3-59.9 fps average, p99 frame 17 ms (headless Chrome, vsync-capped) | pass, with caveat |
 | Daemon idle CPU / RAM | < 1 % / < 80 MB | 0.46 % of one core, 9 MB working set | pass |
 
-Real Claude Code, Colony-started terminals (`colony-ptyd`) and WSL were **not**
+Real Claude Code was exercised for Windows and Colony terminals (see below); WSL was **not**
 exercised; see *Gaps*.
 
 ## Method and results
@@ -218,20 +218,66 @@ untouched.
 `setHtml` no longer appears in the top self-time list. The remaining per-frame
 cost is mostly pixi's own per-element work for about 1400 particles.
 
+## Real Claude Code (`real-windows`, `real-colony`, `real-wsl`)
+
+`node scripts/acceptance.mjs real-windows|real-colony|real-wsl|real` drives the
+signed-in `claude` (Claude Code 2.1.296, haiku, a few tiny model calls) against
+a throwaway `colonyd` with its own `COLONY_HOME`, port and ptyd port. The user's
+running Colony is not involved: Claude runs with a fake `HOME` (so the user's
+installed hooks resolve to a copy of this build's `colony-hook` there) and
+`COLONY_HOME` pointing at the test daemon. Not part of `all`; it opens console
+windows. Test sessions have ids starting `a11acc00-`; `reap` ends leftovers.
+
+Run on 2026-10-09 (Windows). Results:
+
+| Check | Result |
+|---|---|
+| Windows terminal session (own console window): all hook events reach colonyd | pass |
+| Real permission prompt -> porch -> **Allow**: tool ran | pass; porch within a few ms of the hook, cleared within ~5 ms of the answer |
+| Real permission prompt -> porch -> **Deny**: tool did not run | pass |
+| First prompt -> bot `working` | 0.5-0.6 s (n=2) |
+| Killed console -> `crashed` | 2.5-4.4 s (n=4 across runs; one run 4.35 s, close to the 5 s budget) |
+| Colony terminal (`colony-ptyd`): killed process -> `crashed` | 2.9 s |
+| Colony terminal: Kill from the map -> `ended` (not crashed) | 0.3 s |
+| Colony terminal: prompt -> porch -> Allow | pass |
+| Daemon killed mid-session: Claude Code still answers, process alive, hooks keep spooling | pass |
+
+### Bugs found and fixed (`colony-hook`)
+
+With the real Claude Code, SessionStart, UserPromptSubmit and, worst,
+PermissionRequest payloads were often silently dropped (no bot update, no porch;
+Claude's own prompt just appeared). Cause: the hook waited 40 ms for stdin to
+**close**. Claude Code writes the payload at once but can close the pipe late
+while a session is busy starting, so the payload was discarded. Fix: the hook
+returns as soon as stdin holds one complete JSON value, with a 1 s ceiling
+(`crates/colony-hook/src/main.rs`, `STDIN_BUDGET`), plus two tests (late payload;
+payload with stdin left open). Machines with an older installed hook need
+*Set up Colony* to refresh it.
+
+### Not tested
+
+- **WSL (`real-wsl`)**: the harness is written (isolated HOME in the distro,
+  the daemon's own WSL supervisor attaching the probe, approval relay through
+  `colony-approve.sh`) but the real WSL session never appeared on the map within
+  120 s in the runs made, and it was not debugged further. The probe attached
+  (`probe attached in Ubuntu`); the claude launch or its registry/hook path in
+  the isolated HOME is the suspect. So WSL timings, the WSL porch round trip
+  and WSL crash timing remain **unmeasured**. It also needs the user's WSL
+  sign-in (linked, not copied) and was last stopped mid-debug.
+- Permission prompt in a Colony terminal was only run with the new hook; the
+  old installed hook is affected by the bug above.
+- Daemon stopped: only mid-session with a live process; a held PermissionRequest
+  with the daemon dead is covered by the synthetic `failopen` section only.
+- After Deny the bot ended in `needs_input` rather than `ready_to_review` at the
+  end of the turn (observed once, not investigated).
+- fps and idle load were not re-run.
+
 ## Gaps
 
 What this does not prove:
 
-- **No real Claude Code.** Registry files, hook payloads and processes are
-  stand-ins shaped like the real ones. A real session's first-prompt latency
-  also includes Claude Code's own hook launch (this binary runs in about 10-50
-  ms, plus Windows process creation). Worth a manual check with a real `claude`
-  once.
-- **Colony-started terminals and WSL are not measured.** A kill of a terminal in
-  `colony-ptyd` takes the `TerminalExited` path, which uses the same
-  `CRASH_GRACE_MS` and the 1 s tick, so it should be about 1.5-2.5 s, but this
-  was not timed. WSL adds the probe's own poll and the stdio hop: not measured
-  (`COLONY_INGEST=1` deliberately keeps the test daemon away from real distros).
+- **The synthetic sections above** use stand-ins; see *Real Claude Code* for
+  the real-process results and what is still missing (WSL).
 - **fps is capped by vsync** at 60, so "59.9 fps" shows no stutter, not headroom.
   It ran in headless Chrome rather than the packaged Tauri window (WebView2),
   and other GPUs could differ. Maps with more than 50 sessions, the terminal

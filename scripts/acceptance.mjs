@@ -17,9 +17,10 @@
 // It never reads or touches the real ~/.colony or ~/.claude or the real colonyd.
 
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, openSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir, cpus } from "node:os";
+import { tmpdir, cpus, homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,15 +48,36 @@ async function freePort() {
   });
 }
 
+/** The environment a desktop-launched app has: no Claude Code session markers, no Git Bash/MSYS leftovers. */
+const desktopEnv = (e) => Object.fromEntries(Object.entries(e).filter(([k]) => !/^(CLAUDECODE|CLAUDE_|MCP_|MSYS|MINGW|SHELL$|TERM$|HOME$|EXEPATH$|ORIGINAL_PATH$|SSH_|PWD$|OLDPWD$|SHLVL$|_$)/i.test(k)));
+
 /** An isolated colonyd. `env` for anything that should talk to it. */
-async function startDaemon() {
+async function startDaemon({ real = false, wslHome = null } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "colony-accept-"));
   const home = join(dir, ".colony");
   mkdirSync(home, { recursive: true });
   mkdirSync(join(dir, ".claude", "sessions"), { recursive: true });
   const port = await freePort();
-  const env = { ...process.env, COLONY_HOME: home, COLONY_PORT: String(port), COLONY_INGEST: "1", USERPROFILE: dir, HOME: dir };
-  const child = spawn(bin("colonyd"), [], { env, stdio: "ignore" });
+  // `real`: its own COLONY_HOME and port, but the real user profile, so real Claude Code (signed in
+  // under it) registers its sessions where this daemon looks. COLONY_INGEST=1 keeps it away from the
+  // user's WSL distros, except with `wslHome`: then ingest is off, so its WSL supervisor attaches a
+  // probe to the running distro, with HOME there set to `wslHome` (carried by WSLENV) so the probe
+  // and hooks use an isolated ~/.colony and ~/.claude, not the user's.
+  const env = {
+    ...(real ? desktopEnv(process.env) : process.env),
+    COLONY_HOME: home, COLONY_PORT: String(port), COLONY_PTYD_PORT: String(await freePort()),
+    ...(real ? {} : { USERPROFILE: dir, HOME: dir }),
+    ...(wslHome ? { HOME: wslHome, WSLENV: "HOME" } : { COLONY_INGEST: "1" }),
+  };
+  // A fake HOME for Git Bash (which runs Claude Code's hooks): the user's `$HOME/.colony/bin/colony-hook.exe`
+  // entry then finds this build's hook, and the user's installed copy is not involved.
+  const fakeHome = join(dir, "home");
+  if (real) {
+    mkdirSync(join(fakeHome, ".colony", "bin"), { recursive: true });
+    copyFileSync(bin("colony-hook"), join(fakeHome, ".colony", "bin", "colony-hook" + exe));
+    if (!wslHome) env.HOME = fakeHome;
+  }
+  const child = spawn(bin("colonyd"), [], { env, stdio: process.env.KEEP ? ["ignore", openSync(join(dir, "colonyd.out"), "a"), openSync(join(dir, "colonyd.err"), "a")] : "ignore" });
   const deadline = Date.now() + 20000;
   let info;
   while (Date.now() < deadline) {
@@ -72,9 +94,14 @@ async function startDaemon() {
   }
   return {
     dir, home, port, env, pid: child.pid, token: info.token,
+    /** Only the daemon (a stopped colonyd); the folder stays. */
+    kill() { child.kill(); },
     stop() {
       child.kill();
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      // A colony-ptyd this daemon started outlives it by design; take it (and its terminals) down.
+      try { killTree(JSON.parse(readFileSync(join(home, "ptyd.json"), "utf8")).pid); } catch {}
+      if (process.env.KEEP) console.log("kept", dir);
+      else try { rmSync(dir, { recursive: true, force: true }); } catch {}
     },
   };
 }
@@ -85,14 +112,25 @@ const SPEED = process.env.SPEED ?? "1";
 /** A map: WebSocket client keeping the agent table and the time of each change. */
 async function connectMap(d) {
   const ws = new WebSocket(`ws://127.0.0.1:${d.port}/ws?token=${d.token}`);
-  const map = { agents: new Map(), waiters: [], ws, stats: { msgs: 0, bytes: 0 } };
+  const map = { agents: new Map(), waiters: [], ws, stats: { msgs: 0, bytes: 0 }, term: "", last: null, stateAt: new Map() };
+  map.send = (o) => ws.send(JSON.stringify(o));
+  const seen = (a) => {
+    // First time each session is seen in each state (and with a permission pending).
+    for (const k of [`${a.session_id}:${a.state}`, a.permission ? `${a.session_id}:permission` : null]) if (k && !map.stateAt.has(k)) map.stateAt.set(k, now());
+  };
   /** Applies one message; true when it changed the agent table. A "batch" carries several. */
   const apply = (msg) => {
     if (msg.type === "batch") return msg.msgs.map(apply).some(Boolean);
-    if (msg.type === "snapshot") msg.agents.forEach((a) => map.agents.set(a.id, a));
-    else if (msg.type === "upsert") map.agents.set(msg.agent.id, msg.agent);
+    if (msg.type === "snapshot") msg.agents.forEach((a) => { map.agents.set(a.id, a); seen(a); });
+    else if (msg.type === "upsert") { map.agents.set(msg.agent.id, msg.agent); seen(msg.agent); }
     else if (msg.type === "remove") map.agents.delete(msg.id);
-    else return false;
+    else if (msg.type === "term_data") {
+      map.term = (msg.reset ? "" : map.term) + Buffer.from(msg.data, "base64").toString("utf8");
+      return false;
+    } else if (msg.type === "spawned" || msg.type === "error") {
+      map.last = msg;
+      return false;
+    } else return false;
     return true;
   };
   ws.onmessage = (m) => {
@@ -391,10 +429,320 @@ async function fps() {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Real Claude Code (`real-windows`, `real-colony`, `real-wsl`, or `real` for all three).
+//
+// These need `claude` signed in on Windows (and in WSL for `real-wsl`), open real console windows,
+// and make a few tiny model calls (haiku). They are not part of `all`. Each uses its own colonyd
+// (own COLONY_HOME, port and ptyd port) and the real user profile, so the user's running Colony is
+// not disturbed: its hooks find the test daemon through the COLONY_HOME the test sets. The test
+// sessions carry a session id starting with `a11acc00-`; `reap` ends any left behind.
+
+const SID_PREFIX = "a11acc00-";
+const newSid = () => SID_PREFIX + randomUUID().slice(9);
+const TOOL_PROMPT = "Use the Bash tool to run exactly this command and nothing else: node -p 6*7*11111 . Then reply with the single word done.";
+const PLAIN_PROMPT = "Reply with the single word done and do not use any tools.";
+const DISTRO = process.env.WSL_DISTRO ?? "Ubuntu";
+const strip = (s) => s.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07]*\x07/g, "");
+const dbg = (...a) => process.env.VERBOSE && console.log("   ", ...a);
+/** Never deleted by this script. The trust question for a fresh folder defaults to "No, exit". */
+const trustedCwd = () => process.env.REAL_CWD ?? join(root, "..", "..", "..");
+const claudeSessions = () => join(homedir(), ".claude", "sessions");
+
+function windowsClaude() {
+  const r = spawnSync("where.exe", ["claude"], { encoding: "utf8" });
+  return r.status === 0 ? r.stdout.split(/\r?\n/)[0].trim() : null;
+}
+
+async function waitFor(pred, ms, step = 100) {
+  const t0 = now();
+  while (now() - t0 < ms) { if (pred()) return true; await sleep(step); }
+  return false;
+}
+
+/** Windows pids of Claude Code processes whose registry entry has a test session id. */
+function testSessions() {
+  const out = [];
+  try {
+    for (const f of readdirSync(claudeSessions())) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        const r = JSON.parse(readFileSync(join(claudeSessions(), f), "utf8"));
+        if (String(r.sessionId).startsWith(SID_PREFIX)) out.push(r);
+      } catch {}
+    }
+  } catch {}
+  return out;
+}
+const registryPid = (sid) => testSessions().find((r) => r.sessionId === sid)?.pid;
+
+/** Ends test sessions that are still running (Windows). */
+function reap() {
+  for (const r of testSessions()) {
+    killTree(r.pid);
+    console.log("ended", r.sessionId, r.pid);
+  }
+}
+
+/** Every hook payload that reaches the test daemon's folder, with the time it was first seen. */
+function watchHooks(d) {
+  const files = new Set(), events = [];
+  const iv = setInterval(() => {
+    for (const sub of ["capture", "spool"]) {
+      let names = [];
+      try { names = readdirSync(join(d.home, sub)); } catch { continue; }
+      for (const f of names) {
+        if (!f.endsWith(".json") || files.has(sub + f)) continue;
+        files.add(sub + f);
+        try {
+          const j = JSON.parse(readFileSync(join(d.home, sub, f), "utf8"));
+          events.push({ ev: j.hook_event_name, sid: j.session_id, t: now(), sub, transcript: j.transcript_path });
+        } catch {}
+      }
+    }
+  }, 25);
+  return {
+    events,
+    find: (sid, ev) => events.find((e) => e.sid === sid && e.ev === ev),
+    has: (sid, ev) => events.some((e) => e.sid === sid && e.ev === ev),
+    stop: () => clearInterval(iv),
+  };
+}
+
+/** Claude Code in its own console window (a real Windows terminal session). */
+/*  It runs with the user's own settings.json, so with the user's hooks: `$HOME/.colony/bin/colony-hook.exe`
+ *  is looked up in the test folder's fake HOME, where a copy of this build's colony-hook sits (what a
+ *  Colony install does, minus the user's older copy), and COLONY_HOME points at the test daemon. The
+ *  user's raw capture hooks write into the fake HOME too. Nothing reaches the user's real Colony. */
+function startConsole(d, sid, prompt) {
+  const debug = process.env.KEEP ? ` --debug-file "${join(d.dir, "claude-" + sid.slice(-6) + ".log")}"` : "";
+  const cmd = `/c start "colony-accept" /D "${trustedCwd()}" claude --session-id ${sid} --model haiku --permission-mode default${debug} "${prompt}"`;
+  return spawn("cmd.exe", [cmd], { env: { ...d.env }, stdio: "ignore", windowsVerbatimArguments: true });
+}
+
+const reportTimes = (name, xs, limit, unit = "ms") => report(name, xs.length > 0 && stats(xs).max < limit, xs.length ? fmt(stats(xs), unit) : "no samples");
+
+/** Answers a porch request and waits for Claude Code to act on it. */
+async function answerPorch(map, hooks, sid, choice) {
+  const ask = () => bySession(sid)(map.agents)?.permission;
+  await map.until(() => ask(), 120000, `(porch for ${sid})`);
+  const a = ask();
+  const tPorch = map.stateAt.get(sid + ":permission");
+  const tHook = hooks?.find(sid, "PermissionRequest")?.t;
+  map.send({ type: "permission", request_id: a.request_id, choice });
+  const tAnswer = now();
+  await map.until(() => !ask(), 15000, "(porch cleared)");
+  return { tool: a.tool, porchMs: tHook && tPorch ? Math.max(0, tPorch - tHook) : null, clearedMs: now() - tAnswer };
+}
+
+async function realWindows() {
+  if (!windowsClaude()) return report("real Claude Code in a Windows terminal", false, "claude not found on PATH");
+  const d = await startDaemon({ real: true });
+  const map = await connectMap(d);
+  const hooks = watchHooks(d);
+  const sids = [];
+  const porch = [], cleared = [], promptToWorking = [], launchToVisible = [], crash = [];
+  try {
+    for (const choice of ["allow", "deny"]) {
+      const sid = newSid();
+      sids.push(sid);
+      const t0 = now();
+      startConsole(d, sid, TOOL_PROMPT);
+      const tVisible = await map.until(bySession(sid), 120000, "(session appears)");
+      launchToVisible.push(tVisible - t0);
+      const r = await answerPorch(map, hooks, sid, choice);
+      if (r.porchMs !== null) porch.push(r.porchMs);
+      cleared.push(r.clearedMs);
+      await waitFor(() => hooks.has(sid, "Stop"), 90000);
+      const ran = hooks.has(sid, "PostToolUse");
+      report(`${choice === "allow" ? "Allow" : "Deny"} on the porch reaches Claude Code (tool ${r.tool})`, choice === "allow" ? ran : !ran && hooks.has(sid, "Stop"),
+        `tool ${ran ? "ran" : "did not run"}, hooks seen: ${hooks.events.filter((e) => e.sid === sid).map((e) => e.ev).join(",")}`);
+      const up = hooks.find(sid, "UserPromptSubmit")?.t, wk = map.stateAt.get(sid + ":working");
+      if (up && wk) promptToWorking.push(Math.max(0, wk - up));
+
+      // The terminal is killed: nothing says SessionEnd, the registry file stays.
+      const pid = registryPid(sid) ?? bySession(sid)(map.agents)?.pids?.[0];
+      dbg("killing", sid, pid, JSON.stringify([...map.agents.values()].filter((a) => a.session_id === sid).map((a) => [a.id, a.state, a.pids, a.parent_id])), readdirSync(claudeSessions()).join(" "));
+      const tk = now();
+      killTree(pid);
+      const tc = await map.until((a) => bySession(sid)(a)?.state === "crashed", 60000, "(crashed)");
+      crash.push(tc - tk);
+    }
+
+    // The daemon goes away while a session is mid-prompt: Claude Code must carry on.
+    const sid = newSid();
+    sids.push(sid);
+    const t0 = now();
+    startConsole(d, sid, PLAIN_PROMPT);
+    await waitFor(() => hooks.has(sid, "SessionStart"), 120000);
+    const transcript = hooks.find(sid, "SessionStart")?.transcript;
+    d.kill();
+    const answered = await waitFor(() => {
+      try { return /"role":"assistant"/.test(readFileSync(transcript, "utf8")); } catch { return false; }
+    }, 90000, 250);
+    const alive = registryPid(sid) && spawnSync("tasklist", ["/FI", `PID eq ${registryPid(sid)}`, "/NH"], { encoding: "utf8" }).stdout.includes(String(registryPid(sid)));
+    const after = hooks.events.filter((e) => e.sid === sid && e.sub === "spool").map((e) => e.ev);
+    report("daemon stopped mid-session: Claude Code still answers", answered && !!alive, `reply written to the transcript ${answered ? "yes" : "NO"} (${((now() - t0) / 1000).toFixed(1)} s after launch), process alive ${!!alive}, hooks kept in the spool: ${after.join(",") || "none"}`);
+    report("daemon stopped: hooks keep recording (spool)", after.length > 0, `${after.length} payloads`);
+  } finally {
+    hooks.stop();
+    map.ws.close();
+    for (const s of sids) { const p = registryPid(s); if (p) killTree(p); }
+    d.stop();
+  }
+  // Not a Colony latency: Claude Code writes its registry file when it has started up.
+  console.log(`info  launch of claude.exe to the bot on the map: ${fmt(stats(launchToVisible))}`);
+  reportTimes("real: first prompt to working (< 2000 ms)", promptToWorking, 2000);
+  reportTimes("real: permission prompt on the porch (< 1000 ms)", porch, 1000);
+  reportTimes("real: Allow/Deny answer clears the porch (< 1000 ms)", cleared, 1000);
+  reportTimes("real: killed terminal shows crashed (< 5000 ms)", crash, 5000);
+}
+
+/** A session in a terminal Colony owns (colony-ptyd). */
+async function realColony() {
+  if (!windowsClaude()) return report("real Claude Code in a Colony terminal", false, "claude not found on PATH");
+  const d = await startDaemon({ real: true });
+  const map = await connectMap(d);
+  const hooks = watchHooks(d);
+  const terms = [];
+  const spawnOne = async (prompt) => {
+    map.last = null;
+    map.send({ type: "spawn", host: "win", dir: trustedCwd(), prompt, model: "haiku", permission_mode: "default", chrome: false });
+    await waitFor(() => map.last, 30000);
+    if (map.last?.type !== "spawned") throw new Error("spawn failed: " + JSON.stringify(map.last));
+    terms.push(map.last.term);
+    map.send({ type: "attach", term: map.last.term });
+    return map.last;
+  };
+  const crash = [], ended = [];
+  try {
+    // Killed from outside (the process dies, the terminal host reports it exited).
+    let s = await spawnOne(PLAIN_PROMPT);
+    await map.until((a) => ["working", "idle", "ready_to_review"].includes(bySession(s.session_id)(a)?.state), 120000, "(session in a Colony terminal appears)");
+    await waitFor(() => registryPid(s.session_id) || bySession(s.session_id)(map.agents)?.pids?.length, 60000);
+    const pid = bySession(s.session_id)(map.agents).pids?.[0] ?? registryPid(s.session_id);
+    const tk = now();
+    killTree(pid);
+    crash.push((await map.until((a) => bySession(s.session_id)(a)?.state === "crashed", 60000, "(crashed)")) - tk);
+    report("Colony terminal: killed process shows crashed", true, `${(crash[0] / 1000).toFixed(1)} s`);
+
+    // Ended from the map (Kill): not a crash.
+    s = await spawnOne(PLAIN_PROMPT);
+    await map.until((a) => ["working", "idle", "ready_to_review"].includes(bySession(s.session_id)(a)?.state), 120000, "(second session appears)");
+    await sleep(3000);
+    const tm = now();
+    map.send({ type: "kill", term: s.term });
+    const te = await map.until((a) => ["ended"].includes(bySession(s.session_id)(a)?.state), 60000, "(ended)");
+    ended.push(te - tm);
+    report("Colony terminal: Kill from the map shows ended, not crashed", true, `${(ended[0] / 1000).toFixed(1)} s`);
+
+    // The permission round trip through a Colony terminal.
+    s = await spawnOne(TOOL_PROMPT);
+    const reached = await waitFor(() => bySession(s.session_id)(map.agents)?.permission, 90000);
+    if (!reached) {
+      report("Colony terminal: permission prompt reaches the porch", false,
+        `not on the porch after 90 s; state ${bySession(s.session_id)(map.agents)?.state}; hooks that reached colonyd: ${hooks.events.filter((e) => e.sid === s.session_id).map((e) => e.ev).join(",") || "none"}\n      terminal: ${strip(map.term).replace(/\s+/g, " ").slice(-300)}`);
+    } else {
+      const r = await answerPorch(map, hooks, s.session_id, "allow");
+      await waitFor(() => hooks.has(s.session_id, "PostToolUse"), 60000);
+      report("Colony terminal: permission prompt -> porch -> Allow", hooks.has(s.session_id, "PostToolUse"), `porch ${r.porchMs ?? "?"} ms after the hook, cleared ${r.clearedMs.toFixed(0)} ms after the answer`);
+    }
+  } finally {
+    hooks.stop();
+    for (const t of terms) try { map.send({ type: "kill", term: t }); } catch {}
+    await sleep(1000);
+    map.ws.close();
+    d.stop();
+  }
+  reportTimes("real: Colony terminal killed -> crashed (< 5000 ms)", crash, 5000);
+}
+
+// --- WSL ---------------------------------------------------------------------
+
+const toWsl = (p) => p.replace(/^([A-Za-z]):/, (_, l) => `/mnt/${l.toLowerCase()}`).replace(/\\/g, "/");
+const wsl = (...args) => spawnSync("wsl.exe", ["-d", DISTRO, "-e", ...args], { encoding: "utf8" });
+const WSL_HOME = "/tmp/colony-accept-wsl";
+
+/** An isolated HOME inside the distro: the installed hook, probe and approval script, hooks in settings.json, the user's trust and sign-in (linked, not copied). */
+function setupWslHome(dir) {
+  const real = wsl("sh", "-c", 'echo "$HOME"').stdout.trim();
+  const events = ["SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Notification", "Stop", "StopFailure", "SubagentStart", "SubagentStop"];
+  const entry = (command, timeout) => [{ hooks: [{ type: "command", command, timeout }] }];
+  const hooksCmd = '[ -x "$HOME/.colony/bin/colony-hook" ] && exec "$HOME/.colony/bin/colony-hook"; exit 0';
+  const approveCmd = '[ -f "$HOME/.colony/bin/colony-approve.sh" ] && exec sh "$HOME/.colony/bin/colony-approve.sh"; exit 0';
+  const hooks = Object.fromEntries(events.map((e) => [e, entry(hooksCmd, 5)]));
+  hooks.PermissionRequest = entry(approveCmd, 600);
+  writeFileSync(join(dir, "wsl-settings.json"), JSON.stringify({ hooks }, null, 2));
+  const sh = `set -e
+rm -rf ${WSL_HOME}; mkdir -p ${WSL_HOME}/.colony ${WSL_HOME}/.claude
+cp -r "${real}/.colony/bin" ${WSL_HOME}/.colony/bin
+cp "${real}/.claude.json" ${WSL_HOME}/.claude.json
+ln -s "${real}/.claude/.credentials.json" ${WSL_HOME}/.claude/.credentials.json
+cp ${toWsl(join(dir, "wsl-settings.json"))} ${WSL_HOME}/.claude/settings.json
+`;
+  writeFileSync(join(dir, "wsl-setup.sh"), sh);
+  const r = wsl("sh", toWsl(join(dir, "wsl-setup.sh")));
+  if (r.status !== 0) throw new Error("WSL setup failed: " + r.stderr);
+  return real;
+}
+
+function startWslConsole(dir, real, sid, prompt) {
+  const script = join(dir, `wsl-run-${sid.slice(-6)}.sh`);
+  writeFileSync(script, `export HOME=${WSL_HOME}\ncd "${real}"\nexec "${real}/.local/bin/claude" --session-id ${sid} --model haiku --permission-mode default "${prompt}"\n`);
+  return spawn("cmd.exe", [`/c start "colony-accept-wsl" wsl.exe -d ${DISTRO} -e sh ${toWsl(script)}`], { env: process.env, stdio: "ignore", windowsVerbatimArguments: true });
+}
+
+async function realWsl() {
+  if (wsl("sh", "-c", "command -v claude || test -x ~/.local/bin/claude && echo ok").status !== 0) return report("real Claude Code in WSL", false, `no claude in ${DISTRO}`);
+  // Without COLONY_INGEST, colonyd runs its own WSL supervisor: it starts the probe in the (running)
+  // distro and relays approvals. HOME for the probe is the isolated one, carried by WSLENV.
+  const stage = mkdtempSync(join(tmpdir(), "colony-accept-wslfiles-"));
+  const real = setupWslHome(stage); // before the daemon, so the probe it starts finds its HOME
+  const d = await startDaemon({ real: true, wslHome: WSL_HOME });
+  const map = await connectMap(d);
+  const sid = newSid();
+  const first = [], porch = [], crash = [];
+  try {
+    // The supervisor attaches within its rescan interval; the probe replays what it finds.
+    const t0 = now();
+    startWslConsole(stage, real, sid, TOOL_PROMPT);
+    const tVisible = await map.until(bySession(sid), 120000, "(WSL session appears)");
+    first.push(tVisible - t0);
+    const a0 = bySession(sid)(map.agents);
+    report("WSL session is tagged with its distro", String(a0.host) === `wsl:${DISTRO}`, `host ${a0.host}`);
+    const r = await answerPorch(map, null, sid, "allow");
+    const tAsk = map.stateAt.get(sid + ":permission");
+    porch.push(r.clearedMs);
+    const ran = await waitFor(() => bySession(sid)(map.agents)?.state !== "needs_input", 60000);
+    report("WSL: permission prompt -> porch -> Allow (probe relay, colony-approve.sh)", ran, `tool ${r.tool}, cleared ${r.clearedMs.toFixed(0)} ms after the answer, state now ${bySession(sid)(map.agents)?.state}`);
+    // Wait for the turn to finish, then kill the process inside the distro.
+    await waitFor(() => ["idle", "ready_to_review"].includes(bySession(sid)(map.agents)?.state), 90000);
+    const pid = bySession(sid)(map.agents).pids?.[0];
+    const tk = now();
+    wsl("kill", "-9", String(pid));
+    crash.push((await map.until((a) => bySession(sid)(a)?.state === "crashed", 60000, "(WSL crashed)")) - tk);
+    void tAsk;
+  } finally {
+    map.ws.close();
+    d.stop();
+    if (!process.env.KEEP) wsl("rm", "-rf", WSL_HOME);
+    if (!process.env.KEEP) try { rmSync(stage, { recursive: true, force: true }); } catch {}
+  }
+  reportTimes("real WSL: session visible after launch (< 2000 ms after the supervisor's rescan)", first, 20000);
+  reportTimes("real WSL: Allow clears the porch (< 1000 ms)", porch, 1000);
+  reportTimes("real WSL: killed terminal shows crashed (< 5000 ms)", crash, 5000);
+}
+
 const steps = { latency, failopen, load, fps };
+const manual = { "real-windows": realWindows, "real-colony": realColony, "real-wsl": realWsl, reap: async () => reap(), real: async () => { await realWindows(); await realColony(); await realWsl(); } };
 const which = process.argv[2];
+if (manual[which]) {
+  try { await manual[which](); } finally { reap(); }
+  process.exit(0);
+}
 if (!which || (which !== "all" && !steps[which])) {
-  console.error("usage: node scripts/acceptance.mjs latency|failopen|load|fps|all");
+  console.error("usage: node scripts/acceptance.mjs latency|failopen|load|fps|all\n       node scripts/acceptance.mjs real-windows|real-colony|real-wsl|real|reap   (real Claude Code)");
   process.exit(2);
 }
 for (const n of which === "all" ? Object.keys(steps) : [which]) {
