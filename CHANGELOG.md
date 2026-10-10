@@ -3,9 +3,9 @@
 The release workflow publishes the section matching the tag as the GitHub Release
 notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no section here.
 
-## [1.0.0] - first tagged release
+## [0.1.1] - first update-tested release
 
-The first release meant for people other than its author. It rolls up the V2
+The first release meant for people other than its author, and the first to exercise the in-app updater (0.1.0 → 0.1.1). It rolls up the V2
 roadmap releases 1.1 to 1.3 (`docs/design-spec.html`, section 13) and the installer.
 The installer is **not code-signed**: Windows SmartScreen warns about an unknown
 publisher until the file has built up reputation (see the README, Install).
