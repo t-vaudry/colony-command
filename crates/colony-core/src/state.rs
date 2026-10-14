@@ -935,10 +935,15 @@ impl Colony {
                     }
                 }
             }
-            DomainEvent::PermissionSettled { request_id } => {
+            DomainEvent::PermissionSettled { request_id, answered } => {
                 for a in self.agents.values_mut() {
                     if a.permission.as_ref().is_some_and(|p| &p.request_id == request_id) {
                         a.permission = None;
+                        // Back to work as soon as it's answered, not when the
+                        // tool finishes: a long build would keep it on the porch.
+                        if *answered && a.state == AgentState::NeedsInput {
+                            a.set_state(AgentState::Working, None, e.ts);
+                        }
                         changed.push(a.id.clone());
                     }
                 }

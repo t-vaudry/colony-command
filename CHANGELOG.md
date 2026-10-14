@@ -3,6 +3,17 @@
 The release workflow publishes the section matching the tag as the GitHub Release
 notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no section here.
 
+## [Unreleased]
+
+### Fixed
+
+- WSL bots approved on the map stayed on the front porch while they worked. Inside
+  a distro `colony-hook` found no `daemon.json` and spooled every event, which the
+  probe only read when it restarted; it now writes live captures while the probe is
+  listening.
+- A permission allowed or denied on the map sends the bot back to its district at
+  once, instead of when the approved tool finishes (a long build looked stuck).
+
 ## [0.1.1] - first update-tested release
 
 The first release meant for people other than its author, and the first to exercise the in-app updater (0.1.0 → 0.1.1). It rolls up the V2

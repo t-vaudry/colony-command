@@ -374,9 +374,16 @@ fn held_permission_requests_show_and_clear() {
     r.colony.apply(&Envelope::from_hook(HostId::Windows, pre_tool_ts - 500, &p).unwrap());
     assert!(r.colony.agents[SID].permission.is_some());
 
-    // Answered on the map.
-    term(&mut r, PermissionSettled { request_id: "q1".into() });
+    // Answered on the map: back to work at once, while the tool still runs.
+    term(&mut r, PermissionSettled { request_id: "q1".into(), answered: true });
     assert!(r.colony.agents[SID].permission.is_none());
+    assert_eq!(r.state(SID), AgentState::Working);
+
+    // Passed to the terminal (or timed out): still waiting there.
+    term(&mut r, PermissionAsked { request_id: "q3".into(), agent_id: None, tool: "Bash".into(), target: None, input: None });
+    term(&mut r, PermissionSettled { request_id: "q3".into(), answered: false });
+    assert!(r.colony.agents[SID].permission.is_none());
+    assert_eq!(r.state(SID), AgentState::NeedsInput);
 
     // Answered somewhere else: the tool finishing clears it.
     term(&mut r, PermissionAsked { request_id: "q2".into(), agent_id: None, tool: "Bash".into(), target: None, input: None });
