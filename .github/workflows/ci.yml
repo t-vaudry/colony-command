@@ -11,6 +11,8 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # release.yml starts this on a new tag (its own tag push can't trigger it).
+  workflow_dispatch:
 
 permissions:
   contents: read

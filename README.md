@@ -598,7 +598,22 @@ is not code-signed (a decision, see *About SmartScreen* above).
 same version (CI runs it on every push), and given a tag, the tag must match and
 `CHANGELOG.md` must have a `## [X.Y.Z]` section, which becomes the Release notes.
 
-### Cutting a release
+### Patch releases are automatic
+
+`.github/workflows/release.yml` cuts the next patch version once `main` has been
+quiet for 20 minutes (each push restarts the wait, so a burst of merges is one
+release), and only if `main` changed since the last tag and CI passed on it. It runs
+`scripts/bump-patch.sh`, commits `Release X.Y.Z` to `main`, tags it, and starts the
+build below on the tag. To release now, use **Run workflow** on the Release workflow
+in the Actions tab.
+
+Release notes come from `CHANGELOG.md`: add lines under `## [Unreleased]` in your
+pull request and they become the next version's section. If nothing is there, the
+notes list the pull requests merged since the last tag.
+
+### Cutting a release by hand
+
+For a minor or major version (the automatic one only bumps the patch):
 
 1. Pick `X.Y.Z`. Set it in `Cargo.toml` (`[workspace.package]`),
    `app/src-tauri/tauri.conf.json` and `app/package.json` / `package-lock.json`;
