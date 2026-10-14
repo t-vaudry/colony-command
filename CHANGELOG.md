@@ -5,6 +5,8 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-14
+
 ### Fixed
 
 - WSL bots approved on the map stayed on the front porch while they worked. Inside
