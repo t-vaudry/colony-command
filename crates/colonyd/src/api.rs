@@ -957,17 +957,21 @@ pub async fn hold_permission(shared: &Arc<Shared>, host: HostId, body: &str) -> 
     // take the request off the map.
     let events = shared.events.clone();
     let (sid, rid) = (p.session_id.clone(), request_id.clone());
+    let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let settled_answered = answered.clone();
     let _hold = Hold {
         approvals: shared.approvals.clone(),
         request_id: request_id.clone(),
         on_drop: Some(Box::new(move || {
-            let _ = events.try_send(Envelope { ts: now_ms(), host, session_id: sid, cwd: None, event: DomainEvent::PermissionSettled { request_id: rid } });
+            let answered = settled_answered.load(std::sync::atomic::Ordering::SeqCst);
+            let _ = events.try_send(Envelope { ts: now_ms(), host, session_id: sid, cwd: None, event: DomainEvent::PermissionSettled { request_id: rid, answered } });
         })),
     };
     let decision = tokio::select! {
         d = rx => d.unwrap_or(Decision::Pass),
         _ = tokio::time::sleep(MAX_WAIT) => Decision::Pass,
     };
+    answered.store(decision != Decision::Pass, std::sync::atomic::Ordering::SeqCst);
     log(format!("permission request {request_id}: {decision:?}"));
     decision.hook_output()
 }

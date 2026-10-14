@@ -75,7 +75,7 @@ pub fn run(input: &str, ctx: &Ctx) -> Option<String> {
     let daemon = Daemon::find(&ctx.colony_home);
     // Record first: a request that is held for minutes must still be on the
     // map's timeline, and a failure later must not lose it.
-    let dir = if daemon.is_some() { "capture" } else { "spool" };
+    let dir = if daemon.is_some() || probe_listening(&ctx.colony_home) { "capture" } else { "spool" };
     let _ = write_unique(&ctx.colony_home.join(dir), input.as_bytes());
     // Nobody may be reading the spool (the app was uninstalled, or just isn't running), so it
     // can't be allowed to grow forever. Sampled by pid to keep the hook fast.
@@ -90,6 +90,21 @@ pub fn run(input: &str, ctx: &Ctx) -> Option<String> {
         return daemon?.permission(input);
     }
     None
+}
+
+/// Inside WSL there is no `daemon.json` (colonyd's token stays on Windows), so
+/// the reader to look for is colony-probe, which listens on `hook.sock` while
+/// it runs. Without this every payload waited in the spool until the probe
+/// next restarted, and the map saw only the permission requests (they travel
+/// through the socket): a bot approved there stayed on the porch.
+#[cfg(unix)]
+fn probe_listening(colony_home: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(colony_home.join("hook.sock")).is_ok()
+}
+
+#[cfg(not(unix))]
+fn probe_listening(_: &Path) -> bool {
+    false
 }
 
 /// The spool keeps at most this many payloads, and none older than `SPOOL_MAX_AGE`.
@@ -250,6 +265,25 @@ mod tests {
         assert!(run(input, &ctx).is_some(), "without the marker the request goes to colonyd");
         fs::write(colony_source::gating::marker_path(&home), b"").unwrap();
         assert_eq!(run(input, &ctx), None, "with the marker the hook steps aside");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn in_wsl_a_listening_probe_gets_payloads_live() {
+        let home = std::env::temp_dir().join(format!("colony-hook-probe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default() };
+        let input = r#"{"hook_event_name":"PostToolUse","session_id":"s","tool_name":"Bash"}"#;
+        let count = |d: &str| fs::read_dir(home.join(d)).map(|r| r.count()).unwrap_or(0);
+
+        run(input, &ctx);
+        assert_eq!((count("spool"), count("capture")), (1, 0), "no reader: spooled");
+        let listener = std::os::unix::net::UnixListener::bind(home.join("hook.sock")).unwrap();
+        run(input, &ctx);
+        assert_eq!((count("spool"), count("capture")), (1, 1), "probe listening: captured");
+        drop(listener);
         let _ = fs::remove_dir_all(&home);
     }
 

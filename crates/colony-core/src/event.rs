@@ -131,7 +131,12 @@ pub enum DomainEvent {
     /// provider's own status command), so its sign-in prompt can go.
     AuthResolved,
     /// That request was answered on the map, timed out, or its hook gave up.
-    PermissionSettled { request_id: String },
+    /// `answered`: the map allowed or denied it, so the session carries on now.
+    PermissionSettled {
+        request_id: String,
+        #[serde(default)]
+        answered: bool,
+    },
     /// That terminal's process exited. `requested`: the user ended it from
     /// Colony, so it is not a crash.
     TerminalExited {

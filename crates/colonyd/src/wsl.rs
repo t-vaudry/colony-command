@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn events_still_parse_and_junk_is_rejected() {
-        let env = Envelope { ts: 1, host: colony_core::HostId::Wsl("Ubuntu".into()), session_id: "s".into(), cwd: None, event: colony_core::DomainEvent::PermissionSettled { request_id: "r".into() } };
+        let env = Envelope { ts: 1, host: colony_core::HostId::Wsl("Ubuntu".into()), session_id: "s".into(), cwd: None, event: colony_core::DomainEvent::PermissionSettled { request_id: "r".into(), answered: true } };
         let line = serde_json::to_string(&env).unwrap();
         assert!(matches!(parse_probe_line(&line), Ok(ProbeLine::Event(_))));
         assert!(parse_probe_line("{\"permission\":{\"id\":\"x\"}}").is_err());
