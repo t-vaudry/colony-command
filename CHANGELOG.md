@@ -5,6 +5,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-19
+
+- Main moving in one repo only reaches bots of that repo (#46)
+- Side-panel menus close on an outside click or Escape (#45)
+
 ## [0.1.2] - 2026-10-14
 
 ### Fixed
