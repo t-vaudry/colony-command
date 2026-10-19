@@ -165,6 +165,17 @@ export class Hud {
       },
       true,
     );
+    // Dropdown menus close on a press outside them or on Escape. Capture, so
+    // the map canvas can't swallow the press first.
+    const closeMenus = (keep?: Node) => {
+      for (const d of this.panel.querySelectorAll<HTMLDetailsElement>("details.menu[open]")) {
+        if (!keep || !d.contains(keep)) d.open = false;
+      }
+    };
+    document.addEventListener("pointerdown", (e) => closeMenus(e.target as Node), true);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeMenus();
+    });
     this.panel.addEventListener("input", (e) => {
       if ((e.target as HTMLElement).dataset.replayAt) {
         this.showFrame(Number((e.target as HTMLInputElement).value));
