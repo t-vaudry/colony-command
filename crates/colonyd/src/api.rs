@@ -461,23 +461,29 @@ pub async fn sync_worktrees(shared: &Shared, st: &mut SyncState) {
         if w.kept.is_some() {
             continue;
         }
+        let project = colony_core::paths::project_key(&w.host, &w.repo);
         // Between turns: waiting for the user, or finished a turn. Not mid-edit.
+        // And only a bot of this worktree's own repository: main moving in
+        // one clone is never news to a bot working in another.
         let bot = {
             let colony = shared.colony.read().await;
             colony
                 .agents
                 .get(&w.session_id)
+                .filter(|a| a.project_key.as_deref() == Some(project.as_str()))
                 .filter(|a| matches!(a.state, colony_core::AgentState::Idle | colony_core::AgentState::AwaitingReply | colony_core::AgentState::ReadyToReview))
                 .and_then(|a| a.terminal.clone().map(|t| (t, a.name.clone())))
         };
         let Some((term, name)) = bot else { continue };
+        // Toasts reach the whole map, so say which project they are about.
+        let name = format!("{name} in {}", colony_core::paths::project_name(&w.repo));
 
-        let key = format!("{}|{}", w.host, w.repo);
-        let base = match st.bases.get(&key) {
+        // One fetch per clone: its Windows and WSL paths share a project key.
+        let base = match st.bases.get(&project) {
             Some((at, b)) if at.elapsed() < FETCH_EVERY => b.clone(),
             _ => {
                 let b = base_ref(&w.host, &w.repo).await;
-                st.bases.insert(key, (std::time::Instant::now(), b.clone()));
+                st.bases.insert(project, (std::time::Instant::now(), b.clone()));
                 b
             }
         };
