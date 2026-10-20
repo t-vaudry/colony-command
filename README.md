@@ -199,6 +199,15 @@ the ones Colony started (`--resume`, same folder) up to 3 times, 30 s, 2 min
 and 8 min apart (`~/.colony/sessions.json`). While terminals are live,
 colony-ptyd also keeps Windows from sleeping on idle.
 
+A reboot stops colonyd too, and an idle bot may have done nothing for longer
+than the history colonyd replays. So colonyd keeps a roster of the bots on the
+map that haven't ended (`~/.colony/roster.json`). About 30 s after it starts,
+every one of them that isn't running is put back on the map paused ("Stopped
+by a restart"), in its own project and worktree, with **Resume** ready. That
+covers sessions started outside Colony too, and any session Colony started or
+has a worktree for. They stay until resumed or dismissed; a session that ends
+while Colony is running leaves the roster and doesn't come back.
+
 Set `COLONY_HOME` (and `COLONY_PORT` / `COLONY_PTYD_PORT`) to run an isolated
 second Colony, e.g. for tests.
 
@@ -398,7 +407,7 @@ bot stays Working until the stall limit (30 minutes of silence) marks it stalled
 A paused bot stays on the map, idle, with a pause mark (and "paused" in the
 inspector) instead of ending or counting as crashed. Paused sessions are kept in
 `~/.colony/paused.json`, so they survive a colonyd restart; they are forgotten
-after 14 days or when dismissed.
+after 14 days or when dismissed (ones a reboot stopped only when dismissed).
 
 Colony only pauses sessions it owns. For a session started in a terminal or the
 Claude desktop app the inspector says why: stopping that process isn't Colony's

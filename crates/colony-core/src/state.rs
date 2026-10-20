@@ -21,6 +21,8 @@ pub const SPAWN_TO_IDLE_MS: u64 = 60_000;
 /// waiting at its terminal for you.
 pub const STARTUP_WAIT_MS: u64 = 8_000;
 pub const STARTUP_REASON: &str = "Waiting in its terminal: answer the startup question or send a first message";
+/// A bot put back on the map after a restart stopped its session.
+pub const RESTORED_REASON: &str = "Stopped by a restart. Resume to carry on";
 /// Grace between a registry file vanishing and calling the session crashed,
 /// so a normal exit's `SessionEnd` can arrive first.
 pub const CRASH_GRACE_MS: u64 = 1_500;
@@ -582,6 +584,7 @@ impl Colony {
                 | DomainEvent::PauseRequested
                 | DomainEvent::PauseCancelled
                 | DomainEvent::Paused
+                | DomainEvent::Restored
         );
         if from_hooks {
             if let Some(at) = main.paused_at {
@@ -891,14 +894,15 @@ impl Colony {
                 }
             }
             DomainEvent::PauseCancelled => main.pause_pending = false,
-            DomainEvent::Paused => {
+            DomainEvent::Paused | DomainEvent::Restored => {
                 main.paused_at = Some(e.ts);
                 main.pause_pending = false;
                 main.background_tasks = 0;
                 main.permission = None;
                 main.current_tool = None;
                 main.process_gone_at = None;
-                main.set_state(AgentState::Idle, Some("Paused. Resume to carry on".into()), e.ts);
+                let reason = if matches!(e.event, DomainEvent::Restored) { RESTORED_REASON } else { "Paused. Resume to carry on" };
+                main.set_state(AgentState::Idle, Some(reason.into()), e.ts);
                 self.end_children(&sid, e.ts, &mut changed);
             }
             DomainEvent::SessionEnded => {

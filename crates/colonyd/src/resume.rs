@@ -7,7 +7,8 @@
 //! 3 times in a row, pausing longer each time, and at most 10 times a day. A
 //! session that ends normally, is ended from Colony, or is dismissed is
 //! forgotten here and never restarted. A bot that was idle or waiting for
-//! review when it was cut off is left as it is. Creating
+//! review when it was cut off is left as it is (after a reboot, `roster`
+//! puts it back paused). Creating
 //! `<colony home>/no-auto-resume` turns restarting off.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -184,6 +185,12 @@ fn update(f: impl FnOnce(&mut Records)) {
 /// Note how a session was started (a fresh start, or a restart of the same session).
 pub fn remember(session_id: &str, req: &SpawnRequest) {
     update(|all| note(all, session_id, req, now_ms()));
+}
+
+/// Every session Colony started that hasn't been forgotten.
+pub fn load_all() -> Records {
+    let _g = lock();
+    load()
 }
 
 /// Whether a restart of this session is still wanted: dismissing or ending it

@@ -152,6 +152,9 @@ pub enum DomainEvent {
     /// on disk; resuming starts it again with `--resume`. The envelope `ts` is
     /// when it happened: hook events from before that belong to the old process.
     Paused,
+    /// As `Paused`, for a session that a restart stopped rather than the user:
+    /// colonyd put it back on the map so it can be resumed.
+    Restored,
     /// One assistant message's token usage, read from the transcript. The
     /// envelope `ts` is when the message was written. `agent_id` is set for a
     /// subagent's messages, which count toward its parent too.
