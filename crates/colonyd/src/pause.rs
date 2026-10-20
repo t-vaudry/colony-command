@@ -36,19 +36,23 @@ pub struct Paused {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub chrome: Option<bool>,
+    /// Stopped by a restart rather than paused by the user (see `roster`):
+    /// kept until dismissed.
+    #[serde(default)]
+    pub interrupted: bool,
 }
 
-type Records = BTreeMap<String, Paused>;
+pub type Records = BTreeMap<String, Paused>;
 
 fn path() -> std::path::PathBuf {
     colony_home().join("paused.json")
 }
 
-fn load() -> Records {
+pub fn load() -> Records {
     std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
-fn store(records: &Records) {
+pub fn store(records: &Records) {
     let body = serde_json::to_vec_pretty(records).expect("serializes");
     let tmp = path().with_extension("json.tmp");
     if let Err(e) = std::fs::create_dir_all(colony_home()).and_then(|_| std::fs::write(&tmp, body)).and_then(|_| std::fs::rename(&tmp, path())) {
@@ -137,6 +141,7 @@ async fn pause_now(shared: &Shared, id: &str) -> Result<(), String> {
             model: req.as_ref().and_then(|r| r.model.clone()).or_else(|| a.model.clone()),
             permission_mode: req.as_ref().and_then(|r| r.permission_mode.clone()),
             chrome: req.as_ref().and_then(|r| r.chrome),
+            interrupted: false,
         },
     );
     store(&records);
@@ -208,15 +213,23 @@ pub async fn restore(shared: &Shared) {
     let mut records = load();
     let now = now_ms();
     let before = records.len();
-    records.retain(|_, r| now.saturating_sub(r.at) < KEEP_MS);
+    records.retain(|_, r| r.interrupted || now.saturating_sub(r.at) < KEEP_MS);
     if records.len() != before {
         store(&records);
     }
-    for (session_id, r) in records {
-        let env = |event| Envelope { ts: r.at, host: r.host.clone(), session_id: session_id.clone(), cwd: Some(r.dir.clone()), event };
-        let _ = shared.events.send(env(DomainEvent::Renamed { name: r.name.clone() })).await;
-        let _ = shared.events.send(env(DomainEvent::Paused)).await;
+    for (session_id, r) in &records {
+        show(shared, session_id, r).await;
     }
+}
+
+/// Put a paused session on the map. Its events carry the time of the pause.
+pub async fn show(shared: &Shared, session_id: &str, r: &Paused) {
+    let env = |event| Envelope { ts: r.at, host: r.host.clone(), session_id: session_id.to_string(), cwd: Some(r.dir.clone()), event };
+    // A session known only by its folder keeps the name the map draws for it.
+    if !r.name.is_empty() {
+        let _ = shared.events.send(env(DomainEvent::Renamed { name: r.name.clone() })).await;
+    }
+    let _ = shared.events.send(env(if r.interrupted { DomainEvent::Restored } else { DomainEvent::Paused })).await;
 }
 
 #[cfg(test)]

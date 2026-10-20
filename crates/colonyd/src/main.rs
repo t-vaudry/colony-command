@@ -18,6 +18,7 @@ mod policy;
 mod pty;
 mod quality;
 mod resume;
+mod roster;
 mod timelapse;
 mod worktree;
 #[cfg(windows)]
@@ -230,6 +231,15 @@ async fn main() {
     tokio::spawn(diffstat::run(shared.clone()));
     // A long tool call whose processes are still computing is not a stall.
     tokio::spawn(quality::watch_cpu(shared.clone()));
+
+    // Bots a restart stopped come back paused, once replay has run and Colony's
+    // terminals have re-attached. Before the first worktree sweep below, which
+    // would take a bot that replay shows as ended for one that is done.
+    let rosterer = shared.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        roster::run(rosterer).await;
+    });
 
     // Worktrees of sessions that ended without being dismissed.
     let sweeper = shared.clone();
