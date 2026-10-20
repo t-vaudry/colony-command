@@ -1,16 +1,23 @@
 # Cuts a patch release (0.1.1 -> 0.1.2) once main has been quiet for 20 minutes.
-# Every push to main restarts the wait, so a burst of merges becomes one release.
-# "Run workflow" on this workflow releases now, skipping the wait.
+# Nothing waits on a runner: the check runs hourly and whenever CI finishes on main,
+# releases if main's head is at least 20 minutes old and CI passed on it, and
+# otherwise exits in seconds. A burst of merges therefore becomes one release.
+# "Run workflow" on this workflow releases now, skipping the quiet period.
 #
-# The release itself: wait for CI on main's head to pass, run scripts/bump-patch.sh
-# (version files, CHANGELOG.md), commit "Release X.Y.Z" to main, tag vX.Y.Z, then
-# start ci.yml on the tag, which builds and publishes. It has to be started
-# explicitly: pushes made with GITHUB_TOKEN don't trigger workflows (that is also
-# why the release commit doesn't start another round of this one).
+# The release itself: run scripts/bump-patch.sh (version files, CHANGELOG.md),
+# commit "Release X.Y.Z" to main, tag vX.Y.Z, then start ci.yml on the tag, which
+# builds and publishes. It has to be started explicitly: pushes made with
+# GITHUB_TOKEN don't trigger workflows (that is also why the release commit doesn't
+# start CI, and so this workflow, again).
 name: Release
 
 on:
-  push:
+  schedule:
+    # Off the top of the hour, when GitHub's scheduler is least delayed.
+    - cron: "17 * * * *"
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -18,20 +25,13 @@ permissions:
   contents: read
 
 jobs:
-  quiet:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    # A newer push cancels this wait and starts its own.
-    concurrency:
-      group: release-quiet
-      cancel-in-progress: true
-    steps:
-      - run: sleep 1200
-
   cut:
-    needs: quiet
-    # Runs after a wait that finished, or straight away when started by hand.
-    if: always() && (needs.quiet.result == 'success' || needs.quiet.result == 'skipped')
+    # From workflow_run, only a passing CI run from a push to main counts (not the
+    # tag build this workflow starts, nor a pull request).
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     # Never interrupt a release halfway; one at a time.
     concurrency:
@@ -42,32 +42,41 @@ jobs:
       actions: write
     env:
       GH_TOKEN: ${{ github.token }}
+      QUIET_SECONDS: 1200
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      - name: Anything new since the last release?
+      - name: Anything new, quiet, and passing CI?
         id: check
         run: |
+          go() { echo "go=$1" >>"$GITHUB_OUTPUT"; exit 0; }
           last=$(git describe --tags --abbrev=0 --match 'v*')
           n=$(git rev-list --count "$last..HEAD")
           echo "$n commit(s) on main since $last"
-          echo "go=$([ "$n" -gt 0 ] && echo true || echo false)" >>"$GITHUB_OUTPUT"
+          [ "$n" -gt 0 ] || go false
 
-      - name: Wait for CI to pass on main
-        if: steps.check.outputs.go == 'true'
-        run: |
+          if [ "${{ github.event_name }}" != workflow_dispatch ]; then
+            age=$(( $(date +%s) - $(git log -1 --format=%ct HEAD) ))
+            echo "main's head is ${age}s old"
+            [ "$age" -ge "$QUIET_SECONDS" ] || { echo "not quiet yet; a later run releases"; go false; }
+          fi
+
           sha=$(git rev-parse HEAD)
-          for _ in $(seq 1 30); do
-            id=$(gh run list --workflow ci.yml --commit "$sha" --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-            [ -n "$id" ] && break
-            sleep 20
-          done
-          [ -n "$id" ] || { echo "no CI run found for $sha"; exit 1; }
-          gh run watch "$id" --interval 30 --exit-status >/dev/null || { echo "CI failed on $sha; not releasing"; exit 1; }
+          run=$(gh run list --workflow ci.yml --commit "$sha" --event push --limit 1 --json databaseId,status,conclusion --jq '.[0] // empty')
+          [ -n "$run" ] || { echo "no CI run found for $sha; not releasing"; go false; }
+          id=$(jq -r .databaseId <<<"$run")
+          if [ "$(jq -r .status <<<"$run")" != completed ]; then
+            # Started by hand: wait for it. Otherwise CI finishing triggers this again.
+            [ "${{ github.event_name }}" = workflow_dispatch ] || { echo "CI run $id still going; its completion triggers a release check"; go false; }
+            gh run watch "$id" --interval 30 >/dev/null || true
+            run=$(gh run view "$id" --json conclusion)
+          fi
+          [ "$(jq -r .conclusion <<<"$run")" = success ] || { echo "CI run $id did not pass on $sha; not releasing"; go false; }
           echo "CI passed: run $id"
+          go true
 
       - name: Bump, commit and tag
         if: steps.check.outputs.go == 'true'
@@ -78,7 +87,7 @@ jobs:
           v=$(scripts/bump-patch.sh)
           git commit -qam "Release $v"
           git tag "v$v"
-          # Atomic: if main moved meanwhile, nothing is pushed (that push starts its own round).
+          # Atomic: if main moved meanwhile, nothing is pushed (a later run picks it up).
           git push --atomic origin HEAD:main "v$v"
           echo "version=$v" >>"$GITHUB_OUTPUT"
 
