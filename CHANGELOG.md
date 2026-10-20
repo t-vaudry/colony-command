@@ -5,6 +5,8 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-20
+
 - Bots come back after a reboot: every session on the map that hadn't ended
   returns paused, in its project and worktree, with Resume ready, until it is
   resumed or dismissed. Sessions Colony started before this release, and ones
