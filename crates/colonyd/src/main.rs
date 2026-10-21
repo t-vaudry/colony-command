@@ -11,6 +11,7 @@ mod approvals;
 mod classifier;
 mod diffstat;
 mod eventlog;
+mod found;
 mod latency_store;
 mod needs;
 mod pause;
@@ -91,7 +92,7 @@ fn tag_colony_session(e: &mut Envelope, owned: &pty::Owned) {
     }
 }
 
-fn local_host() -> HostId {
+pub(crate) fn local_host() -> HostId {
     if cfg!(windows) {
         HostId::Windows
     } else {

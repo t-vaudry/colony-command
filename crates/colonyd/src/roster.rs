@@ -10,6 +10,9 @@
 //! Colony started (`sessions.json`) and live worktrees count too, so bots from
 //! before the roster existed come back as well.
 //!
+//! Sessions in worktrees Colony has no record of are offered to the map
+//! instead (see `found`).
+//!
 //! Dismissing a bot takes it out of all of these. A session that ends while
 //! colonyd is watching leaves the roster with it, and is not brought back.
 
@@ -130,6 +133,7 @@ pub async fn run(shared: std::sync::Arc<Shared>) {
         }
         log(format!("put back {} session(s) that a restart stopped", back.len()));
     }
+    crate::found::run(&shared).await;
     let mut last = None;
     loop {
         // Let the events just sent land first.

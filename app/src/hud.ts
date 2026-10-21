@@ -421,7 +421,7 @@ export class Hud {
       ["idle", "idle", count("idle", "spawning")],
     ]
       .map(([c, label, n]) => `<span class="chip"><span class="dot ${c}"></span>${label} <b>${n}</b></span>`)
-      .join("") + this.gatingChip() + this.leftoverChip() + this.rulesChip() + this.spendChip());
+      .join("") + this.gatingChip() + this.foundChip() + this.leftoverChip() + this.rulesChip() + this.spendChip());
     this.conn.className = `conn ${this.daemon.status}`;
     this.conn.textContent =
       this.daemon.status === "live"
@@ -502,6 +502,14 @@ export class Hud {
         ? `<p class="muted small">Colony allows these without asking, only in the project shown and only when Claude Code suggests exactly this rule. Remove one and it asks again.</p>${rows}`
         : `<p class="muted small">None yet. Choose <b>Allow always for project</b> on a permission request to save one here.</p>`
     }`;
+  }
+
+  /** Sessions from before still on offer after "Not now"; opens the list again. */
+  private foundChip(): string {
+    const n = this.daemon.found.length;
+    return n
+      ? `<button type="button" class="chip" data-show-found title="Sessions in Colony worktrees from before; click to pick which come back">↺ <b>${n}</b> from before</button>`
+      : "";
   }
 
   private leftoverChip(): string {

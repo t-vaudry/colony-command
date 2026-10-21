@@ -1033,6 +1033,53 @@ html[data-motion="reduce"] *::after {
   opacity: 0.7;
 }
 
+/* Sessions from before: same look as New session. */
+#found {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0;
+  width: min(560px, calc(100vw - 32px));
+}
+#found::backdrop {
+  background: rgba(10, 14, 12, 0.45);
+}
+#found-form {
+  display: grid;
+  gap: 14px;
+  padding: 20px 22px;
+}
+#found-form h2 {
+  font-family: var(--f-display);
+  font-size: 22px;
+  margin: 0;
+}
+#found-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+}
+.found-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+}
+.found-row input {
+  width: auto;
+  margin-top: 3px;
+}
+.found-row > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.found-row .mono {
+  overflow-wrap: anywhere;
+}
+
 /* Notifications dialog: same look as New session. */
 #patience-btn[hidden] {
   display: none;

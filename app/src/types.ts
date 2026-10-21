@@ -280,6 +280,20 @@ export interface Leftover {
   folder_gone: boolean;
 }
 
+/** A session from before in one of Colony's worktrees that Colony had lost track of. */
+export interface Found {
+  session_id: string;
+  host: string;
+  /** The folder it ran in. */
+  dir: string;
+  repo: string;
+  worktree: string;
+  /** Its own name, or "" when it had none. */
+  name: string;
+  /** When its transcript was last written (ms). */
+  last_at: number;
+}
+
 export interface Tokens {
   input: number;
   output: number;
