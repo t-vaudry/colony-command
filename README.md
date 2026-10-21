@@ -610,8 +610,10 @@ same version (CI runs it on every push), and given a tag, the tag must match and
 ### Patch releases are automatic
 
 `.github/workflows/release.yml` cuts the next patch version once `main` has been
-quiet for 20 minutes (each push restarts the wait, so a burst of merges is one
-release), and only if `main` changed since the last tag and CI passed on it. It runs
+quiet for 20 minutes (so a burst of merges is one release), and only if `main`
+changed since the last tag and CI passed on it. It checks hourly and whenever CI
+finishes on `main`; nothing sits on a runner waiting, so a release can land up to
+about an hour after the last merge. It runs
 `scripts/bump-patch.sh`, commits `Release X.Y.Z` to `main`, tags it, and starts the
 build below on the tag. To release now, use **Run workflow** on the Release workflow
 in the Actions tab.
