@@ -74,7 +74,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "leftovers": crate::worktree::leftovers(), "rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
+    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
@@ -177,6 +177,9 @@ enum Command {
     DiscardWorktree { session_id: String },
     /// Stop listing a leftover; its folder and branch stay as they are.
     ForgetWorktree { session_id: String },
+    /// Answer the offer of sessions from before: bring back these, paused,
+    /// and don't offer the rest again.
+    BringBack { pick: Vec<String> },
     /// Open the sign-in or install a stuck bot is waiting on, in a terminal for the user to finish.
     FixNeed {
         id: String,
@@ -299,6 +302,7 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         Command::OpenWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Open).await.map(|_| None),
         Command::DiscardWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Discard).await.map(|_| None),
         Command::ForgetWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Forget).await.map(|_| None),
+        Command::BringBack { pick } => crate::found::bring_back(shared, &pick).await.map(|_| None),
         Command::SetModel { id, model } => set_model(shared, &id, &model).await.map(|_| None),
         Command::Permission { request_id, choice, message, answers } => shared.approvals.decide(&request_id, choice, message, answers).map(|saved| {
             if saved {

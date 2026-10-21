@@ -357,13 +357,24 @@ pub fn kept_reason(err: &str) -> String {
 
 /// The folder as Windows' file manager spells it.
 pub fn windows_folder(w: &Worktree) -> String {
-    match &w.host {
-        HostId::Windows => w.path.replace('/', "\\"),
-        HostId::Wsl(distro) => match windows_form(&w.path) {
+    local_folder(&w.host, &w.path)
+}
+
+/// A folder of `host` as Windows spells it.
+pub fn local_folder(host: &HostId, path: &str) -> String {
+    match host {
+        HostId::Windows => path.replace('/', "\\"),
+        HostId::Wsl(distro) => match windows_form(path) {
             Some(win) => win.replace('/', "\\"),
-            None => format!("\\\\wsl.localhost\\{distro}{}", w.path.replace('/', "\\")),
+            None => format!("\\\\wsl.localhost\\{distro}{}", path.replace('/', "\\")),
         },
     }
+}
+
+/// The branch checked out in a worktree, if any.
+pub async fn branch_of(host: &HostId, path: &str) -> Option<String> {
+    let b = git(host, path, &["symbolic-ref", "--quiet", "--short", "HEAD"]).await.ok()?;
+    Some(b.trim().to_string()).filter(|b| !b.is_empty())
 }
 
 /// Show the folder in the file manager.

@@ -139,6 +139,18 @@
         </div>
       </form>
     </dialog>
+    <dialog id="found">
+      <form id="found-form">
+        <h2>Sessions from before</h2>
+        <p class="muted small">These sessions ran in Colony worktrees that are still on disk, but Colony had lost track of them, after a crash, a reboot or closing Colony. The ones you pick come back on the map paused, in their worktree, with Resume ready.</p>
+        <div id="found-list"></div>
+        <div class="actions">
+          <button type="submit" class="primary" id="found-go">Bring back</button>
+          <button type="button" id="found-later" title="Close; the top bar keeps the offer">Not now</button>
+          <button type="button" id="found-none" title="Don't offer these again; their worktrees stay as they are">Don't bring any back</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="patience">
       <form method="dialog" id="patience-form">
         <h2>Notifications</h2>

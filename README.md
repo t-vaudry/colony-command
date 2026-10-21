@@ -208,6 +208,19 @@ covers sessions started outside Colony too, and any session Colony started or
 has a worktree for. They stay until resumed or dismissed; a session that ends
 while Colony is running leaves the roster and doesn't come back.
 
+Colony can also lose track of a session entirely: a worktree from an older
+version, or a record lost in a crash. So at the same time colonyd reads the
+Claude transcripts in `~/.claude/projects`, on Windows and in each running WSL
+distro, for sessions that ran in a Colony worktree (`.colony/worktrees/<name>`)
+in any repository, where the folder is still there. It keeps the latest
+session per worktree, and skips ones already on the map, dismissed, or that
+Colony knows about. If any are left, a **Sessions from before** dialog lists
+them. The ones you tick come back paused, in their worktree, with **Resume**
+ready. A worktree on a `colony/` branch becomes Colony's again, so it is kept
+up to date and cleaned up on dismiss; other worktrees are left as they are.
+**Not now** keeps the offer in the top bar (↺ from before). Sessions you leave
+unticked are not offered again (`~/.colony/found.json`).
+
 Set `COLONY_HOME` (and `COLONY_PORT` / `COLONY_PTYD_PORT`) to run an isolated
 second Colony, e.g. for tests.
 

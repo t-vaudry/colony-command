@@ -1,6 +1,7 @@
 import "./style.css";
 import { Daemon } from "./daemon";
 import { NewSessionDialog, repoDir, type Prefill } from "./dialog";
+import { FoundDialog } from "./found";
 import { Hud } from "./hud";
 import { prefs } from "./prefs";
 import { initLayout } from "./layout";
@@ -134,4 +135,5 @@ new SetupDialog();
 initUpdateNotice();
 initSpeech();
 new PatienceNotifier(daemon, select);
+new FoundDialog(daemon);
 void world.init(document.getElementById("map")!).then(() => daemon.start());

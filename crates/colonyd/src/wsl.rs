@@ -75,7 +75,7 @@ pub async fn supervise(tx: mpsc::Sender<Envelope>, shared: Arc<Shared>) {
     }
 }
 
-async fn list_distros(running_only: bool) -> Vec<String> {
+pub(crate) async fn list_distros(running_only: bool) -> Vec<String> {
     let args: &[&str] = if running_only { &["--list", "--running", "--quiet"] } else { &["--list", "--quiet"] };
     let out = Command::new("wsl.exe")
         .args(args)

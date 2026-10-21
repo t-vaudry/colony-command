@@ -2,7 +2,7 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest } from "./types";
+import { severity, type Agent, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest } from "./types";
 
 interface DaemonInfo {
   port: number;
@@ -17,7 +17,7 @@ export interface DaemonSettings {
 }
 
 type Message =
-  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
+  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
   | { type: "settings"; settings: DaemonSettings }
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
@@ -25,6 +25,7 @@ type Message =
   | { type: "latency"; projects: Record<string, ProjectLatency> }
   | ({ type: "replay" } & Replay)
   | { type: "leftovers"; items: Leftover[] }
+  | { type: "found"; items: Found[] }
   | { type: "batch"; msgs: Message[] }
   | { type: "upsert"; agent: Agent }
   | { type: "remove"; id: string }
@@ -66,6 +67,8 @@ export class Daemon {
   replay: Replay | null = null;
   /** Worktrees left behind for the user to decide on. */
   leftovers: Leftover[] = [];
+  /** Sessions from before in Colony worktrees, offered to bring back. */
+  found: Found[] = [];
   /** Saved "allow always for project" rules. */
   rules: Rule[] = [];
   /** What each held permission request would save as a project rule, by request id. */
@@ -153,6 +156,7 @@ export class Daemon {
         this.spend = new Map(Object.entries(m.spend ?? {}));
         this.latency = new Map(Object.entries(m.latency ?? {}));
         this.leftovers = m.leftovers ?? [];
+        this.found = m.found ?? [];
         this.rules = m.rules ?? [];
         this.offers = new Map(Object.entries(m.offers ?? {}));
         this.settings = m.settings ?? this.settings;
@@ -171,6 +175,9 @@ export class Daemon {
         break;
       case "leftovers":
         this.leftovers = m.items;
+        break;
+      case "found":
+        this.found = m.items;
         break;
       case "settings":
         this.settings = m.settings;
@@ -361,6 +368,11 @@ export class Daemon {
   /** Stop listing a leftover; the folder and branch stay as they are. */
   forgetWorktree(sessionId: string): boolean {
     return this.send({ type: "forget_worktree", session_id: sessionId });
+  }
+
+  /** Bring these sessions from before back, paused; the rest of the offer isn't made again. */
+  bringBack(pick: string[]): boolean {
+    return this.send({ type: "bring_back", pick });
   }
 
   /** Done with a session: end every copy of it and clear it off the map. */

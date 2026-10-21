@@ -5,6 +5,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+- Sessions from before: at startup Colony finds sessions in Colony worktrees,
+  in any repository, on Windows and running WSL distros, that it had lost track
+  of, and lists them. The ones you pick come back as paused bots with Resume
+  ready.
+
 ## [0.1.4] - 2026-10-20
 
 - Bots come back after a reboot: every session on the map that hadn't ended
