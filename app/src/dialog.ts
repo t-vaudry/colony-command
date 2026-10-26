@@ -206,6 +206,11 @@ export class NewSessionDialog {
   private fillCrews(): void {
     const keep = this.picked ? this.crew.value : null;
     this.crew.innerHTML = "";
+    if (!this.daemon.crewsKnown) {
+      const o = new Option("Crews need the updated background service", "");
+      o.disabled = true;
+      this.crew.add(o);
+    }
     for (const c of this.daemon.crews) this.crew.add(new Option(c.label, c.id));
     if (keep) this.crew.value = keep;
     this.applyCrew();

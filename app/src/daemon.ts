@@ -4,6 +4,14 @@
 
 import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest } from "./types";
 import type { NoticeAction } from "./budget";
+import { appVersion, isProtocolError, outdatedBanner } from "./outdated";
+
+interface TauriCore {
+  invoke: <T>(cmd: string) => Promise<T>;
+}
+function tauriCore(): TauriCore | undefined {
+  return (window as unknown as { __TAURI__?: { core?: TauriCore } }).__TAURI__?.core;
+}
 
 interface DaemonInfo {
   port: number;
@@ -24,7 +32,7 @@ export interface DaemonSettings {
 }
 
 type Message =
-  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
+  | { type: "snapshot"; version?: string; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
   | { type: "crews"; items: Crew[] }
   | { type: "crew_folders"; items: Record<string, string> }
   | { type: "folder_crew"; req: number; crew: string | null }
@@ -90,8 +98,27 @@ export class Daemon {
   offers = new Map<string, Offer>();
   /** Daemon settings the map can change. */
   settings: DaemonSettings = { haiku_classifier: false, haiku_key_present: false };
+  /** The daemon's version from its snapshot; undefined for a daemon from before versions. */
+  version: string | undefined;
+  /** Whether the snapshot carried crews: a daemon without them can't start a crew session. */
+  crewsKnown = false;
+  /** The daemon rejected a command this map sends. */
+  private protocolError = false;
+  private appVer: string | null = null;
   status: ConnectionStatus = "connecting";
   error: string | null = null;
+
+  /** The out-of-date banner text, or null when the daemon is the version this map expects. */
+  outdated(): string | null {
+    return this.status === "live" ? outdatedBanner(this.appVer, this.version, this.protocolError) : null;
+  }
+
+  /** Ask the app to replace the daemon (the banner's Restart button), then reconnect. */
+  async restart(): Promise<void> {
+    await tauriCore()?.invoke("daemon_restart");
+    this.protocolError = false;
+    this.ws?.close();
+  }
   /** Daemon clock minus local clock, so durations match the daemon's timestamps. */
   skew = 0;
   private clockOffset: number | null = null;
@@ -145,6 +172,10 @@ export class Daemon {
   private async connect(): Promise<void> {
     try {
       this.info = await readInfo();
+      this.appVer ??= await appVersion();
+      // The app says so when it just replaced a daemon from another version.
+      const note = await tauriCore()?.invoke<string | null>("daemon_notice").catch(() => null);
+      if (note) for (const fn of this.noticeListeners) fn(note);
     } catch (e) {
       this.setOffline(e instanceof Error ? e.message : String(e));
       return;
@@ -173,6 +204,8 @@ export class Daemon {
       case "snapshot":
         this.agents = new Map(m.agents.map((a) => [a.id, a]));
         this.hosts = m.hosts ?? this.hosts;
+        this.version = m.version;
+        this.crewsKnown = m.crews !== undefined;
         this.crews = m.crews ?? this.crews;
         this.crewFolders = m.crew_folders ?? this.crewFolders;
         this.spend = new Map(Object.entries(m.spend ?? {}));
@@ -257,6 +290,12 @@ export class Daemon {
       case "error": {
         // A failed spawn reports here too; otherwise it's about some other command.
         const pending = this.pendingSpawns.shift();
+        if (isProtocolError(m.message)) {
+          // The banner explains it; raw protocol text is no use to anyone.
+          this.protocolError = true;
+          pending?.reject(new Error("Colony's background service is out of date. Restart Colony to update it."));
+          break;
+        }
         if (pending) pending.reject(new Error(m.message));
         else for (const fn of this.errorListeners) fn(m.message);
         return;

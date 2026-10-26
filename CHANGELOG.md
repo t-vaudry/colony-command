@@ -5,6 +5,10 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+### Fixed
+
+- Updating Colony no longer leaves an older background service (colonyd) running: the app now replaces a colonyd from a different version (your sessions keep running) and says so, instead of showing "unknown variant" errors and no crews. If it can't be stopped safely, the map shows an "out of date" banner with a Restart button.
+
 ## [0.1.6] - 2026-10-26
 
 - Crews: each bot's panel shows whether its crew is used (searches delegated or done by hand, swarm agents that ran out of turns, advisor use, and whether nudges were followed), with a one-line roll-up in the day summary.
