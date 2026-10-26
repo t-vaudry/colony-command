@@ -101,6 +101,72 @@ pub enum Action {
     Replace,
     /// Mismatched, but use it and let the map show the out-of-date banner.
     ConnectOnly,
+    /// Mismatched, and the bundled colonyd.exe isn't the app's version either (or can't
+    /// say), so replacing would only restart the same wrong file: stop nothing and
+    /// tell the user the update didn't finish.
+    Incomplete,
+}
+
+/// What the colonyd file next to the app says when asked `--version`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Bundled {
+    Current,
+    Other(String),
+    /// It couldn't be run, timed out (an old exe without `--version` starts a daemon
+    /// instead of answering) or printed something that isn't a version.
+    Unknown,
+}
+
+/// colonyd embeds `COLONYD-VERSION:<version>\0` in its file, so the app can learn the
+/// version of the file on disk without running it (an old colonyd would start a daemon).
+pub const VERSION_MARKER_PREFIX: &str = "COLONYD-VERSION:";
+
+/// The version in the first well-formed marker in a colonyd file's bytes, if any. Other
+/// occurrences of the prefix (this code's own constant) are skipped unless a version and
+/// a NUL follow.
+pub fn version_from_bytes(bytes: &[u8]) -> Option<String> {
+    let prefix = VERSION_MARKER_PREFIX.as_bytes();
+    let mut from = 0;
+    while let Some(at) = bytes.get(from..)?.windows(prefix.len()).position(|w| w == prefix) {
+        let start = from + at + prefix.len();
+        let rest = &bytes[start..];
+        if let Some(end) = rest.iter().take(65).position(|&b| b == 0) {
+            if let Ok(v) = std::str::from_utf8(&rest[..end]) {
+                if parse_version(v).is_some() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+        from = start;
+    }
+    None
+}
+
+/// The version read from the colonyd file (`None`: no marker, an old file) against the app's own.
+pub fn judge_bundled(app_version: &str, output: Option<&str>) -> Bundled {
+    match output.map(str::trim) {
+        Some(v) if v == app_version => Bundled::Current,
+        Some(v) if parse_version(v).is_some() => Bundled::Other(v.to_string()),
+        _ => Bundled::Unknown,
+    }
+}
+
+/// `decide`, plus the check of the bundled file before anything is stopped. `bundled`
+/// is only called when a replacement would otherwise go ahead (it runs a program).
+pub fn decide_update(verdict: Verdict, replaced_once: bool, gave_up: bool, bundled: impl FnOnce() -> Bundled) -> Action {
+    match decide(verdict, replaced_once, gave_up) {
+        Action::Replace if bundled() != Bundled::Current => Action::Incomplete,
+        a => a,
+    }
+}
+
+/// The banner for an update that left an old colonyd.exe on disk. `disk` is the version
+/// of that file when known.
+pub fn incomplete_message(app_version: &str, disk: Option<&str>) -> String {
+    format!(
+        "Colony's update didn't finish: colonyd.exe on disk is {}, the app is {app_version}. Run the Colony installer again.",
+        disk.unwrap_or("an older version")
+    )
 }
 
 /// At most one automatic replacement per app process, so two apps of different
@@ -216,6 +282,53 @@ pub fn terminate(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_marker_in_bytes() {
+        let mut file = b"MZ....junk".to_vec();
+        file.extend_from_slice(b"COLONYD-VERSION:not a version\0more");
+        file.extend_from_slice(b"COLONYD-VERSION:");
+        file.extend_from_slice(b"0.1.7\0tail");
+        assert_eq!(version_from_bytes(&file).as_deref(), Some("0.1.7"));
+        assert_eq!(version_from_bytes(b"an old colonyd with no marker"), None);
+        assert_eq!(version_from_bytes(b"COLONYD-VERSION:0.1.7"), None, "no NUL");
+        assert_eq!(version_from_bytes(b""), None);
+    }
+
+    #[test]
+    fn reads_the_bundled_version() {
+        assert_eq!(judge_bundled("0.1.7", Some("0.1.7\n")), Bundled::Current);
+        assert_eq!(judge_bundled("0.1.7", Some("0.1.6")), Bundled::Other("0.1.6".into()));
+        assert_eq!(judge_bundled("0.1.7", Some("")), Bundled::Unknown);
+        assert_eq!(judge_bundled("0.1.7", Some("colonyd listening on 7878")), Bundled::Unknown);
+        assert_eq!(judge_bundled("0.1.7", None), Bundled::Unknown);
+    }
+
+    #[test]
+    fn checks_the_bundled_file_before_replacing() {
+        use Action::*;
+        let other = || Bundled::Other("0.1.6".into());
+        for verdict in [Verdict::ReplaceOlder, Verdict::ReplaceNewer] {
+            assert_eq!(decide_update(verdict, false, false, || Bundled::Current), Replace);
+            assert_eq!(decide_update(verdict, false, false, other), Incomplete);
+            assert_eq!(decide_update(verdict, false, false, || Bundled::Unknown), Incomplete);
+            // Already replaced once, or given up: connect, and never look at the file.
+            assert_eq!(decide_update(verdict, true, false, || panic!("not asked")), ConnectOnly);
+            assert_eq!(decide_update(verdict, false, true, || panic!("not asked")), ConnectOnly);
+        }
+        // A matching daemon is kept whatever the file says.
+        assert_eq!(decide_update(Verdict::Keep, false, false, || panic!("not asked")), Keep);
+        assert_eq!(decide_update(Verdict::Keep, true, false, other), Keep);
+    }
+
+    #[test]
+    fn says_what_is_on_disk() {
+        assert_eq!(
+            incomplete_message("0.1.7", Some("0.1.6")),
+            "Colony's update didn't finish: colonyd.exe on disk is 0.1.6, the app is 0.1.7. Run the Colony installer again."
+        );
+        assert!(incomplete_message("0.1.7", None).contains("is an older version,"));
+    }
 
     #[test]
     fn judges_versions() {

@@ -26,6 +26,12 @@ fn daemon_notice() -> Option<String> {
     daemon::take_notice()
 }
 
+/// Set when the colonyd file on disk is not this app's version: the update didn't finish.
+#[tauri::command]
+fn daemon_incomplete() -> Option<String> {
+    daemon::incomplete()
+}
+
 /// The out-of-date banner's Restart button.
 #[tauri::command]
 async fn daemon_restart() -> Result<daemon::Info, String> {
@@ -127,6 +133,7 @@ fn main() {
             if !(tray_ok && std::env::args().any(|a| a == "--tray")) {
                 let _ = window.show();
             }
+            updater::clean_old_sidecars();
             // Start the daemon while the window loads rather than on first ask.
             std::thread::spawn(|| {
                 if let Err(e) = daemon::ensure() {
@@ -135,7 +142,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![daemon_info, daemon_notice, daemon_restart, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install, speech::speech_status, speech::speech_download, speech::speech_transcribe])
+        .invoke_handler(tauri::generate_handler![daemon_info, daemon_notice, daemon_incomplete, daemon_restart, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install, speech::speech_status, speech::speech_download, speech::speech_transcribe])
         .run(tauri::generate_context!())
         .expect("Colony Command failed to start");
 }

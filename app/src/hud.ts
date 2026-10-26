@@ -250,6 +250,8 @@ export class Hud {
     const text = this.daemon.outdated();
     bar.hidden = text === null;
     if (text !== null) bar.firstElementChild!.textContent = text;
+    // Restart replaces the daemon with the file on disk, which is what is wrong then.
+    (bar.querySelector("button") as HTMLButtonElement).hidden = this.daemon.incomplete !== null;
   }
 
   toast(message: string, actions?: NoticeAction[]): void {

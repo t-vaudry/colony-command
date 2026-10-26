@@ -5,6 +5,10 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+### Fixed
+
+- Updating no longer fails with "cannot be overwritten" for colonyd.exe and colony-ptyd.exe, which left the old background service in place and an "out of date" banner whose Restart never worked: the installer now moves every running Colony program aside before copying (its backslashes had been lost), and its stop of the old colonyd actually matches it. If a colonyd.exe of the wrong version is still on disk, the app now says "Colony's update didn't finish" instead of restarting it endlessly, and `colonyd --version` reports its version.
+
 ## [0.1.7] - 2026-10-26
 
 ### Fixed

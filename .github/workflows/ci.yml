@@ -46,6 +46,9 @@ jobs:
       - uses: actions/checkout@v4
       # Cargo.toml, tauri.conf.json, package.json and Cargo.lock must agree, so a tag can't fail late.
       - run: scripts/check-release-version.sh
+      # The installer hooks (installer-hooks.nsh): lost backslashes, and a compile with warnings as errors.
+      - run: sudo apt-get update && sudo apt-get install -y nsis
+      - run: scripts/check-nsis.sh
       # The desktop app needs WebKitGTK to compile on Linux and only ships on Windows.
       - run: cargo test --workspace --exclude colony-app --locked
 
