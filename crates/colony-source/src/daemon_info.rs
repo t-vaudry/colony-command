@@ -101,6 +101,47 @@ pub enum Action {
     Replace,
     /// Mismatched, but use it and let the map show the out-of-date banner.
     ConnectOnly,
+    /// Mismatched, and the bundled colonyd.exe isn't the app's version either (or can't
+    /// say), so replacing would only restart the same wrong file: stop nothing and
+    /// tell the user the update didn't finish.
+    Incomplete,
+}
+
+/// What the colonyd file next to the app says when asked `--version`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Bundled {
+    Current,
+    Other(String),
+    /// It couldn't be run, timed out (an old exe without `--version` starts a daemon
+    /// instead of answering) or printed something that isn't a version.
+    Unknown,
+}
+
+/// Reads the output of `colonyd --version` against the app's own version.
+pub fn judge_bundled(app_version: &str, output: Option<&str>) -> Bundled {
+    match output.map(str::trim) {
+        Some(v) if v == app_version => Bundled::Current,
+        Some(v) if parse_version(v).is_some() => Bundled::Other(v.to_string()),
+        _ => Bundled::Unknown,
+    }
+}
+
+/// `decide`, plus the check of the bundled file before anything is stopped. `bundled`
+/// is only called when a replacement would otherwise go ahead (it runs a program).
+pub fn decide_update(verdict: Verdict, replaced_once: bool, gave_up: bool, bundled: impl FnOnce() -> Bundled) -> Action {
+    match decide(verdict, replaced_once, gave_up) {
+        Action::Replace if bundled() != Bundled::Current => Action::Incomplete,
+        a => a,
+    }
+}
+
+/// The banner for an update that left an old colonyd.exe on disk. `disk` is the version
+/// of that file when known.
+pub fn incomplete_message(app_version: &str, disk: Option<&str>) -> String {
+    format!(
+        "Colony's update didn't finish: colonyd.exe on disk is {}, the app is {app_version}. Run the Colony installer again.",
+        disk.unwrap_or("an older version")
+    )
 }
 
 /// At most one automatic replacement per app process, so two apps of different
@@ -216,6 +257,41 @@ pub fn terminate(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_bundled_version() {
+        assert_eq!(judge_bundled("0.1.7", Some("0.1.7\n")), Bundled::Current);
+        assert_eq!(judge_bundled("0.1.7", Some("0.1.6")), Bundled::Other("0.1.6".into()));
+        assert_eq!(judge_bundled("0.1.7", Some("")), Bundled::Unknown);
+        assert_eq!(judge_bundled("0.1.7", Some("colonyd listening on 7878")), Bundled::Unknown);
+        assert_eq!(judge_bundled("0.1.7", None), Bundled::Unknown);
+    }
+
+    #[test]
+    fn checks_the_bundled_file_before_replacing() {
+        use Action::*;
+        let other = || Bundled::Other("0.1.6".into());
+        for verdict in [Verdict::ReplaceOlder, Verdict::ReplaceNewer] {
+            assert_eq!(decide_update(verdict, false, false, || Bundled::Current), Replace);
+            assert_eq!(decide_update(verdict, false, false, other), Incomplete);
+            assert_eq!(decide_update(verdict, false, false, || Bundled::Unknown), Incomplete);
+            // Already replaced once, or given up: connect, and never look at the file.
+            assert_eq!(decide_update(verdict, true, false, || panic!("not asked")), ConnectOnly);
+            assert_eq!(decide_update(verdict, false, true, || panic!("not asked")), ConnectOnly);
+        }
+        // A matching daemon is kept whatever the file says.
+        assert_eq!(decide_update(Verdict::Keep, false, false, || panic!("not asked")), Keep);
+        assert_eq!(decide_update(Verdict::Keep, true, false, other), Keep);
+    }
+
+    #[test]
+    fn says_what_is_on_disk() {
+        assert_eq!(
+            incomplete_message("0.1.7", Some("0.1.6")),
+            "Colony's update didn't finish: colonyd.exe on disk is 0.1.6, the app is 0.1.7. Run the Colony installer again."
+        );
+        assert!(incomplete_message("0.1.7", None).contains("is an older version,"));
+    }
 
     #[test]
     fn judges_versions() {

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use colony_source::daemon_info::{self, Action, DaemonInfo, Verdict};
+use colony_source::daemon_info::{self, Action, Bundled, DaemonInfo, Verdict};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +32,9 @@ static REPLACED: Mutex<Option<String>> = Mutex::new(None);
 static REPLACED_ONCE: AtomicBool = AtomicBool::new(false);
 /// A daemon (port, pid) that couldn't be stopped safely; not retried until the user asks.
 static GAVE_UP: Mutex<Option<(u16, Option<u32>)>> = Mutex::new(None);
+/// Set when the colonyd file on disk is not this app's version: the update didn't finish.
+/// The map shows it as a banner without a Restart button, and nothing is retried.
+static INCOMPLETE: Mutex<Option<String>> = Mutex::new(None);
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -158,8 +161,62 @@ fn stop(d: &DaemonInfo) -> Result<String, String> {
     Ok(image)
 }
 
+/// What the colonyd file next to this app says it is. An old file without `--version`
+/// would start a daemon instead of answering, so it runs against a scratch COLONY_HOME
+/// and an ephemeral port, and is killed (by its own handle) if it is still running
+/// after a few seconds. Anything but a clean version answer is `Unknown`.
+fn bundled_version() -> Bundled {
+    let Ok(exe) = daemon_exe() else { return Bundled::Unknown };
+    let scratch = std::env::temp_dir().join(format!("colony-version-probe-{}", std::process::id()));
+    let mut cmd = Command::new(&exe);
+    cmd.arg("--version")
+        .env("COLONY_HOME", &scratch)
+        .env("COLONY_PORT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let Ok(mut child) = cmd.spawn() else { return Bundled::Unknown };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let finished = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => break false,
+        }
+    };
+    let mut out = String::new();
+    if finished {
+        if let Some(so) = child.stdout.take() {
+            let _ = so.take(256).read_to_string(&mut out);
+        }
+    } else {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let _ = std::fs::remove_dir_all(&scratch);
+    daemon_info::judge_bundled(APP_VERSION, finished.then_some(out.as_str()))
+}
+
+/// The banner text when the update didn't finish, until a daemon of this version runs.
+pub fn incomplete() -> Option<String> {
+    INCOMPLETE.lock().unwrap().clone()
+}
+
+fn record_incomplete(disk: Option<&str>) {
+    let msg = daemon_info::incomplete_message(APP_VERSION, disk);
+    eprintln!("colony: {msg}");
+    *INCOMPLETE.lock().unwrap() = Some(msg);
+}
+
 /// Connection details for a running daemon, starting one if needed. A daemon from
-/// another version than this app is stopped and replaced by the bundled one.
+/// another version than this app is replaced by the bundled one, but only if that
+/// file really is this app's version; otherwise the update is recorded as incomplete.
 pub fn ensure() -> Result<Info, String> {
     // The map may ask several times while the daemon boots; start it once.
     static STARTING: Mutex<()> = Mutex::new(());
@@ -167,8 +224,27 @@ pub fn ensure() -> Result<Info, String> {
     if let Some(d) = read_info().filter(answers) {
         let verdict = daemon_info::judge(APP_VERSION, d.version.as_deref());
         let gave_up = *GAVE_UP.lock().unwrap() == Some((d.port, d.pid));
-        match daemon_info::decide(verdict, REPLACED_ONCE.load(Ordering::SeqCst), gave_up) {
-            Action::Keep => return Ok(Info { port: d.port, token: d.token }),
+        let mut disk: Option<Bundled> = None;
+        let action = daemon_info::decide_update(verdict, REPLACED_ONCE.load(Ordering::SeqCst), gave_up, || {
+            // No bundled file at all (a dev layout) is handled below; don't call that an unfinished update.
+            let b = if daemon_exe().is_ok() { bundled_version() } else { Bundled::Current };
+            disk = Some(b.clone());
+            b
+        });
+        match action {
+            Action::Keep => {
+                *INCOMPLETE.lock().unwrap() = None;
+                return Ok(Info { port: d.port, token: d.token });
+            }
+            Action::Incomplete => {
+                // Stop nothing: the file on disk would only start the same wrong daemon again.
+                REPLACED_ONCE.store(true, Ordering::SeqCst);
+                record_incomplete(match &disk {
+                    Some(Bundled::Other(v)) => Some(v.as_str()),
+                    _ => None,
+                });
+                return Ok(Info { port: d.port, token: d.token });
+            }
             Action::ConnectOnly => {
                 eprintln!("colony: colonyd {} doesn't match this app ({APP_VERSION}); leaving it for the Restart button", d.version.as_deref().unwrap_or("(no version)"));
                 return Ok(Info { port: d.port, token: d.token });
@@ -203,6 +279,13 @@ pub fn ensure() -> Result<Info, String> {
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(200));
         if let Some(d) = read_info().filter(answers) {
+            // A stale file starts a stale daemon: say so, and don't try again by itself.
+            if d.version.as_deref() != Some(APP_VERSION) {
+                REPLACED_ONCE.store(true, Ordering::SeqCst);
+                record_incomplete(d.version.as_deref());
+            } else {
+                *INCOMPLETE.lock().unwrap() = None;
+            }
             return Ok(Info { port: d.port, token: d.token });
         }
     }
@@ -222,5 +305,6 @@ pub fn take_notice() -> Option<String> {
 pub fn restart() -> Result<Info, String> {
     *GAVE_UP.lock().unwrap() = None;
     REPLACED_ONCE.store(false, Ordering::SeqCst);
+    *INCOMPLETE.lock().unwrap() = None;
     ensure()
 }

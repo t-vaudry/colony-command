@@ -104,6 +104,12 @@ pub(crate) fn local_host() -> HostId {
 
 #[tokio::main]
 async fn main() {
+    // The app asks this of the colonyd file next to it before replacing a running one.
+    // Nothing else may happen first: no logging, no COLONY_HOME, no daemon.
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if let Some(w) = colony_source::process::elevation_warning("colonyd") {
         log(w);
     }

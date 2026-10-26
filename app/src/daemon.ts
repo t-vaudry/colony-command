@@ -105,12 +105,15 @@ export class Daemon {
   /** The daemon rejected a command this map sends. */
   private protocolError = false;
   private appVer: string | null = null;
+  /** The app's word that the update left an old colonyd.exe on disk; Restart can't fix that. */
+  incomplete: string | null = null;
   status: ConnectionStatus = "connecting";
   error: string | null = null;
 
   /** The out-of-date banner text, or null when the daemon is the version this map expects. */
   outdated(): string | null {
-    return this.status === "live" ? outdatedBanner(this.appVer, this.version, this.protocolError) : null;
+    if (this.status !== "live") return null;
+    return this.incomplete ?? outdatedBanner(this.appVer, this.version, this.protocolError);
   }
 
   /** Ask the app to replace the daemon (the banner's Restart button), then reconnect. */
@@ -176,6 +179,7 @@ export class Daemon {
       // The app says so when it just replaced a daemon from another version.
       const note = await tauriCore()?.invoke<string | null>("daemon_notice").catch(() => null);
       if (note) for (const fn of this.noticeListeners) fn(note);
+      this.incomplete = (await tauriCore()?.invoke<string | null>("daemon_incomplete").catch(() => null)) ?? null;
     } catch (e) {
       this.setOffline(e instanceof Error ? e.message : String(e));
       return;

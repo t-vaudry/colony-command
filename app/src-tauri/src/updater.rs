@@ -2,8 +2,12 @@
 //! and, only when the user says so, downloads and installs it. Nothing here runs an
 //! install by itself, so a running session is never interrupted by an update.
 //!
-//! The NSIS installer's hooks stop this install's colonyd and move a running
-//! colony-ptyd aside, so sessions survive the upgrade; the app restarts afterwards.
+//! The NSIS installer's hooks stop this install's colonyd, then move every sidecar exe
+//! (colonyd, colony-ptyd, colony-hook, colony-setup) aside to `<name>.<tick>.old` before
+//! copying, since a running exe can be renamed but not overwritten. colony-ptyd keeps
+//! running so sessions survive the upgrade; the app restarts afterwards and deletes the
+//! leftovers (`clean_old_sidecars`). If a colonyd.exe on disk is still the old version,
+//! daemon.rs says the update didn't finish.
 
 use std::sync::Mutex;
 
@@ -42,4 +46,18 @@ pub async fn update_install(state: State<'_, Pending>) -> Result<(), String> {
     update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
     *state.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
     Ok(())
+}
+
+/// Best effort, at startup: deletes the renamed-aside sidecars (`colonyd.123.old`, ...) the
+/// installer left next to this executable. One that is still running can't be deleted;
+/// that failure, like any other, is ignored.
+pub fn clean_old_sidecars() {
+    let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if (name.starts_with("colonyd.") || name.starts_with("colony-")) && name.ends_with(".old") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
