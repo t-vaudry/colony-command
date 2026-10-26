@@ -10,10 +10,13 @@
 //!    `<colony home>/fixtures/<version>/<Event>.json` (unscrubbed, local only),
 //!    so schema changes between releases can be spotted and tested against;
 //! 3. for `PermissionRequest`, hands the request to colonyd and prints its
-//!    decision, if the map is open (see colonyd's `/api/permission`).
+//!    decision, if the map is open (see colonyd's `/api/permission`);
+//! 4. in a crew session (`COLONY_ADVISOR` set) prints advisor nudges: see [`nudge`].
 //!
 //! Nothing here may block or break a session: every failure is swallowed and
 //! the hook exits 0 with no output, which Claude Code treats as "no opinion".
+
+pub mod nudge;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -39,6 +42,10 @@ pub struct Ctx {
     pub colony_home: PathBuf,
     pub claude_home: PathBuf,
     pub version_hint: VersionHint,
+    /// `COLONY_ADVISOR`: the session has an advisor attached (set by Colony for crews).
+    pub advisor: Option<String>,
+    /// `COLONY_SWARM`: the session has the Haiku swarm, `swarm-audit` included.
+    pub swarm: Option<String>,
 }
 
 /// Where the Claude Code version can be learned; payloads don't carry it.
@@ -63,15 +70,16 @@ impl Ctx {
                 claude_pid: var("CLAUDE_PID"),
                 exec_path: var("CLAUDE_CODE_EXECPATH"),
             },
+            advisor: var("COLONY_ADVISOR"),
+            swarm: var("COLONY_SWARM"),
         }
     }
 }
 
 /// Handles one hook call. Returns what to print on stdout, if anything.
 pub fn run(input: &str, ctx: &Ctx) -> Option<String> {
-    let event = serde_json::from_str::<Value>(input)
-        .ok()
-        .and_then(|v| v.get("hook_event_name").and_then(Value::as_str).map(str::to_string));
+    let parsed = serde_json::from_str::<Value>(input).ok();
+    let event = parsed.as_ref().and_then(|v| v.get("hook_event_name").and_then(Value::as_str).map(str::to_string));
     let daemon = Daemon::find(&ctx.colony_home);
     // Record first: a request that is held for minutes must still be on the
     // map's timeline, and a failure later must not lose it.
@@ -84,6 +92,15 @@ pub fn run(input: &str, ctx: &Ctx) -> Option<String> {
     }
     if let Some(event) = &event {
         let _ = keep_fixture(ctx, event, input);
+    }
+    if ctx.advisor.is_some() {
+        // Sampled by pid, like the spool, to keep the hook fast.
+        if std::process::id() % 16 == 0 {
+            nudge::prune_state(&ctx.colony_home.join("advisor"), SystemTime::now(), nudge::STATE_MAX_FILES, nudge::STATE_MAX_AGE);
+        }
+        if let Some(out) = parsed.as_ref().and_then(|v| nudge::nudge(&ctx.colony_home, v, ctx.swarm.is_some())) {
+            return Some(out);
+        }
     }
     // The tray's kill switch: the request is still recorded above, just not held.
     if event.as_deref() == Some("PermissionRequest") && !colony_source::gating::paused(&ctx.colony_home) {
@@ -259,7 +276,7 @@ mod tests {
             }
         });
         fs::write(home.join("daemon.json"), format!(r#"{{"port":{port},"token":"abc123"}}"#)).unwrap();
-        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default() };
+        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default(), advisor: None, swarm: None };
         let input = r#"{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"Bash"}"#;
 
         assert!(run(input, &ctx).is_some(), "without the marker the request goes to colonyd");
@@ -274,7 +291,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("colony-hook-probe-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(&home).unwrap();
-        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default() };
+        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default(), advisor: None, swarm: None };
         let input = r#"{"hook_event_name":"PostToolUse","session_id":"s","tool_name":"Bash"}"#;
         let count = |d: &str| fs::read_dir(home.join(d)).map(|r| r.count()).unwrap_or(0);
 

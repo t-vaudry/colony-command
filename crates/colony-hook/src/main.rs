@@ -1,5 +1,6 @@
 //! `colony-hook`: register for every Claude Code hook event (see the README).
-//! Always exits 0; the only thing it ever prints is a permission decision.
+//! Always exits 0; it prints only a permission decision
+//! (PermissionRequest) or, in crew sessions, an advisor nudge (see `colony_hook::nudge`).
 
 use std::io::{Read, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
