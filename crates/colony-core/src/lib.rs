@@ -16,6 +16,7 @@ pub mod prices;
 pub mod ptyproto;
 pub mod registry;
 pub mod state;
+pub mod swarm;
 pub mod usage;
 pub mod workdir;
 
