@@ -92,6 +92,7 @@ export class NewSessionDialog {
     private daemon: Daemon,
     private onStarted: (started: { term: string; session_id: string }) => void,
     private termSize: () => { cols: number; rows: number },
+    private onFailed: (message: string) => void,
   ) {
     this.folder.addEventListener("change", () => this.folderChanged());
     this.other.addEventListener("change", () => void this.lookupFolderCrew());
@@ -352,7 +353,7 @@ export class NewSessionDialog {
       const action = folderDefaultAction({ touched: this.folderBoxTouched, checked: this.folderDefault.checked, hadDefault: !!this.folderCrew });
       if (action === "set") this.daemon.setFolderCrew(this.host.value, dir, choice.crew);
       else if (action === "clear") this.daemon.clearFolderCrew(this.host.value, dir);
-      const started = await this.daemon.spawn({
+      const spawning = this.daemon.spawn({
         host: this.host.value,
         dir,
         prompt: this.prompt.value.trim() || undefined,
@@ -365,8 +366,10 @@ export class NewSessionDialog {
         chrome: this.chrome.checked,
         ...this.termSize(),
       });
+      // Starting can take a while (worktree, hooks, the bot itself): let the
+      // user carry on and report back when it's up or has failed.
       this.dlg.close();
-      this.onStarted(started);
+      spawning.then(this.onStarted, (e) => this.onFailed(e instanceof Error ? e.message : String(e)));
     } catch (e) {
       this.error.textContent = e instanceof Error ? e.message : String(e);
     } finally {

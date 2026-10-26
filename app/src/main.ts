@@ -68,7 +68,7 @@ async function resumeNow(a: Agent, prompt?: string): Promise<void> {
 }
 
 const hud = new Hud(daemon, { select, showTerminal, newSession, fixNeed, resumeNow });
-const dialog = new NewSessionDialog(daemon, started, () => terminal.size());
+const dialog = new NewSessionDialog(daemon, started, () => terminal.size(), (m) => hud.toast(`Couldn't start the session: ${m}`));
 
 document.getElementById("new-session-btn")!.addEventListener("click", () => {
   const a = world.selected ? daemon.agents.get(world.selected) : undefined;
