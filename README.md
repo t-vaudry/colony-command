@@ -506,7 +506,7 @@ crew sessions (Colony sets `COLONY_ADVISOR` when an advisor is attached, and
 `COLONY_SWARM` when the Haiku swarm is), three advisor nudges, never a hard gate:
 `additionalContext` the second time the same tool error happens (once per error),
 the first `ExitPlanMode` of a turn bounced with a `deny` reason asking for the
-advisor's view of the plan (the second call passes), and one `{"decision":"block"}` at Stop when files changed this
+advisor's view of the plan (the second call passes), and one `additionalContext` nudge at Stop when files changed this
 turn and no `swarm-audit` ran since (never when `stop_hook_active`, never twice in
 a turn). Tool events from inside subagents (they carry an `agent_id`) are ignored. They remember what they need in `~/.colony/advisor/<session_id>.json`
 (pruned after 7 days or past 300 files), written only when the advisor is attached.

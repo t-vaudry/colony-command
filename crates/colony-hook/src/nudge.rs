@@ -6,7 +6,7 @@
 //! - the same tool error twice (`PostToolUseFailure`): `additionalContext`, once per error;
 //! - a plan about to lock (`PreToolUse` of `ExitPlanMode`): the first call each turn is denied
 //!   with a reason asking for the advisor first; the second passes;
-//! - work about to be called done (`Stop`, files changed this turn): one `decision: block`.
+//! - work about to be called done (`Stop`, files changed this turn): one `additionalContext`, which keeps the turn going.
 //!
 //! The hooks run in separate processes, so what they need to remember lives in a small state
 //! file per session, `<colony home>/advisor/<session_id>.json`. It is only written when the
@@ -152,7 +152,9 @@ pub fn nudge(colony_home: &Path, v: &Value, swarm: bool) -> Option<String> {
             let active = v.get("stop_hook_active").and_then(Value::as_bool).unwrap_or(false);
             if !active && s.dirty && !s.audited && !s.stop_blocked {
                 s.stop_blocked = true;
-                out = Some(json!({"decision": "block", "reason": if swarm { DONE_AUDIT } else { DONE }}).to_string());
+                // additionalContext keeps the turn going like a block does, without the "hook
+                // error" label: a nudge shouldn't look like a failure.
+                out = Some(context("Stop", if swarm { DONE_AUDIT } else { DONE }));
             }
         }
         _ => {}

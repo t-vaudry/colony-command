@@ -103,12 +103,12 @@ fn changed_files_block_the_stop_once() {
     assert_eq!(hook(&home, CREW, &ev("Stop", r#","stop_hook_active":false"#)), "", "nothing changed: no block");
     hook(&home, CREW, &edit());
     let out = json(&hook(&home, CREW, &ev("Stop", r#","stop_hook_active":false"#)));
-    assert_eq!(out["decision"], "block");
-    assert_eq!(out["reason"], nudge::DONE_AUDIT);
+    assert_eq!(out["hookSpecificOutput"]["hookEventName"], "Stop");
+    assert_eq!(out["hookSpecificOutput"]["additionalContext"], nudge::DONE_AUDIT);
     assert_eq!(hook(&home, CREW, &ev("Stop", r#","stop_hook_active":false"#)), "", "never twice in a turn");
     hook(&home, CREW, &ev("UserPromptSubmit", r#","prompt":"more""#));
     hook(&home, CREW, &edit());
-    assert!(hook(&home, CREW, &ev("Stop", "")).contains("block"), "a new turn can block again");
+    assert!(hook(&home, CREW, &ev("Stop", "")).contains("additionalContext"), "a new turn can block again");
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn the_audit_reason_is_only_for_crews_with_a_swarm() {
     let home = tmp("noswarm");
     hook(&home, ADV, &edit());
     let out = json(&hook(&home, ADV, &ev("Stop", "")));
-    assert_eq!(out["reason"], nudge::DONE);
+    assert_eq!(out["hookSpecificOutput"]["additionalContext"], nudge::DONE);
     assert!(!nudge::DONE.contains("swarm-audit"));
 }
 
@@ -126,7 +126,7 @@ fn stop_hook_active_is_never_blocked() {
     hook(&home, CREW, &edit());
     assert_eq!(hook(&home, CREW, &ev("Stop", r#","stop_hook_active":true"#)), "");
     // And it didn't use up the block.
-    assert!(hook(&home, CREW, &ev("Stop", r#","stop_hook_active":false"#)).contains("block"));
+    assert!(hook(&home, CREW, &ev("Stop", r#","stop_hook_active":false"#)).contains("additionalContext"));
 }
 
 #[test]
@@ -138,12 +138,12 @@ fn an_audit_after_the_last_change_lets_the_stop_through() {
     assert_eq!(hook(&home, CREW, &ev("Stop", "")), "");
     // A change after the audit needs a new one.
     hook(&home, CREW, &edit());
-    assert!(hook(&home, CREW, &ev("Stop", "")).contains("block"));
+    assert!(hook(&home, CREW, &ev("Stop", "")).contains("additionalContext"));
     // Other subagents don't count.
     let home = tmp("explore");
     hook(&home, CREW, &edit());
     hook(&home, CREW, &ev("SubagentStop", r#","agent_id":"a1","agent_type":"Explore""#));
-    assert!(hook(&home, CREW, &ev("Stop", "")).contains("block"));
+    assert!(hook(&home, CREW, &ev("Stop", "")).contains("additionalContext"));
 }
 
 #[test]
