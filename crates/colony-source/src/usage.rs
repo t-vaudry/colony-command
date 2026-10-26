@@ -6,6 +6,12 @@
 //! assistant message carries a `usage` block. Colony reads the new bytes of
 //! each file on every pass and emits one `UsageUpdated` per message.
 //!
+//! An advisor consultation (Claude Code's advisor tool) runs on another model.
+//! Its tokens are not in the message's top-level `usage`; they are an
+//! `iterations` entry of type `advisor_message` carrying the advisor's model.
+//! Those become their own `UsageUpdated` (flagged `advisor`), so they are
+//! priced at the advisor's rates and each consultation can be counted.
+//!
 //! The format is undocumented, so everything is read leniently: unknown fields
 //! are ignored, missing ones count as zero, and a line that doesn't parse is
 //! skipped. A transcript grows while it is read, so only complete lines
@@ -30,6 +36,14 @@ const EVERY: u64 = 5;
 /// Most bytes read from one file in one pass; the rest follows next pass.
 const READ_CAP: u64 = 64 * 1024 * 1024;
 
+/// What was already counted of one API response.
+#[derive(Default)]
+struct Seen {
+    main: Tokens,
+    advisor: Tokens,
+    consults: u32,
+}
+
 struct FileState {
     offset: u64,
     /// Session and subagent this file belongs to, from its path.
@@ -50,7 +64,7 @@ pub struct UsageReader {
     /// One API response is written as several lines (one per content block)
     /// sharing a message id, each with the usage so far. Keep the most seen,
     /// and count only the growth.
-    by_message: HashMap<String, Tokens>,
+    by_message: HashMap<String, Seen>,
     /// Usage messages emitted so far per (session, agent), for `seq`.
     seq: HashMap<(String, Option<String>), u64>,
 }
@@ -142,53 +156,73 @@ impl UsageReader {
         state.offset += end as u64;
         let (file_session, file_agent) = (state.session.clone(), state.agent.clone());
         for line in buf[..end].split(|&b| b == b'\n') {
-            if let Some(e) = self.read_line(line, &file_session, &file_agent) {
-                out.push(e);
-            }
+            self.read_line(line, &file_session, &file_agent, out);
         }
     }
 
-    fn read_line(&mut self, line: &[u8], file_session: &str, file_agent: &Option<String>) -> Option<Envelope> {
+    fn read_line(&mut self, line: &[u8], file_session: &str, file_agent: &Option<String>, out: &mut Vec<Envelope>) {
         // Most lines are not assistant messages; skip them without parsing.
         if !contains(line, b"\"usage\"") {
-            return None;
+            return;
         }
-        let u = parse_line(line)?;
+        let Some(u) = parse_line(line) else { return };
         if let Some(id) = &u.uuid {
             if !self.seen.insert(id.clone()) {
-                return None;
+                return;
             }
         }
-        let mut tokens = u.tokens;
+        let (mut tokens, mut advisor_tokens, mut consults) = (u.tokens, u.advisor_tokens, u.consults);
         if let Some(key) = &u.message_key {
             let before = self.by_message.entry(key.clone()).or_default();
-            let grown = Tokens {
-                input: u.tokens.input.saturating_sub(before.input),
-                output: u.tokens.output.saturating_sub(before.output),
-                cache_read: u.tokens.cache_read.saturating_sub(before.cache_read),
-                cache_creation: u.tokens.cache_creation.saturating_sub(before.cache_creation),
-            };
-            before.input = before.input.max(u.tokens.input);
-            before.output = before.output.max(u.tokens.output);
-            before.cache_read = before.cache_read.max(u.tokens.cache_read);
-            before.cache_creation = before.cache_creation.max(u.tokens.cache_creation);
-            tokens = grown;
-        }
-        if tokens.is_zero() {
-            return None;
+            tokens = grow(&mut before.main, &u.tokens);
+            advisor_tokens = grow(&mut before.advisor, &u.advisor_tokens);
+            consults = u.consults.saturating_sub(before.consults);
+            before.consults = before.consults.max(u.consults);
         }
         let session = u.session.unwrap_or_else(|| file_session.to_string());
         let agent = file_agent.clone().or_else(|| if u.sidechain { u.agent } else { None });
-        let seq = self.seq.entry((session.clone(), agent.clone())).or_insert(0);
-        *seq += 1;
-        Some(Envelope {
-            ts: u.ts.unwrap_or_else(crate::now_ms),
-            host: self.host.clone(),
-            session_id: session,
-            cwd: u.cwd,
-            event: DomainEvent::UsageUpdated { agent_id: agent, seq: *seq, model: u.model, tokens },
-        })
+        let ts = u.ts.unwrap_or_else(crate::now_ms);
+        let mut emit = |model: Option<String>, tokens: Tokens, advisor: bool, consults: u32| {
+            let seq = self.seq.entry((session.clone(), agent.clone())).or_insert(0);
+            *seq += 1;
+            out.push(Envelope {
+                ts,
+                host: self.host.clone(),
+                session_id: session.clone(),
+                cwd: u.cwd.clone(),
+                event: DomainEvent::UsageUpdated {
+                    agent_id: agent.clone(),
+                    seq: *seq,
+                    model,
+                    tokens,
+                    advisor,
+                    consults,
+                    advisor_model: u.advisor_model.clone(),
+                },
+            });
+        };
+        if !tokens.is_zero() {
+            emit(u.model.clone(), tokens, false, 0);
+        }
+        if !advisor_tokens.is_zero() || consults > 0 {
+            emit(u.iteration_model.clone().or_else(|| u.advisor_model.clone()), advisor_tokens, true, consults);
+        }
     }
+}
+
+/// What `now` adds to `seen`; `seen` moves up to the most seen.
+fn grow(seen: &mut Tokens, now: &Tokens) -> Tokens {
+    let grown = Tokens {
+        input: now.input.saturating_sub(seen.input),
+        output: now.output.saturating_sub(seen.output),
+        cache_read: now.cache_read.saturating_sub(seen.cache_read),
+        cache_creation: now.cache_creation.saturating_sub(seen.cache_creation),
+    };
+    seen.input = seen.input.max(now.input);
+    seen.output = seen.output.max(now.output);
+    seen.cache_read = seen.cache_read.max(now.cache_read);
+    seen.cache_creation = seen.cache_creation.max(now.cache_creation);
+    grown
 }
 
 fn read_dir_paths(dir: &Path) -> Vec<PathBuf> {
@@ -228,6 +262,12 @@ struct LineUsage {
     model: Option<String>,
     ts: Option<u64>,
     tokens: Tokens,
+    /// The advisor attached to the session (top-level `advisorModel`).
+    advisor_model: Option<String>,
+    /// Advisor consultations in this response: their tokens, count and model.
+    advisor_tokens: Tokens,
+    consults: u32,
+    iteration_model: Option<String>,
 }
 
 /// The usage in one transcript line, if it is an assistant message with any.
@@ -242,13 +282,16 @@ fn parse_line(line: &[u8]) -> Option<LineUsage> {
     let usage = msg.get("usage")?;
     let model = msg.get("model").and_then(Value::as_str).filter(|m| !m.is_empty() && !m.starts_with('<')).map(str::to_string);
     let str_of = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
-    let cache_creation = count(usage, "cache_creation_input_tokens").unwrap_or_else(|| {
-        // Newer releases split writes by lifetime.
-        usage
-            .get("cache_creation")
-            .and_then(Value::as_object)
-            .map_or(0, |o| o.values().filter_map(as_count).sum())
-    });
+    // Advisor consultations are `advisor_message` iterations, billed to the advisor's model.
+    let mut advisor_tokens = Tokens::default();
+    let (mut consults, mut iteration_model) = (0u32, None);
+    for it in usage.get("iterations").and_then(Value::as_array).into_iter().flatten() {
+        if it.get("type").and_then(Value::as_str) == Some("advisor_message") {
+            advisor_tokens.add(&tokens_of(it));
+            consults += 1;
+            iteration_model = it.get("model").and_then(Value::as_str).filter(|m| !m.is_empty()).map(str::to_string);
+        }
+    }
     let message_key = msg.get("id").and_then(Value::as_str).map(|id| format!("{id}/{}", str_of("requestId").unwrap_or_default()));
     Some(LineUsage {
         uuid: str_of("uuid"),
@@ -259,13 +302,29 @@ fn parse_line(line: &[u8]) -> Option<LineUsage> {
         cwd: str_of("cwd"),
         model,
         ts: str_of("timestamp").and_then(|t| parse_rfc3339_ms(&t)),
-        tokens: Tokens {
-            input: count(usage, "input_tokens").unwrap_or(0),
-            output: count(usage, "output_tokens").unwrap_or(0),
-            cache_read: count(usage, "cache_read_input_tokens").unwrap_or(0),
-            cache_creation,
-        },
+        tokens: tokens_of(usage),
+        advisor_model: str_of("advisorModel"),
+        advisor_tokens,
+        consults,
+        iteration_model,
     })
+}
+
+/// The four counts in a `usage` block or one of its `iterations`.
+fn tokens_of(usage: &Value) -> Tokens {
+    let cache_creation = count(usage, "cache_creation_input_tokens").unwrap_or_else(|| {
+        // Newer releases split writes by lifetime.
+        usage
+            .get("cache_creation")
+            .and_then(Value::as_object)
+            .map_or(0, |o| o.values().filter_map(as_count).sum())
+    });
+    Tokens {
+        input: count(usage, "input_tokens").unwrap_or(0),
+        output: count(usage, "output_tokens").unwrap_or(0),
+        cache_read: count(usage, "cache_read_input_tokens").unwrap_or(0),
+        cache_creation,
+    }
 }
 
 fn as_count(v: &Value) -> Option<u64> {
@@ -316,7 +375,9 @@ mod tests {
 
     const MAIN: &str = include_str!("../tests/fixtures/transcript-main.jsonl");
     const SUB: &str = include_str!("../tests/fixtures/transcript-subagent.jsonl");
-    const SID: &str = "11111111-aaaa-4aaa-8aaa-000000000001";
+    /// A Sonnet session with an Opus advisor, shaped like a real transcript (ids and paths scrubbed).
+    const ADVISOR: &str = include_str!("../tests/fixtures/transcript-advisor.jsonl");
+    const SID: &str ="11111111-aaaa-4aaa-8aaa-000000000001";
 
     fn tmp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("colony-usage-{tag}-{}", std::process::id()));
@@ -331,7 +392,7 @@ mod tests {
 
     fn usage_of(e: &Envelope) -> (Option<String>, u64, Option<String>, Tokens) {
         match &e.event {
-            DomainEvent::UsageUpdated { agent_id, seq, model, tokens } => (agent_id.clone(), *seq, model.clone(), *tokens),
+            DomainEvent::UsageUpdated { agent_id, seq, model, tokens, .. } => (agent_id.clone(), *seq, model.clone(), *tokens),
             other => panic!("not usage: {other:?}"),
         }
     }
@@ -364,6 +425,35 @@ mod tests {
         // 50 output, then 90 in total -> 50 + 40.
         assert_eq!((got[2].3.output, got[3].3.output), (50, 40));
         assert_eq!(got[3].3.input, 0);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn advisor_consultations_are_their_own_usage_at_the_advisors_model() {
+        let d = tmp("advisor");
+        fs::write(d.join("projects/C--code-api/S.jsonl"), ADVISOR).unwrap();
+        let ev = reader(&d).scan();
+        let got: Vec<_> = ev
+            .iter()
+            .map(|e| match &e.event {
+                DomainEvent::UsageUpdated { seq, model, tokens, advisor, consults, advisor_model, .. } => {
+                    assert_eq!(advisor_model.as_deref(), Some("claude-opus-5-5"));
+                    (*seq, model.clone().unwrap(), *tokens, *advisor, *consults)
+                }
+                other => panic!("not usage: {other:?}"),
+            })
+            .collect();
+        // Message A is three lines with the same usage: counted once, as the Sonnet part
+        // (top-level usage leaves the advisor out) and the Opus consultation. Likewise B.
+        assert_eq!(got.len(), 4, "{got:?}");
+        let sonnet_a = Tokens { input: 4, output: 31, cache_read: 39_858, cache_creation: 11_173 };
+        let opus_a = Tokens { input: 27_034, output: 177, cache_read: 0, cache_creation: 0 };
+        assert_eq!(got[0], (1, "claude-sonnet-5-5".into(), sonnet_a, false, 0));
+        assert_eq!(got[1], (2, "claude-opus-5-5".into(), opus_a, true, 1));
+        assert_eq!((got[2].3, got[2].4, got[3].0, got[3].2.input), (false, 0, 4, 31_000));
+        assert_eq!(got[3].4, 1);
+        // The consultation is stamped when its message was first written.
+        assert_eq!(ev[1].ts, parse_rfc3339_ms("2026-10-09T14:03:02.000Z").unwrap());
         let _ = fs::remove_dir_all(&d);
     }
 

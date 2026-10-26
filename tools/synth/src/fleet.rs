@@ -129,7 +129,7 @@ impl Fleet {
             cache_read: self.rng.range(5_000, 80_000),
             cache_creation: if self.rng.chance(30) { self.rng.range(500, 6_000) } else { 0 },
         };
-        DomainEvent::UsageUpdated { agent_id, seq, model: Some(model.into()), tokens }
+        DomainEvent::UsageUpdated { agent_id, seq, model: Some(model.into()), tokens, advisor: false, consults: 0, advisor_model: None }
     }
 
     /// What the tool call is aimed at. File tools name a file in one of a few

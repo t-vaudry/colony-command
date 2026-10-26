@@ -163,6 +163,10 @@ pub enum DomainEvent {
     /// order, so a source that replays its history (a restarted probe) is not
     /// counted twice: the reducer ignores anything at or below what it has
     /// seen. 0 means unnumbered.
+    ///
+    /// With `advisor` set, the tokens are advisor consultations (`consults`
+    /// of them) and `model` is the advisor's, which they are priced at.
+    /// `advisor_model` is the advisor attached to the session, when there is one.
     UsageUpdated {
         #[serde(default)]
         agent_id: Option<String>,
@@ -172,6 +176,12 @@ pub enum DomainEvent {
         model: Option<String>,
         #[serde(default)]
         tokens: crate::usage::Tokens,
+        #[serde(default)]
+        advisor: bool,
+        #[serde(default)]
+        consults: u32,
+        #[serde(default)]
+        advisor_model: Option<String>,
     },
 }
 

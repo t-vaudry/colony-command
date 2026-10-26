@@ -53,6 +53,18 @@ pub fn family(model: &str) -> Option<Family> {
         .map(|(_, f)| f)
 }
 
+impl Family {
+    /// Lowercase name, as used for keys and labels.
+    pub fn key(self) -> &'static str {
+        match self {
+            Family::Opus => "opus",
+            Family::Sonnet => "sonnet",
+            Family::Haiku => "haiku",
+            Family::Fable => "fable",
+        }
+    }
+}
+
 /// A suggested switch, shown on the map with a one-click button.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelHint {
@@ -68,8 +80,11 @@ fn hint(model: &str, label: &str, reason: String) -> Option<ModelHint> {
 }
 
 /// Suggest a better-suited model for the work `recent` shows, if any.
-pub fn suggest(current: Option<&str>, recent: &[ToolKind]) -> Option<ModelHint> {
+/// `advisor` is the advisor model attached to the session: an Opus or Fable
+/// advisor already does the planning, so no switch to Opus is suggested.
+pub fn suggest(current: Option<&str>, advisor: Option<&str>, recent: &[ToolKind]) -> Option<ModelHint> {
     let fam = family(current?)?;
+    let advised = advisor.and_then(family).is_some_and(|f| matches!(f, Family::Opus | Family::Fable));
     let n = recent.len();
     if n < MIN_SAMPLE {
         return None;
@@ -78,7 +93,7 @@ pub fn suggest(current: Option<&str>, recent: &[ToolKind]) -> Option<ModelHint> 
     let (reads, edits, runs, plans) = (count(ToolKind::Read), count(ToolKind::Edit), count(ToolKind::Run), count(ToolKind::Plan));
 
     // Planning a larger piece of work on a lighter model.
-    if plans >= 2 && matches!(fam, Family::Haiku | Family::Sonnet) {
+    if plans >= 2 && !advised && matches!(fam, Family::Haiku | Family::Sonnet) {
         return hint("opus", "Opus", format!("Planning multi-step work ({plans} planning steps in the last {n} tool calls). Opus plans more reliably."));
     }
     // Only reading and searching on a big model.
@@ -112,7 +127,7 @@ mod tests {
     fn reading_on_opus_suggests_haiku() {
         let mut r = many(Read, 9);
         r.push(Other);
-        let h = suggest(Some("claude-opus-5-5"), &r).unwrap();
+        let h = suggest(Some("claude-opus-5-5"), None, &r).unwrap();
         assert_eq!(h.model, "haiku");
         assert!(h.reason.contains("9 of the last 10"));
     }
@@ -121,26 +136,39 @@ mod tests {
     fn any_edit_keeps_the_big_model() {
         let mut r = many(Read, 9);
         r.push(Edit);
-        assert_eq!(suggest(Some("claude-opus-5-5"), &r), None);
+        assert_eq!(suggest(Some("claude-opus-5-5"), None, &r), None);
     }
 
     #[test]
     fn planning_on_lighter_models_suggests_opus() {
         let r = [Plan, Read, Read, Plan, Read, Edit, Read, Read];
-        assert_eq!(suggest(Some("claude-sonnet-5-5"), &r).unwrap().model, "opus");
-        assert_eq!(suggest(Some("claude-opus-5-5"), &r), None);
+        assert_eq!(suggest(Some("claude-sonnet-5-5"), None, &r).unwrap().model, "opus");
+        assert_eq!(suggest(Some("claude-opus-5-5"), None, &r), None);
+    }
+
+    #[test]
+    fn an_opus_advisor_already_plans_so_no_switch_to_opus() {
+        let r = [Plan, Read, Read, Plan, Read, Edit, Read, Read];
+        assert_eq!(suggest(Some("claude-sonnet-5-5"), Some("claude-opus-5-5"), &r), None);
+        assert_eq!(suggest(Some("claude-haiku-5-5"), Some("claude-fable-5-1"), &r), None);
+        // A lighter advisor doesn't plan for it.
+        assert_eq!(suggest(Some("claude-sonnet-5-5"), Some("claude-haiku-5-5"), &r).unwrap().model, "opus");
+        // Other hints are unaffected.
+        let mut reading = many(Read, 9);
+        reading.push(Other);
+        assert_eq!(suggest(Some("claude-opus-5-5"), Some("claude-opus-5-5"), &reading).unwrap().model, "haiku");
     }
 
     #[test]
     fn coding_on_haiku_suggests_sonnet() {
         let r = [Edit, Run, Edit, Read, Run, Edit, Read, Run];
-        assert_eq!(suggest(Some("claude-haiku-5-5"), &r).unwrap().model, "sonnet");
+        assert_eq!(suggest(Some("claude-haiku-5-5"), None, &r).unwrap().model, "sonnet");
     }
 
     #[test]
     fn quiet_until_enough_calls_or_a_known_model() {
-        assert_eq!(suggest(Some("claude-opus-5-5"), &many(Read, 5)), None);
-        assert_eq!(suggest(None, &many(Read, 12)), None);
+        assert_eq!(suggest(Some("claude-opus-5-5"), None, &many(Read, 5)), None);
+        assert_eq!(suggest(None, None, &many(Read, 12)), None);
     }
 
     #[test]

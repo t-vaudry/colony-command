@@ -12,7 +12,7 @@ use crate::models::{self, ModelHint, ToolKind};
 use crate::names;
 use crate::paths;
 use crate::prices;
-use crate::usage::{ProjectLatency, ProjectSpend, Tokens, BUCKET_MS, LATENCY_SAMPLES_MAX, LEDGER_KEEP_MS};
+use crate::usage::{file_under, model_key, ModelCost, ProjectLatency, ProjectSpend, Tokens, BUCKET_MS, LATENCY_SAMPLES_MAX, LEDGER_KEEP_MS};
 use crate::workdir::{self, Collision, CollisionScope, DiffStat};
 
 /// A session with no prompt this long after starting is idle.
@@ -167,6 +167,8 @@ pub enum ActivityKind {
     Reply,
     /// Something went wrong, or the session was held up.
     Problem,
+    /// The session consulted its advisor model.
+    Advisor,
 }
 
 /// One line of an agent's recent history, for the inspector's activity feed.
@@ -304,6 +306,18 @@ pub struct Agent {
     /// Some tokens were from a model without a known price, so `cost_usd` is low.
     #[serde(default)]
     pub cost_partial: bool,
+    /// Tokens and cost split by model (see `usage::model_key`); advisor
+    /// consultations are under their own `advisor:` keys, priced as the advisor.
+    #[serde(default)]
+    pub by_model: Vec<ModelCost>,
+    /// The advisor model attached to the session, when there is one.
+    #[serde(default)]
+    pub advisor_model: Option<String>,
+    /// Advisor consultations so far, and when the latest was written.
+    #[serde(default)]
+    pub consults: u32,
+    #[serde(default)]
+    pub last_consult_at: Option<u64>,
     /// The folder it is working in, relative to its project folder and rolled
     /// up to a couple of levels (`src/auth`; empty for the project folder).
     /// Follows the files its tool calls name; kept after the call finishes.
@@ -380,6 +394,10 @@ impl Agent {
             tokens: Tokens::default(),
             cost_usd: 0.0,
             cost_partial: false,
+            by_model: Vec::new(),
+            advisor_model: None,
+            consults: 0,
+            last_consult_at: None,
             work_dir: None,
             collision: None,
             diff_stat: None,
@@ -647,7 +665,7 @@ impl Colony {
             DomainEvent::SessionStarted { source, model } => {
                 if model.is_some() {
                     main.model = model.clone();
-                    main.model_hint = models::suggest(main.model.as_deref(), &main.recent_tools);
+                    main.model_hint = models::suggest(main.model.as_deref(), main.advisor_model.as_deref(), &main.recent_tools);
                 }
                 if source.as_deref() != Some("compact") {
                     main.background_tasks = 0;
@@ -665,7 +683,7 @@ impl Colony {
             DomainEvent::Renamed { .. } => {}
             DomainEvent::ModelSet { model } => {
                 main.model = Some(model.clone());
-                main.model_hint = models::suggest(main.model.as_deref(), &main.recent_tools);
+                main.model_hint = models::suggest(main.model.as_deref(), main.advisor_model.as_deref(), &main.recent_tools);
             }
             DomainEvent::PromptSubmitted { preview, synthetic, task_ended, full } => {
                 settle_if_after(main, e.ts);
@@ -700,7 +718,7 @@ impl Colony {
                 }
                 // Only main agents: a subagent's model isn't reported.
                 if a.kind == AgentKind::Main {
-                    a.model_hint = models::suggest(a.model.as_deref(), &a.recent_tools);
+                    a.model_hint = models::suggest(a.model.as_deref(), a.advisor_model.as_deref(), &a.recent_tools);
                 }
                 a.current_tool = Some(CurrentTool {
                     name: tool.clone(),
@@ -1008,7 +1026,7 @@ impl Colony {
     /// transcript lines are not agent activity, and usage for a session that is
     /// off the map (ended, dismissed) still counts toward the project's spend.
     fn apply_usage(&mut self, e: &Envelope) -> Vec<String> {
-        let DomainEvent::UsageUpdated { agent_id, seq, model, tokens } = &e.event else { return Vec::new() };
+        let DomainEvent::UsageUpdated { agent_id, seq, model, tokens, advisor, consults, advisor_model } = &e.event else { return Vec::new() };
         let sid = &e.session_id;
         let own = agent_id.as_deref().map_or_else(|| sid.clone(), |a| sub_id(sid, a));
         let last = self.usage_seq.entry(own.clone()).or_insert(0);
@@ -1018,19 +1036,42 @@ impl Colony {
             }
             *last = *seq;
         }
-        if tokens.is_zero() {
+        if tokens.is_zero() && *consults == 0 {
             return Vec::new();
         }
         let cost = model.as_deref().and_then(|m| prices::cost(m, tokens));
+        let mkey = model_key(model.as_deref(), *advisor);
         let mut changed = Vec::new();
-        for id in [Some(own), agent_id.as_ref().map(|_| sid.clone())].into_iter().flatten() {
+        for id in [Some(own.clone()), agent_id.as_ref().map(|_| sid.clone())].into_iter().flatten() {
             if let Some(a) = self.agents.get_mut(&id) {
                 a.tokens.add(tokens);
                 match cost {
                     Some(c) => a.cost_usd += c,
                     None => a.cost_partial = true,
                 }
-                changed.push(id);
+                file_under(&mut a.by_model, &mkey, tokens, cost, *consults);
+                if *advisor {
+                    a.consults += consults;
+                    a.last_consult_at = a.last_consult_at.max(Some(e.ts));
+                }
+                changed.push(id.clone());
+                if id != own {
+                    continue;
+                }
+                // A subagent's model is only known from its own messages.
+                if a.kind == AgentKind::Subagent && !*advisor && a.model.is_none() {
+                    a.model = model.clone();
+                }
+                if *advisor {
+                    let who = model.as_deref().and_then(models::family).map_or("advisor", |f| f.key());
+                    a.log(e.ts, ActivityKind::Advisor, format!("Consulted the {who} advisor{}", if *consults > 1 { format!(" ({consults} calls)") } else { String::new() }), None, None);
+                }
+                if advisor_model.is_some() && a.advisor_model != *advisor_model {
+                    a.advisor_model = advisor_model.clone();
+                    if a.kind == AgentKind::Main {
+                        a.model_hint = models::suggest(a.model.as_deref(), a.advisor_model.as_deref(), &a.recent_tools);
+                    }
+                }
             }
         }
         let (key, name) = match self.agents.get(sid).and_then(|a| a.project_key.clone().zip(a.project_name.clone())) {
@@ -1042,7 +1083,7 @@ impl Colony {
         };
         let project = self.spend.entry(key.clone()).or_default();
         project.name = name;
-        project.buckets.entry(e.ts / BUCKET_MS).or_default().add(tokens, cost);
+        project.buckets.entry(e.ts / BUCKET_MS).or_default().add_for(&mkey, tokens, cost, *consults);
         self.spend_dirty.insert(key);
         changed
     }
@@ -1594,7 +1635,7 @@ mod tests {
         let env = |ts, event| Envelope { ts, host: HostId::Windows, session_id: "s".into(), cwd: Some("C:/x/p".into()), event };
         let mut c = Colony::new();
         c.apply(&env(1_000, DomainEvent::SessionStarted { source: None, model: None }));
-        c.apply(&env(2_000, DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: None, tokens: Default::default() }));
+        c.apply(&env(2_000, DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: None, tokens: Default::default(), advisor: false, consults: 0, advisor_model: None }));
         assert!(c.usage_seq.contains_key("s"));
         c.apply(&env(3_000, DomainEvent::SessionEnded));
         c.tick(3_000 + ENDED_TTL_MS + 1_000);
