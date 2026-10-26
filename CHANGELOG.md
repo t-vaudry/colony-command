@@ -6,6 +6,10 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 ## [Unreleased]
 
 - Crews: bots can use a swarm of cheap Haiku helpers for searching and auditing, with Opus advising only at key decisions, to spend far fewer tokens.
+- Crews: the New session dialog picks a crew instead of a model. The default
+  crew is Sonnet builds, Haiku swarms, Opus reviews (Opus attached as the
+  advisor); you can customize the models for one bot, save your own crews, and
+  a pairing Claude Code would reject is refused before Start.
 
 ## [0.1.5] - 2026-10-21
 

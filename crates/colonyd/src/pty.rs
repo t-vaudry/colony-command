@@ -61,6 +61,16 @@ pub struct SpawnRequest {
     /// `--model`: an alias ("opus", "sonnet", "haiku") or a full model id.
     #[serde(default)]
     pub model: Option<String>,
+    /// The crew this bot belongs to (see `colony_core::crew`); `model` then
+    /// overrides the crew's main model for this bot.
+    #[serde(default)]
+    pub crew: Option<String>,
+    /// This bot's advisor instead of its crew's; `"none"` for no advisor.
+    #[serde(default)]
+    pub advisor: Option<String>,
+    /// This bot's swarm model instead of its crew's; `"none"` for no swarm.
+    #[serde(default)]
+    pub swarm: Option<String>,
     /// Start a new conversation in its own git worktree and branch, so bots
     /// on one repository don't share a checkout. Handled before `spawn`.
     #[serde(default)]
@@ -74,6 +84,16 @@ pub struct SpawnRequest {
     #[serde(skip)]
     pub auto: bool,
 }
+
+impl SpawnRequest {
+    /// The crew choice, to carry across a resume.
+    pub fn pick(&self) -> colony_core::crew::CrewPick {
+        colony_core::crew::CrewPick { crew: self.crew.clone(), advisor: self.advisor.clone(), swarm: self.swarm.clone() }
+    }
+}
+
+/// Windows refuses command lines over 32767 characters; quoting can add some.
+const MAX_COMMAND_LINE: usize = 32_000;
 
 pub fn default_cols() -> u16 {
     120
@@ -203,9 +223,16 @@ impl PtyHost {
             }
             claude_args.extend(["--permission-mode".into(), mode.clone()]);
         }
-        if let Some(m) = req.model.as_ref().filter(|m| !m.is_empty()) {
-            claude_args.extend(["--model".into(), checked_model(m)?.into()]);
+        let crew = colony_core::crew::resolve(&crate::crews::saved(), &req.pick(), req.model.as_deref())?;
+        for m in [&crew.model, &crew.advisor, &crew.swarm_model].into_iter().flatten() {
+            checked_model(m)?;
         }
+        if crew.advisor.is_some() {
+            if let Some(w) = crate::crews::advisor_warning(Some(&req.host)) {
+                log(format!("crew advisor: {w}"));
+            }
+        }
+        claude_args.extend(crew.args());
         match req.chrome {
             Some(true) => claude_args.push("--chrome".into()),
             Some(false) => claude_args.push("--no-chrome".into()),
@@ -233,10 +260,15 @@ impl PtyHost {
             }
         };
 
+        // Each `"` and `\` costs a backslash when the command line is built.
+        let line_len: usize = args.iter().chain([&program]).map(|a| a.len() + 3 + a.matches(['"', '\\']).count()).sum();
+        if line_len > MAX_COMMAND_LINE {
+            return Err("the crew's settings make the launch command too long for Windows".into());
+        }
         if req.auto && !crate::resume::still_wanted(&session_id) {
             return Err("that session was dismissed or ended; not restarting it".into());
         }
-        let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows).await?;
+        let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows, crew.env()).await?;
         log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
         if !req.auto {
             crate::resume::remember(&session_id, &req);
@@ -260,7 +292,7 @@ impl PtyHost {
                 None,
             ),
         };
-        let (term_id, pid) = self.launch("", host, dir, program, args, cwd, cols, rows).await?;
+        let (term_id, pid) = self.launch("", host, dir, program, args, cwd, cols, rows, Vec::new()).await?;
         log(format!("started {} in terminal {term_id} ({host}, {dir}, pid {pid})", cmd.what));
         Ok(term_id)
     }
@@ -268,18 +300,26 @@ impl PtyHost {
     /// Ask ptyd to start a process and wait for it. `session_id` is empty for
     /// a terminal that isn't a bot's.
     #[allow(clippy::too_many_arguments)]
-    async fn launch(&self, session_id: &str, host: &HostId, dir: &str, program: String, args: Vec<String>, cwd: Option<String>, cols: u16, rows: u16) -> Result<(String, u32), String> {
+    async fn launch(&self, session_id: &str, host: &HostId, dir: &str, program: String, args: Vec<String>, cwd: Option<String>, cols: u16, rows: u16, extra_env: Vec<(String, String)>) -> Result<(String, u32), String> {
         let term_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         // Mark the session as Colony's: Windows recognizes it by process id;
         // inside WSL the probe reads this variable (WSLENV carries it across).
         let mut env = child_env();
         env.push(("COLONY_TERM_ID".into(), term_id.clone()));
+        // A crew's marks (the hook reads them) travel the same way.
+        let mut carried = vec!["COLONY_TERM_ID/u".to_string()];
+        for (k, v) in extra_env {
+            carried.push(format!("{k}/u"));
+            env.retain(|(name, _)| !name.eq_ignore_ascii_case(&k));
+            env.push((k, v));
+        }
         if matches!(host, HostId::Wsl(_)) {
             let wslenv = env.iter().find(|(k, _)| k.eq_ignore_ascii_case("WSLENV")).map(|(_, v)| v.clone());
             env.retain(|(k, _)| !k.eq_ignore_ascii_case("WSLENV"));
+            let carried = carried.join(":");
             let joined = match wslenv.filter(|v| !v.is_empty()) {
-                Some(v) => format!("{v}:COLONY_TERM_ID/u"),
-                None => "COLONY_TERM_ID/u".into(),
+                Some(v) => format!("{v}:{carried}"),
+                None => carried,
             };
             env.push(("WSLENV".into(), joined));
         }

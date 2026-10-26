@@ -237,6 +237,60 @@ fn quote(arg: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Split a command line the way the Microsoft C runtime does.
+    fn split(line: &str) -> Vec<String> {
+        let (mut out, mut cur, mut in_q, mut started) = (Vec::new(), String::new(), false, false);
+        let c: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < c.len() {
+            let mut slashes = 0;
+            while i < c.len() && c[i] == '\\' {
+                slashes += 1;
+                i += 1;
+            }
+            if i < c.len() && c[i] == '"' {
+                cur.extend(std::iter::repeat_n('\\', slashes / 2));
+                if slashes % 2 == 1 {
+                    cur.push('"');
+                } else {
+                    in_q = !in_q;
+                }
+                started = true;
+                i += 1;
+                continue;
+            }
+            cur.extend(std::iter::repeat_n('\\', slashes));
+            if i >= c.len() {
+                break;
+            }
+            if c[i].is_whitespace() && !in_q {
+                if started {
+                    out.push(std::mem::take(&mut cur));
+                    started = false;
+                }
+            } else {
+                cur.push(c[i]);
+                started = true;
+            }
+            i += 1;
+        }
+        if started {
+            out.push(cur);
+        }
+        out
+    }
+
+    #[test]
+    fn json_and_multiline_arguments_survive_the_command_line() {
+        let json = r#"{"swarm-grep":{"description":"Finds \"things\" in C:\\code\\","prompt":"Line one.\nLine \"two\".\r\n  indented\\","model":"haiku"}}"#;
+        let rules = "Delegate searches.\n\n- Use \"swarm-search\" first.\n- Path C:\\dir\\\n";
+        let args: Vec<String> = ["--agents", json, "--append-system-prompt", rules, "a b", "", "-d"].iter().map(|s| s.to_string()).collect();
+        let line = command_line("claude.exe", &args);
+        let mut want = vec!["claude.exe".to_string()];
+        want.extend(args);
+        assert_eq!(split(&line), want);
+    }
+
     #[test]
     fn quoting_round_trips_msvc_rules() {
         assert_eq!(quote("plain"), "plain");

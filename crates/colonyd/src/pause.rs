@@ -36,6 +36,9 @@ pub struct Paused {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub chrome: Option<bool>,
+    /// The bot's crew and per-bot overrides, so Resume brings back the same models.
+    #[serde(default)]
+    pub pick: colony_core::crew::CrewPick,
     /// Stopped by a restart rather than paused by the user (see `roster`):
     /// kept until dismissed.
     #[serde(default)]
@@ -141,6 +144,7 @@ async fn pause_now(shared: &Shared, id: &str) -> Result<(), String> {
             model: req.as_ref().and_then(|r| r.model.clone()).or_else(|| a.model.clone()),
             permission_mode: req.as_ref().and_then(|r| r.permission_mode.clone()),
             chrome: req.as_ref().and_then(|r| r.chrome),
+            pick: req.as_ref().map(|r| r.pick()).unwrap_or_default(),
             interrupted: false,
         },
     );
@@ -182,6 +186,9 @@ pub async fn resume(shared: &Shared, id: &str) -> Result<(), String> {
         chrome: record.as_ref().and_then(|r| r.chrome).or(Some(false)),
         session_id: None,
         model: record.as_ref().and_then(|r| r.model.clone()),
+        crew: record.as_ref().and_then(|r| r.pick.crew.clone()),
+        advisor: record.as_ref().and_then(|r| r.pick.advisor.clone()),
+        swarm: record.as_ref().and_then(|r| r.pick.swarm.clone()),
         isolate: false,
         cols: crate::pty::default_cols(),
         rows: crate::pty::default_rows(),

@@ -2,7 +2,7 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest } from "./types";
+import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest } from "./types";
 
 interface DaemonInfo {
   port: number;
@@ -17,7 +17,9 @@ export interface DaemonSettings {
 }
 
 type Message =
-  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
+  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
+  | { type: "crews"; items: Crew[] }
+  | { type: "crew_check"; req: number; error: string | null; warnings: string[] }
   | { type: "settings"; settings: DaemonSettings }
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
@@ -59,6 +61,8 @@ function decode(b64: string): Uint8Array {
 export class Daemon {
   agents = new Map<string, Agent>();
   hosts: HostOption[] = [];
+  /** Built-in and saved crews: which models a new bot uses. */
+  crews: Crew[] = [];
   /** Estimated spend per project key, in 15-minute buckets. */
   spend = new Map<string, ProjectSpend>();
   /** How long agents waited on a human, per project key, in 15-minute buckets. */
@@ -87,6 +91,8 @@ export class Daemon {
   private errorListeners = new Set<(message: string) => void>();
   private noticeListeners = new Set<(message: string) => void>();
   /** Spawn replies arrive in the order spawns were sent. */
+  private crewChecks = new Map<number, (c: CrewCheck) => void>();
+  private crewCheckSeq = 0;
   private pendingSpawns: { resolve: (v: { term: string; session_id: string }) => void; reject: (e: Error) => void }[] = [];
 
   onChange(fn: () => void): void {
@@ -153,6 +159,7 @@ export class Daemon {
       case "snapshot":
         this.agents = new Map(m.agents.map((a) => [a.id, a]));
         this.hosts = m.hosts ?? this.hosts;
+        this.crews = m.crews ?? this.crews;
         this.spend = new Map(Object.entries(m.spend ?? {}));
         this.latency = new Map(Object.entries(m.latency ?? {}));
         this.leftovers = m.leftovers ?? [];
@@ -176,6 +183,13 @@ export class Daemon {
       case "leftovers":
         this.leftovers = m.items;
         break;
+      case "crews":
+        this.crews = m.items;
+        break;
+      case "crew_check":
+        this.crewChecks.get(m.req)?.({ error: m.error, warnings: m.warnings });
+        this.crewChecks.delete(m.req);
+        return;
       case "found":
         this.found = m.items;
         break;
@@ -269,6 +283,28 @@ export class Daemon {
       }
       this.pendingSpawns.push({ resolve, reject });
     });
+  }
+
+  /** Whether this crew choice can start on `host`, and what will be limited. */
+  checkCrew(choice: { host?: string; crew?: string; model?: string; advisor?: string; swarm?: string }): Promise<CrewCheck> {
+    return new Promise((resolve) => {
+      const req = ++this.crewCheckSeq;
+      this.crewChecks.set(req, resolve);
+      if (!this.send({ type: "check_crew", req, ...choice })) {
+        this.crewChecks.delete(req);
+        resolve({ error: null, warnings: [] });
+      }
+    });
+  }
+
+  /** Save a crew (new, or an edited copy of a built-in). Errors arrive as errors. */
+  saveCrew(crew: Crew): boolean {
+    return this.send({ type: "save_crew", crew });
+  }
+
+  /** Remove a saved crew, or reset a built-in one. */
+  deleteCrew(id: string): boolean {
+    return this.send({ type: "delete_crew", id });
   }
 
   /** Open the sign-in or install this bot is stuck on in a terminal; resolves with its id. */
