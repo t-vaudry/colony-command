@@ -9,6 +9,9 @@
 //!                      crash (for scripts; the map uses the socket)
 //! - `POST /api/permission` a `PermissionRequest` hook payload; held until the
 //!                      map answers, then the hook's decision JSON (or no body)
+//! - `POST /api/shutdown` exit cleanly (sessions live in colony-ptyd and the next
+//!                      colonyd relinks them); the app uses it to replace a
+//!                      daemon from another version
 //! - `POST /api/ingest` only when `COLONY_INGEST=1`: a JSON envelope, or an array
 //!                      of them, fed to the reducer (tools/synth, tools/replay)
 
@@ -47,10 +50,15 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/api/ack", post(ack))
         .route("/api/permission", post(permission))
         .route("/api/ingest", post(ingest))
+        .route("/api/shutdown", post(shutdown))
         .with_state(shared)
 }
 
 fn authorized(shared: &Shared, params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
+    token_ok(&shared.token, params, headers)
+}
+
+fn token_ok(expected: &str, params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
     let from_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -63,7 +71,7 @@ fn authorized(shared: &Shared, params: &HashMap<String, String>, headers: &Heade
             || o.starts_with("http://localhost:")
             || o.starts_with("http://127.0.0.1:")
     });
-    origin_ok && given == Some(shared.token.as_str())
+    origin_ok && given == Some(expected)
 }
 
 fn unauthorized() -> Response {
@@ -74,7 +82,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "crew_folders": crate::crews::folders(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
+    json!({ "type": "snapshot", "version": env!("CARGO_PKG_VERSION"), "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "crew_folders": crate::crews::folders(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
@@ -82,6 +90,20 @@ async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, header
         return unauthorized();
     }
     ([(header::CONTENT_TYPE, "application/json")], snapshot(&shared).await).into_response()
+}
+
+/// Exits once the reply is out. Not a graceful serve shutdown: open maps' sockets would hold that up.
+async fn shutdown(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
+    if !authorized(&shared, &params, &headers) {
+        return unauthorized();
+    }
+    log("shutdown requested over the API");
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        crate::save_latency(&shared).await;
+        std::process::exit(0);
+    });
+    Json(json!({ "ok": true })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1315,5 +1337,21 @@ mod crew_command_tests {
         assert!(matches!(c, Command::ClearFolderCrew { .. }));
         let c: Command = serde_json::from_str(r#"{"type":"spawn","host":"win","dir":"C:/w","crew":"default","swarm":"none"}"#).unwrap();
         assert!(matches!(c, Command::Spawn(r) if r.crew.as_deref() == Some("default") && r.swarm.as_deref() == Some("none")));
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::token_ok;
+    use axum::http::HeaderMap;
+    use std::collections::HashMap;
+
+    #[test]
+    fn shutdown_needs_the_token() {
+        let bad = HashMap::from([("token".to_string(), "nope".to_string())]);
+        let good = HashMap::from([("token".to_string(), "secret".to_string())]);
+        assert!(!token_ok("secret", &HashMap::new(), &HeaderMap::new()));
+        assert!(!token_ok("secret", &bad, &HeaderMap::new()));
+        assert!(token_ok("secret", &good, &HeaderMap::new()));
     }
 }

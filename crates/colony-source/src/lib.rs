@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use colony_core::{DomainEvent, Envelope, HookPayload, HostId, SessionRecord};
 
+pub mod daemon_info;
 pub mod gating;
 pub mod process;
 pub mod usage;

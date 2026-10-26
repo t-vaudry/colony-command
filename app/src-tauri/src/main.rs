@@ -20,6 +20,18 @@ async fn daemon_info() -> Result<daemon::Info, String> {
     tauri::async_runtime::spawn_blocking(daemon::ensure).await.map_err(|e| e.to_string())?
 }
 
+/// A one-time message that the app replaced a daemon from another version.
+#[tauri::command]
+fn daemon_notice() -> Option<String> {
+    daemon::take_notice()
+}
+
+/// The out-of-date banner's Restart button.
+#[tauri::command]
+async fn daemon_restart() -> Result<daemon::Info, String> {
+    tauri::async_runtime::spawn_blocking(daemon::restart).await.map_err(|e| e.to_string())?
+}
+
 fn setup_options(app: &tauri::AppHandle) -> Options {
     let mut opts = Options::from_env();
     if let Ok(dir) = app.path().resource_dir() {
@@ -123,7 +135,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![daemon_info, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install, speech::speech_status, speech::speech_download, speech::speech_transcribe])
+        .invoke_handler(tauri::generate_handler![daemon_info, daemon_notice, daemon_restart, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install, speech::speech_status, speech::speech_download, speech::speech_transcribe])
         .run(tauri::generate_context!())
         .expect("Colony Command failed to start");
 }

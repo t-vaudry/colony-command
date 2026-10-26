@@ -12,6 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use colony_source::daemon_info::{self, DaemonInfo, Verdict};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +21,14 @@ pub struct Info {
     pub token: String,
 }
 
+/// The daemon this app's map speaks: the one that ships with it.
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Set when a mismatched daemon was replaced; the map takes it once and shows it.
+static REPLACED: Mutex<Option<String>> = Mutex::new(None);
+/// A daemon (port, pid) that couldn't be stopped safely; not retried until the user asks.
+static GAVE_UP: Mutex<Option<(u16, Option<u32>)>> = Mutex::new(None);
+
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Same folder the hook and daemon use (`COLONY_HOME`, else `~/.colony`).
@@ -27,12 +36,12 @@ pub fn colony_home() -> PathBuf {
     colony_source::colony_home()
 }
 
-fn read_info() -> Option<Info> {
-    serde_json::from_slice(&std::fs::read(colony_home().join("daemon.json")).ok()?).ok()
+fn read_info() -> Option<DaemonInfo> {
+    DaemonInfo::read(&colony_home())
 }
 
 /// The daemon is up and accepts this token.
-fn answers(info: &Info) -> bool {
+fn answers(info: &DaemonInfo) -> bool {
     let addr = SocketAddr::from(([127, 0, 0, 1], info.port));
     let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else { return false };
     let _ = s.set_read_timeout(Some(Duration::from_millis(800)));
@@ -89,20 +98,97 @@ fn start_daemon() -> Result<(), String> {
         .or_else(|_| spawn(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP))
 }
 
-/// Connection details for a running daemon, starting one if needed.
+fn port_open(port: u16) -> bool {
+    TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), Duration::from_millis(300)).is_ok()
+}
+
+fn wait_closed(port: u16, within: Duration) -> bool {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if !port_open(port) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    !port_open(port)
+}
+
+/// Asks a daemon that has `/api/shutdown` to exit; true once its port is closed.
+fn shutdown_politely(d: &DaemonInfo) -> bool {
+    let addr = SocketAddr::from(([127, 0, 0, 1], d.port));
+    let Ok(mut s) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else { return false };
+    let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+    let req = format!("POST /api/shutdown?token={} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", d.token);
+    if s.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut head = [0u8; 16];
+    matches!(s.read(&mut head), Ok(n) if n >= 12 && &head[9..12] == b"200") && wait_closed(d.port, Duration::from_secs(5))
+}
+
+/// The process to end for this daemon, only if it is verifiably a colonyd: it must
+/// be the listener on the port, run an image named colonyd, and (when daemon.json
+/// says where the daemon lives) still be that executable. Never matched by name alone.
+fn verified_pid(d: &DaemonInfo) -> Option<(u32, String)> {
+    let pid = daemon_info::listening_pid(d.port)?;
+    // A pid in daemon.json that isn't the listener is stale (or reused).
+    if d.exe.is_some() && d.pid.is_some_and(|p| p != pid) {
+        return None;
+    }
+    let image = daemon_info::image_path(pid)?;
+    if !daemon_info::is_colonyd_image(&image) || d.exe.as_deref().is_some_and(|e| !daemon_info::same_path(e, &image)) {
+        return None;
+    }
+    Some((pid, image))
+}
+
+/// Stops a daemon, politely if it can be asked; Ok has where it ran. Err says why it was left running.
+fn stop(d: &DaemonInfo) -> Result<String, String> {
+    if d.version.is_some() && shutdown_politely(d) {
+        return Ok(d.exe.clone().unwrap_or_else(|| "an unknown location".into()));
+    }
+    let (pid, image) = verified_pid(d).ok_or_else(|| format!("can't tell which process runs colonyd on port {}", d.port))?;
+    if !daemon_info::terminate(pid) || !wait_closed(d.port, Duration::from_secs(5)) {
+        return Err(format!("couldn't stop {image} (pid {pid})"));
+    }
+    Ok(image)
+}
+
+/// Connection details for a running daemon, starting one if needed. A daemon from
+/// another version than this app is stopped and replaced by the bundled one.
 pub fn ensure() -> Result<Info, String> {
     // The map may ask several times while the daemon boots; start it once.
     static STARTING: Mutex<()> = Mutex::new(());
     let _guard = STARTING.lock().unwrap();
-    if let Some(info) = read_info().filter(answers) {
-        return Ok(info);
+    if let Some(d) = read_info().filter(answers) {
+        let verdict = daemon_info::judge(APP_VERSION, d.version.as_deref());
+        let gave_up = *GAVE_UP.lock().unwrap() == Some((d.port, d.pid));
+        if verdict == Verdict::Keep || gave_up {
+            return Ok(Info { port: d.port, token: d.token });
+        }
+        if verdict == Verdict::ReplaceNewer {
+            eprintln!("colony: the running colonyd ({}) is newer than this app ({APP_VERSION}); replacing it with the bundled one", d.version.as_deref().unwrap_or("?"));
+        }
+        match stop(&d) {
+            Ok(exe) => {
+                let was = d.version.as_deref().map_or("an older version".to_string(), |v| format!("version {v}"));
+                *REPLACED.lock().unwrap() =
+                    Some(format!("Restarted Colony's background service (was {was} from {exe}). Your sessions kept running."));
+            }
+            Err(why) => {
+                // The map shows the out-of-date banner; don't retry on every reconnect.
+                eprintln!("colony: not replacing the running colonyd: {why}");
+                *GAVE_UP.lock().unwrap() = Some((d.port, d.pid));
+                return Ok(Info { port: d.port, token: d.token });
+            }
+        }
     }
     start_daemon()?;
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(200));
-        if let Some(info) = read_info().filter(answers) {
-            return Ok(info);
+        if let Some(d) = read_info().filter(answers) {
+            return Ok(Info { port: d.port, token: d.token });
         }
     }
     Err(format!(
@@ -110,4 +196,15 @@ pub fn ensure() -> Result<Info, String> {
         STARTUP_TIMEOUT.as_secs(),
         colony_home().join("colonyd.log").display()
     ))
+}
+
+/// The notice about a replaced daemon, once.
+pub fn take_notice() -> Option<String> {
+    REPLACED.lock().unwrap().take()
+}
+
+/// The Restart button: try the replacement again, even for a daemon given up on.
+pub fn restart() -> Result<Info, String> {
+    *GAVE_UP.lock().unwrap() = None;
+    ensure()
 }

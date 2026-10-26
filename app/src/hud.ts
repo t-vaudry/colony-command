@@ -140,6 +140,11 @@ export class Hud {
     daemon.onChange(() => this.schedule());
     daemon.onError((m) => this.toast(m));
     daemon.onNotice((m, actions) => this.toast(m, actions));
+    document.querySelector("#outdated button")!.addEventListener("click", (e) => {
+      const b = e.currentTarget as HTMLButtonElement;
+      b.disabled = true;
+      daemon.restart().catch((err) => this.toast(String(err))).finally(() => (b.disabled = false));
+    });
     setInterval(() => this.tickDurations(), 1000);
     this.watchGating();
     this.strip.addEventListener("click", (e) => {
@@ -237,6 +242,14 @@ export class Hud {
     const a = this.composeAgent();
     if (!seq || !a?.terminal) return;
     if (!this.daemon.input(a.terminal, seq)) this.toast("Not connected to colonyd.");
+  }
+
+  /** One persistent banner when colonyd isn't the version this map expects. */
+  private showOutdated(): void {
+    const bar = document.getElementById("outdated")!;
+    const text = this.daemon.outdated();
+    bar.hidden = text === null;
+    if (text !== null) bar.firstElementChild!.textContent = text;
   }
 
   toast(message: string, actions?: NoticeAction[]): void {
@@ -430,6 +443,7 @@ export class Hud {
     ]
       .map(([c, label, n]) => `<span class="chip"><span class="dot ${c}"></span>${label} <b>${n}</b></span>`)
       .join("") + this.gatingChip() + this.foundChip() + this.leftoverChip() + this.rulesChip() + this.spendChip());
+    this.showOutdated();
     this.conn.className = `conn ${this.daemon.status}`;
     this.conn.textContent =
       this.daemon.status === "live"

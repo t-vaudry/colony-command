@@ -279,7 +279,7 @@ async fn main() {
         }
     };
     let info_path = colony_source::colony_home().join("daemon.json");
-    let info = json!({ "port": port, "token": token, "pid": std::process::id() });
+    let info = colony_source::daemon_info::DaemonInfo::for_this_process(port, &token).to_json();
     if let Err(e) = std::fs::create_dir_all(info_path.parent().unwrap())
         .and_then(|_| std::fs::write(&info_path, serde_json::to_vec_pretty(&info).unwrap()))
     {
@@ -293,8 +293,12 @@ async fn main() {
         })
         .await
         .expect("server runs");
-    // A clean stop keeps the response times from the last few seconds too.
-    let ledger = saver.colony.read().await.latency.clone();
+    save_latency(&saver).await;
+}
+
+/// A clean stop keeps the response times from the last few seconds too.
+pub async fn save_latency(shared: &Shared) {
+    let ledger = shared.colony.read().await.latency.clone();
     if let Err(e) = latency_store::save(&latency_store::path(), &ledger) {
         log(format!("could not save response times: {e}"));
     }
