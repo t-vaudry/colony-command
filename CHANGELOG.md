@@ -5,6 +5,8 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+- Crews: bots can use a swarm of cheap Haiku helpers for searching and auditing, with Opus advising only at key decisions, to spend far fewer tokens.
+
 ## [0.1.5] - 2026-10-21
 
 - Sessions from before: at startup Colony finds sessions in Colony worktrees,
