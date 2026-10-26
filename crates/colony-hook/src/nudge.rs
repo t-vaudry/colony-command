@@ -70,6 +70,11 @@ impl State {
 /// What the nudges print for this payload, if anything. `swarm` says whether the audit
 /// subagent exists. Updates the session's state file when the event changes it.
 pub fn nudge(colony_home: &Path, v: &Value, swarm: bool) -> Option<String> {
+    nudge_kind(colony_home, v, swarm).map(|(_, out)| out)
+}
+
+/// As [`nudge`], with the kind of nudge it was: `twice`, `plan` or `done`.
+pub fn nudge_kind(colony_home: &Path, v: &Value, swarm: bool) -> Option<(&'static str, String)> {
     let event = v.get("hook_event_name")?.as_str()?;
     let tool = v.get("tool_name").and_then(Value::as_str).unwrap_or("");
     // Tool calls made inside a subagent (a swarm agent) carry the parent's session_id and an
@@ -122,7 +127,7 @@ pub fn nudge(colony_home: &Path, v: &Value, swarm: bool) -> Option<String> {
                         s.sigs[i].1 = s.sigs[i].1.saturating_add(1);
                         if s.sigs[i].1 >= 2 && !s.sigs[i].2 {
                             s.sigs[i].2 = true;
-                            out = Some(context("PostToolUseFailure", TWICE));
+                            out = Some(("twice", context("PostToolUseFailure", TWICE)));
                         }
                     }
                     None => {
@@ -140,12 +145,13 @@ pub fn nudge(colony_home: &Path, v: &Value, swarm: bool) -> Option<String> {
                 // additionalContext on PreToolUse lands next to the tool result, after the plan
                 // is already approved, so bounce the first call instead: the reason is shown to
                 // Claude, the turn goes on, and the second call passes.
-                out = Some(
+                out = Some((
+                    "plan",
                     json!({"hookSpecificOutput": {
                         "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": PLAN
                     }})
                     .to_string(),
-                );
+                ));
             }
         }
         "Stop" => {
@@ -154,7 +160,7 @@ pub fn nudge(colony_home: &Path, v: &Value, swarm: bool) -> Option<String> {
                 s.stop_blocked = true;
                 // additionalContext keeps the turn going like a block does, without the "hook
                 // error" label: a nudge shouldn't look like a failure.
-                out = Some(context("Stop", if swarm { DONE_AUDIT } else { DONE }));
+                out = Some(("done", context("Stop", if swarm { DONE_AUDIT } else { DONE })));
             }
         }
         _ => {}

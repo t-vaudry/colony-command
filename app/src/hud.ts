@@ -6,6 +6,7 @@ import { costChart } from "./costchart";
 import { modelLine } from "./modelcost";
 import { latencyChart } from "./latencychart";
 import { daySummary } from "./daysummary";
+import { crewBlock, crewTag } from "./crewhealth";
 import { detail, playheadX, REPLAY_FRAMES, timelapse } from "./timelapse";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { md } from "./markdown";
@@ -286,7 +287,7 @@ export class Hud {
           .join("")}</div>`
       : "";
     const modelRow = current || a.terminal
-      ? `<div class="row"><span class="k">Model</span><span>${esc(current ?? "your default")}</span>${switcher}</div>`
+      ? `<div class="row"><span class="k">Model</span><span>${esc(current ?? "your default")}${crewTag(a)}</span>${switcher}</div>`
       : "";
     const h = a.model_hint;
     if (!h || this.hintsDismissed.get(a.id) === h.model) return modelRow;
@@ -563,7 +564,7 @@ export class Hud {
         <p class="muted">Bots on the front porch need you: red ones are stuck, yellow ones want a permission or an answer.
         Bots holding a blue package at the review dock have finished a turn.</p>
         <p class="muted">Drag to pan, scroll to zoom, double-click a bot to zoom to its project, <kbd>0</kbd> to fit everything.</p>
-        ${daySummary(this.daemon.spend, this.daemon.latency, this.daemon.now())?.html ?? ""}
+        ${daySummary(this.daemon.spend, this.daemon.latency, this.daemon.now(), this.daemon.agents.values())?.html ?? ""}
         ${timelapse(this.daemon.replay, this.replayAt, this.replayTimer !== null, this.replayLoading)}
         ${costChart(this.daemon.spend, this.daemon.now())}
         ${latencyChart(this.daemon.latency, this.daemon.now())}
@@ -681,6 +682,7 @@ export class Hud {
         ${diffRow}${collisionRow}${subModel}${usageRow}${modelUse}
       </div>
       ${this.modelRows(a)}
+      ${crewBlock(a, kids)}
       ${
         kids.length
           ? `<div class="fact"><span class="k">Subagents</span><div class="kids">${kids

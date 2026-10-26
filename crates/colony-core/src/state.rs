@@ -12,6 +12,7 @@ use crate::models::{self, ModelHint, ToolKind};
 use crate::names;
 use crate::paths;
 use crate::prices;
+use crate::swarm;
 use crate::usage::{file_under, model_key, ModelCost, ProjectLatency, ProjectSpend, Tokens, BUCKET_MS, LATENCY_SAMPLES_MAX, LEDGER_KEEP_MS};
 use crate::workdir::{self, Collision, CollisionScope, DiffStat};
 
@@ -141,6 +142,118 @@ impl AgentState {
 pub enum AgentKind {
     Main,
     Subagent,
+}
+
+/// The crew a bot was started with, as launched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CrewInfo {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub advisor: Option<String>,
+    #[serde(default)]
+    pub swarm_model: Option<String>,
+}
+
+/// A name and how many times it happened.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Count {
+    pub name: String,
+    pub n: u32,
+}
+
+/// Nudges of one kind sent to a session, and how many were followed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NudgeStat {
+    pub kind: String,
+    pub sent: u32,
+    pub followed: u32,
+}
+
+/// Whether a main session uses its crew: what it searched itself, what it handed to the
+/// swarm, who consulted the advisor, and whether nudges were heeded.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CrewHealth {
+    /// Swarm subagents started, by type.
+    #[serde(default)]
+    pub delegated: Vec<Count>,
+    /// Search-type tool calls the main session made itself (see [`is_search`]).
+    #[serde(default)]
+    pub self_searches: u32,
+    /// Advisor consultations by the main session.
+    #[serde(default)]
+    pub main_consults: u32,
+    /// Advisor consultations by subagents, by type. Swarm agents are told never to.
+    #[serde(default)]
+    pub sub_consults: Vec<Count>,
+    #[serde(default)]
+    pub nudges: Vec<NudgeStat>,
+    /// Kinds of nudges sent and not yet followed or abandoned (a new prompt abandons them).
+    #[serde(default)]
+    pub open_nudges: Vec<String>,
+}
+
+impl CrewHealth {
+    pub fn is_empty(&self) -> bool {
+        *self == CrewHealth::default()
+    }
+
+    pub fn delegations(&self) -> u32 {
+        self.delegated.iter().map(|c| c.n).sum()
+    }
+
+    fn bump(list: &mut Vec<Count>, name: &str, n: u32) {
+        match list.iter_mut().find(|c| c.name == name) {
+            Some(c) => c.n += n,
+            None => list.push(Count { name: name.to_string(), n }),
+        }
+    }
+
+    fn nudge_sent(&mut self, kind: &str) {
+        match self.nudges.iter_mut().find(|s| s.kind == kind) {
+            Some(s) => s.sent += 1,
+            None => self.nudges.push(NudgeStat { kind: kind.to_string(), sent: 1, followed: 0 }),
+        }
+        self.open_nudges.push(kind.to_string());
+    }
+
+    /// The advisor was consulted (`audit`: a swarm-audit started instead, which only answers a `done`).
+    fn nudges_followed(&mut self, audit: bool) {
+        let open = std::mem::take(&mut self.open_nudges);
+        for kind in open {
+            if audit && kind != "done" {
+                self.open_nudges.push(kind);
+                continue;
+            }
+            if let Some(s) = self.nudges.iter_mut().find(|s| s.kind == kind) {
+                s.followed += 1;
+            }
+        }
+    }
+}
+
+/// A tool call that is clearly looking for something: Read, Grep, Glob, or a shell command
+/// that starts with a search program (grep, rg, find, ls, ...), possibly after a `cd`.
+pub fn is_search(tool: &str, target: Option<&str>) -> bool {
+    match tool {
+        "Read" | "Grep" | "Glob" | "LS" => true,
+        "Bash" | "PowerShell" => target.is_some_and(|cmd| {
+            cmd.split(['&', ';', '\n'])
+                .map(str::trim)
+                .find(|s| !s.is_empty() && !s.starts_with("cd "))
+                .and_then(|s| s.split_whitespace().next())
+                .is_some_and(|prog| {
+                    let prog = prog.rsplit(['/', '\\']).next().unwrap_or(prog).to_ascii_lowercase();
+                    matches!(
+                        prog.as_str(),
+                        "grep" | "egrep" | "fgrep" | "rg" | "ag" | "find" | "fd" | "ls" | "tree" | "select-string" | "get-childitem" | "gci" | "dir"
+                    )
+                })
+        }),
+        _ => false,
+    }
 }
 
 /// A permission request Colony is holding for the map to answer.
@@ -318,6 +431,20 @@ pub struct Agent {
     pub consults: u32,
     #[serde(default)]
     pub last_consult_at: Option<u64>,
+    /// The crew Colony started this session with, when it did.
+    #[serde(default)]
+    pub crew: Option<CrewInfo>,
+    /// Delegation, advisor and nudge counts of a main session.
+    #[serde(default)]
+    pub crew_health: CrewHealth,
+    /// A subagent's assistant messages so far, the `maxTurns` it was started under (swarm
+    /// agents only), and whether it stopped having used them all.
+    #[serde(default)]
+    pub turns: u32,
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+    #[serde(default)]
+    pub hit_max_turns: bool,
     /// The folder it is working in, relative to its project folder and rolled
     /// up to a couple of levels (`src/auth`; empty for the project folder).
     /// Follows the files its tool calls name; kept after the call finishes.
@@ -398,6 +525,11 @@ impl Agent {
             advisor_model: None,
             consults: 0,
             last_consult_at: None,
+            crew: None,
+            crew_health: CrewHealth::default(),
+            turns: 0,
+            max_turns: None,
+            hit_max_turns: false,
             work_dir: None,
             collision: None,
             diff_stat: None,
@@ -599,6 +731,8 @@ impl Colony {
                 | DomainEvent::PermissionAsked { .. }
                 | DomainEvent::PermissionSettled { .. }
                 | DomainEvent::AuthResolved
+                | DomainEvent::CrewSet { .. }
+                | DomainEvent::NudgeSent { .. }
                 | DomainEvent::PauseRequested
                 | DomainEvent::PauseCancelled
                 | DomainEvent::Paused
@@ -702,8 +836,14 @@ impl Colony {
                     main.background_tasks = main.background_tasks.saturating_sub(1);
                 }
                 main.consecutive_failures = 0;
+                // A nudge not followed by now is not going to be.
+                main.crew_health.open_nudges.clear();
                 main.set_state(AgentState::Working, None, e.ts);
             }
+            DomainEvent::CrewSet { id, label, model, advisor, swarm_model } => {
+                main.crew = Some(CrewInfo { id: id.clone(), label: label.clone(), model: model.clone(), advisor: advisor.clone(), swarm_model: swarm_model.clone() });
+            }
+            DomainEvent::NudgeSent { kind } => main.crew_health.nudge_sent(kind),
             DomainEvent::ToolStarted { agent_id, tool, target, tool_use_id, background } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
                 settle_if_after(a, e.ts);
@@ -733,6 +873,9 @@ impl Colony {
                 };
                 a.log(e.ts, ActivityKind::Tool, line, None, tool_use_id.clone());
                 a.tool_calls += 1;
+                if agent_id.is_none() && is_search(tool, target.as_deref()) {
+                    a.crew_health.self_searches += 1;
+                }
                 if a.state != AgentState::Ended {
                     a.set_state(AgentState::Working, None, e.ts);
                 }
@@ -835,11 +978,20 @@ impl Colony {
                     a.name = names::sub_name(&parent_name, Some(t), ordinal);
                     a.subagent_type = Some(t.clone());
                     a.objective = Some(t.clone());
+                    a.max_turns = Some(swarm::max_turns(t)).filter(|n| *n > 0);
                 }
                 a.set_state(AgentState::Working, None, e.ts);
+                if let Some(t) = agent_type.as_deref().filter(|t| t.starts_with("swarm-")) {
+                    let health = &mut self.agents.get_mut(&sid).expect("main agent exists").crew_health;
+                    CrewHealth::bump(&mut health.delegated, t, 1);
+                    if t == "swarm-audit" {
+                        health.nudges_followed(true);
+                    }
+                }
             }
             DomainEvent::SubagentStopped { agent_id, last_message } => {
                 let a = self.target(e, Some(agent_id), &mut changed);
+                a.hit_max_turns = a.max_turns.is_some_and(|m| a.turns >= m);
                 a.last_message = last_message.as_deref().map(preview);
                 a.current_tool = None;
                 a.set_state(AgentState::Ended, Some("returned".into()), e.ts);
@@ -1062,6 +1214,10 @@ impl Colony {
                 if a.kind == AgentKind::Subagent && !*advisor && a.model.is_none() {
                     a.model = model.clone();
                 }
+                // One usage line per assistant message, which is what `maxTurns` counts.
+                if a.kind == AgentKind::Subagent && !*advisor {
+                    a.turns += 1;
+                }
                 if *advisor {
                     let who = model.as_deref().and_then(models::family).map_or("advisor", |f| f.key());
                     a.log(e.ts, ActivityKind::Advisor, format!("Consulted the {who} advisor{}", if *consults > 1 { format!(" ({consults} calls)") } else { String::new() }), None, None);
@@ -1071,6 +1227,19 @@ impl Colony {
                     if a.kind == AgentKind::Main {
                         a.model_hint = models::suggest(a.model.as_deref(), a.advisor_model.as_deref(), &a.recent_tools);
                     }
+                }
+            }
+        }
+        if *advisor && *consults > 0 {
+            let who = agent_id.as_ref().map(|_| self.agents.get(&own).and_then(|a| a.subagent_type.clone()).unwrap_or_else(|| "subagent".into()));
+            if let Some(main) = self.agents.get_mut(sid) {
+                let health = &mut main.crew_health;
+                match who {
+                    None => {
+                        health.main_consults += consults;
+                        health.nudges_followed(false);
+                    }
+                    Some(t) => CrewHealth::bump(&mut health.sub_consults, &t, *consults),
                 }
             }
         }

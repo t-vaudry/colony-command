@@ -1,5 +1,6 @@
+import { crewRollup } from "./crewhealth";
 import { modelLine } from "./modelcost";
-import { BUCKET_MS, compact, median, money, spentToday, waitText, type ProjectLatency, type ProjectSpend } from "./types";
+import { BUCKET_MS, compact, median, money, spentToday, waitText, type Agent, type ProjectLatency, type ProjectSpend } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -22,7 +23,7 @@ function waitsToday(p: ProjectLatency | undefined, now: number): number[] {
 /** What the day came to so far: spend and time-to-respond per project, since local
  *  midnight. Built only from the ledgers Colony already keeps, so it is as complete
  *  as they are (they reset when the daemon restarts). Null when nothing happened. */
-export function daySummary(spend: Map<string, ProjectSpend>, latency: Map<string, ProjectLatency>, now: number): { html: string; text: string } | null {
+export function daySummary(spend: Map<string, ProjectSpend>, latency: Map<string, ProjectLatency>, now: number, agents: Iterable<Agent> = []): { html: string; text: string } | null {
   const lines: Line[] = [];
   for (const key of new Set([...spend.keys(), ...latency.keys()])) {
     const s = spentToday(spend, now, key);
@@ -42,10 +43,12 @@ export function daySummary(spend: Map<string, ProjectSpend>, latency: Map<string
     `${l.name}: ${money(l.usd)}${l.partial ? " (partial)" : ""}, ${l.waits.length ? `${l.waits.length} answered, median ${waitText(median(l.waits))}` : "nothing waited on you"}`;
   const day = new Date(now).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
   const split = modelLine(spentToday(spend, now).models);
-  const text = [`Colony, ${day}`, head, ...(split ? [`By model: ${split}`] : []), ...lines.map(row)].join("\n");
+  const crew = crewRollup(agents);
+  const text = [`Colony, ${day}`, head, ...(split ? [`By model: ${split}`] : []), ...(crew ? [crew] : []), ...lines.map(row)].join("\n");
   const html =
     `<div class="k">Today so far</div><p><b>${esc(head)}</b></p>` +
     (split ? `<p class="muted small">${esc(split)}</p>` : "") +
+    (crew ? `<p class="muted small">${esc(crew)} (bots on the map)</p>` : "") +
     lines.map((l) => `<div class="row"><span class="k">${esc(l.name)}</span><span>${esc(row(l).slice(l.name.length + 2))}</span></div>`).join("") +
     `<p class="muted small">Since local midnight, from the cost and response ledgers; estimates at list prices.</p>` +
     `<div class="actions"><button type="button" data-copy="${esc(text)}">Copy summary</button></div>`;

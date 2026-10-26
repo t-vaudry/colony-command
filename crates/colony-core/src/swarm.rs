@@ -46,18 +46,24 @@ never modify the caller's checkout. {COMMON}"),
         "isolation": "worktree",
     });
     let mut agents = serde_json::Map::new();
-    for (name, mut def, turns) in [
-        ("swarm-search", search, 12),
-        ("swarm-grep", grep, 10),
-        ("swarm-audit", audit, 25),
-    ] {
+    for (name, mut def) in [("swarm-search", search), ("swarm-grep", grep), ("swarm-audit", audit)] {
         def["model"] = Value::from(model);
         def["effort"] = Value::from("low");
         def["omitClaudeMd"] = Value::from(true);
-        def["maxTurns"] = Value::from(turns);
+        def["maxTurns"] = Value::from(max_turns(name));
         agents.insert(name.to_string(), def);
     }
     Value::Object(agents).to_string()
+}
+
+/// `maxTurns` of a swarm agent, so the map can tell when one ran out of turns. 0 for other types.
+pub fn max_turns(agent_type: &str) -> u32 {
+    match agent_type {
+        "swarm-search" => 12,
+        "swarm-grep" => 10,
+        "swarm-audit" => 25,
+        _ => 0,
+    }
 }
 
 /// Text for `--append-system-prompt`: delegation rules when `swarm`, when to
@@ -117,6 +123,14 @@ mod tests {
             assert!(prompt.contains("file:line"), "{name}");
             assert!(!def["description"].as_str().unwrap().is_empty(), "{name}");
         }
+    }
+
+    #[test]
+    fn max_turns_matches_the_definitions() {
+        for (name, def) in parsed() {
+            assert_eq!(def["maxTurns"].as_u64().unwrap(), u64::from(max_turns(&name)), "{name}");
+        }
+        assert_eq!(max_turns("Explore"), 0);
     }
 
     #[test]

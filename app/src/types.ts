@@ -87,12 +87,35 @@ export interface Agent {
   /** Advisor consultations so far, and when the latest happened. */
   consults?: number;
   last_consult_at?: number | null;
+  /** The crew Colony started it with, and how well the session uses it (see crewhealth.ts). */
+  crew?: CrewInfo | null;
+  crew_health?: CrewHealth;
+  /** A subagent's assistant messages, the `maxTurns` it runs under (swarm agents), and whether it used them all. */
+  turns?: number;
+  max_turns?: number | null;
+  hit_max_turns?: boolean;
   /** Folder it is working in, relative to its project folder, rolled up (`src/auth`; "" is the project folder). */
   work_dir?: string | null;
   /** Another agent is editing the same file or folder. A warning only; fades on its own. */
   collision?: Collision | null;
   /** Files and lines changed, once ready to review and counted. Absent when git couldn't say. */
   diff_stat?: DiffStat | null;
+}
+
+export interface CrewInfo {
+  id: string;
+  label: string;
+  model?: string | null;
+  advisor?: string | null;
+  swarm_model?: string | null;
+}
+
+export interface CrewHealth {
+  delegated: { name: string; n: number }[];
+  self_searches: number;
+  main_consults: number;
+  sub_consults: { name: string; n: number }[];
+  nudges: { kind: string; sent: number; followed: number }[];
 }
 
 /** One line of an agent's recent history. */
