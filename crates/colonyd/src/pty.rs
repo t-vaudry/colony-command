@@ -273,6 +273,20 @@ impl PtyHost {
         if !req.auto {
             crate::resume::remember(&session_id, &req);
         }
+        // Put the crew on the bot, for the crew-health block.
+        if let Some(id) = &crew.crew {
+            let label = crate::crews::all().into_iter().find(|c| &c.id == id).map_or_else(|| id.clone(), |c| c.label);
+            let _ = self
+                .events
+                .send(Envelope {
+                    ts: now_ms(),
+                    host: req.host.clone(),
+                    session_id: session_id.clone(),
+                    cwd: None,
+                    event: DomainEvent::CrewSet { id: id.clone(), label, model: crew.model.clone(), advisor: crew.advisor.clone(), swarm_model: crew.swarm_model.clone() },
+                })
+                .await;
+        }
         self.requests.lock().unwrap().insert(term_id.clone(), req);
         Ok(Spawned { term_id, session_id })
     }

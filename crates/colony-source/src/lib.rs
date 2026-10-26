@@ -323,6 +323,27 @@ mod tests {
     }
 
     #[test]
+    fn nudge_records_become_events_and_unknown_kinds_survive() {
+        let d = tmp("nudge");
+        let cap = d.join("colony/capture");
+        let t = (now_ms() as u128) * 1_000_000;
+        fs::write(cap.join(format!("{t}-1.json")), r#"{"hook_event_name":"ColonyNudge","session_id":"s","kind":"twice","ts":1700000000000}"#).unwrap();
+        fs::write(cap.join(format!("{}-1.json", t + 1_000_000)), r#"{"hook_event_name":"ColonyNudge","session_id":"s","kind":"from-the-future","ts":1}"#).unwrap();
+        fs::write(cap.join(format!("{}-1.json", t + 2_000_000)), r#"{"hook_event_name":"ColonyNudge","session_id":"s","ts":1}"#).unwrap();
+        let mut src = DirSource::new(HostId::Windows, &d.join("claude"), &d.join("colony"), 0);
+        let kinds: Vec<_> = src
+            .poll()
+            .into_iter()
+            .map(|e| match e.event {
+                DomainEvent::NudgeSent { kind } => (e.session_id, kind),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(kinds, [("s".to_string(), "twice".to_string()), ("s".to_string(), "from-the-future".to_string())], "a record without a kind is dropped");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn spooled_payloads_join_the_captures_when_a_source_starts() {
         let d = tmp("spool");
         let spool = d.join("colony/spool");

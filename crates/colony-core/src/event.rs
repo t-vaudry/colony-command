@@ -182,7 +182,26 @@ pub enum DomainEvent {
         consults: u32,
         #[serde(default)]
         advisor_model: Option<String>,
+        /// The first line seen of this API response (a response is written as several
+        /// transcript lines, later ones only growing its usage): the count of assistant turns.
+        #[serde(default)]
+        new_message: bool,
     },
+    /// The crew colonyd started this session with, resolved (see `crew::resolve`).
+    /// `id` is the crew's id; the models are as launched, `None` for "Claude Code's choice".
+    CrewSet {
+        id: String,
+        label: String,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        advisor: Option<String>,
+        #[serde(default)]
+        swarm_model: Option<String>,
+    },
+    /// colony-hook nudged the session (`ColonyNudge` record). `kind` is `twice`, `plan`,
+    /// `done` or `context`; an unknown kind from a newer hook is kept as it came.
+    NudgeSent { kind: String },
 }
 
 const PREVIEW_CHARS: usize = 160;
@@ -269,6 +288,8 @@ impl Envelope {
             "PreCompact" => DomainEvent::Compacting,
             "PostCompact" => DomainEvent::Compacted,
             "SessionEnd" => DomainEvent::SessionEnded,
+            // Not a Claude Code event: colony-hook writes it when it sends a nudge.
+            "ColonyNudge" => DomainEvent::NudgeSent { kind: p.extra.get("kind").and_then(|v| v.as_str()).filter(|k| !k.is_empty())?.to_string() },
             _ => return None,
         };
         Some(Envelope { ts, host, session_id: p.session_id.clone(), cwd: p.cwd.clone(), event })

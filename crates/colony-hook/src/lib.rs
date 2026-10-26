@@ -12,6 +12,7 @@
 //! 3. for `PermissionRequest`, hands the request to colonyd and prints its
 //!    decision, if the map is open (see colonyd's `/api/permission`);
 //! 4. in a crew session (`COLONY_ADVISOR` set) prints advisor nudges: see [`nudge`].
+//!    Each one also leaves a synthetic `ColonyNudge` record beside the payloads ([`nudge_record`]).
 //!
 //! Nothing here may block or break a session: every failure is swallowed and
 //! the hook exits 0 with no output, which Claude Code treats as "no opinion".
@@ -98,7 +99,10 @@ pub fn run(input: &str, ctx: &Ctx) -> Option<String> {
         if std::process::id() % 16 == 0 {
             nudge::prune_state(&ctx.colony_home.join("advisor"), SystemTime::now(), nudge::STATE_MAX_FILES, nudge::STATE_MAX_AGE);
         }
-        if let Some(out) = parsed.as_ref().and_then(|v| nudge::nudge(&ctx.colony_home, v, ctx.swarm.is_some())) {
+        if let Some((kind, out)) = parsed.as_ref().and_then(|v| nudge::nudge_kind(&ctx.colony_home, v, ctx.swarm.is_some())) {
+            // Tell colonyd, so the map can show whether nudges are followed. Best effort.
+            let sid = parsed.as_ref().and_then(|v| v.get("session_id")).and_then(Value::as_str).unwrap_or("");
+            let _ = write_unique(&ctx.colony_home.join(dir), nudge_record(sid, kind, unix_nanos() / 1_000_000).as_bytes());
             return Some(out);
         }
     }
@@ -127,6 +131,12 @@ fn probe_listening(_: &Path) -> bool {
 /// The spool keeps at most this many payloads, and none older than `SPOOL_MAX_AGE`.
 const SPOOL_MAX_FILES: usize = 2000;
 const SPOOL_MAX_AGE: Duration = Duration::from_secs(3 * 24 * 3600);
+
+/// The record a nudge leaves next to the real payloads, which colony-source reads as `NudgeSent`.
+/// Anything else that writes one (the context watch's `context` kind) must match it exactly.
+pub fn nudge_record(session_id: &str, kind: &str, ts_ms: u128) -> String {
+    serde_json::json!({"hook_event_name": "ColonyNudge", "session_id": session_id, "kind": kind, "ts": ts_ms as u64}).to_string()
+}
 
 fn unix_nanos() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)

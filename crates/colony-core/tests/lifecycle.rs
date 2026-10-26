@@ -624,6 +624,7 @@ fn usage(r: &mut Run, sid: &str, agent: Option<&str>, seq: u64, model: &str, inp
             advisor: false,
             consults: 0,
             advisor_model: None,
+            new_message: false,
         },
     };
     r.colony.apply(&e)

@@ -231,3 +231,44 @@ fn signatures_collapse_numbers_paths_and_hashes() {
     assert_eq!(sig("error at /a/b.rs:12 (0xdeadbeef1)"), sig("error at C:\\x\\y.rs:98 (0xabc1234567)"));
     assert_ne!(sig("error one"), sig("error two"));
 }
+
+/// The ColonyNudge records the hook wrote (no daemon runs here, so they are in `spool/`).
+fn nudge_records(home: &Path) -> Vec<Value> {
+    let mut files: Vec<_> = fs::read_dir(home.join("spool")).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    files.sort();
+    files.iter().map(|p| json(&fs::read_to_string(p).unwrap())).filter(|v| v["hook_event_name"] == "ColonyNudge").collect()
+}
+
+#[test]
+fn a_nudge_also_leaves_its_record_and_other_events_do_not() {
+    let home = tmp("record");
+    hook(&home, ADV, &ev("UserPromptSubmit", r#","prompt":"go""#));
+    assert!(nudge_records(&home).is_empty(), "no nudge, no record");
+    let plan = ev("PreToolUse", r#","tool_name":"ExitPlanMode","tool_input":{"plan":"x"}"#);
+    let before = SystemTime::now();
+    assert!(hook(&home, ADV, &plan).contains("deny"));
+    let records = nudge_records(&home);
+    assert_eq!(records.len(), 1);
+    let r = &records[0];
+    assert_eq!((r["session_id"].as_str(), r["kind"].as_str()), (Some("sess-1"), Some("plan")));
+    assert_eq!(r.as_object().unwrap().len(), 4, "exactly the shared contract: {r}");
+    let ms = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as u64;
+    let ts = r["ts"].as_u64().unwrap();
+    assert!(ts + 5_000 >= ms(before) && ts <= ms(SystemTime::now()), "ts is unix milliseconds");
+    // The second call passes: nothing printed, nothing recorded.
+    assert_eq!(hook(&home, ADV, &plan), "");
+    assert_eq!(nudge_records(&home).len(), 1);
+    // The other kinds name themselves.
+    hook(&home, ADV, &edit());
+    hook(&home, ADV, &ev("Stop", ""));
+    let kinds: Vec<_> = nudge_records(&home).iter().map(|v| v["kind"].as_str().unwrap().to_string()).collect();
+    assert_eq!(kinds, ["plan", "done"]);
+}
+
+#[test]
+fn no_advisor_means_no_nudge_record() {
+    let home = tmp("norecord");
+    hook(&home, (None, None), &edit());
+    assert_eq!(hook(&home, (None, None), &ev("Stop", "")), "");
+    assert!(nudge_records(&home).is_empty());
+}
