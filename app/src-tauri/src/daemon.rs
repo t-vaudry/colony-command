@@ -12,7 +12,9 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use colony_source::daemon_info::{self, DaemonInfo, Verdict};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use colony_source::daemon_info::{self, Action, DaemonInfo, Verdict};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +28,8 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Set when a mismatched daemon was replaced; the map takes it once and shows it.
 static REPLACED: Mutex<Option<String>> = Mutex::new(None);
+/// An automatic replacement has been attempted; only the Restart button does another.
+static REPLACED_ONCE: AtomicBool = AtomicBool::new(false);
 /// A daemon (port, pid) that couldn't be stopped safely; not retried until the user asks.
 static GAVE_UP: Mutex<Option<(u16, Option<u32>)>> = Mutex::new(None);
 
@@ -163,9 +167,20 @@ pub fn ensure() -> Result<Info, String> {
     if let Some(d) = read_info().filter(answers) {
         let verdict = daemon_info::judge(APP_VERSION, d.version.as_deref());
         let gave_up = *GAVE_UP.lock().unwrap() == Some((d.port, d.pid));
-        if verdict == Verdict::Keep || gave_up {
+        match daemon_info::decide(verdict, REPLACED_ONCE.load(Ordering::SeqCst), gave_up) {
+            Action::Keep => return Ok(Info { port: d.port, token: d.token }),
+            Action::ConnectOnly => {
+                eprintln!("colony: colonyd {} doesn't match this app ({APP_VERSION}); leaving it for the Restart button", d.version.as_deref().unwrap_or("(no version)"));
+                return Ok(Info { port: d.port, token: d.token });
+            }
+            Action::Replace => {}
+        }
+        // Don't stop a working daemon we can't replace (a dev or odd layout).
+        if let Err(why) = daemon_exe() {
+            eprintln!("colony: not replacing the running colonyd: {why}");
             return Ok(Info { port: d.port, token: d.token });
         }
+        REPLACED_ONCE.store(true, Ordering::SeqCst);
         if verdict == Verdict::ReplaceNewer {
             eprintln!("colony: the running colonyd ({}) is newer than this app ({APP_VERSION}); replacing it with the bundled one", d.version.as_deref().unwrap_or("?"));
         }
@@ -206,5 +221,6 @@ pub fn take_notice() -> Option<String> {
 /// The Restart button: try the replacement again, even for a daemon given up on.
 pub fn restart() -> Result<Info, String> {
     *GAVE_UP.lock().unwrap() = None;
+    REPLACED_ONCE.store(false, Ordering::SeqCst);
     ensure()
 }

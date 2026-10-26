@@ -92,6 +92,28 @@ fn parse_version(v: &str) -> Option<Vec<u64>> {
     core.split('.').map(|p| p.parse().ok()).collect()
 }
 
+/// What `ensure()` does with a daemon that answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// Use it as is.
+    Keep,
+    /// Stop it and start the bundled one.
+    Replace,
+    /// Mismatched, but use it and let the map show the out-of-date banner.
+    ConnectOnly,
+}
+
+/// At most one automatic replacement per app process, so two apps of different
+/// versions can't keep replacing each other's daemon; after that (or after a daemon
+/// couldn't be stopped) only the Restart button replaces again.
+pub fn decide(verdict: Verdict, replaced_once: bool, gave_up: bool) -> Action {
+    match verdict {
+        Verdict::Keep => Action::Keep,
+        _ if replaced_once || gave_up => Action::ConnectOnly,
+        _ => Action::Replace,
+    }
+}
+
 /// The image file name in `path` is colonyd's.
 pub fn is_colonyd_image(path: &str) -> bool {
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path).to_ascii_lowercase();
@@ -204,6 +226,18 @@ mod tests {
         assert_eq!(judge("0.1.6", Some("0.1.10")), Verdict::ReplaceNewer);
         assert_eq!(judge("0.1.6", None), Verdict::ReplaceOlder);
         assert_eq!(judge("0.1.6", Some("garbage")), Verdict::ReplaceOlder);
+    }
+
+    #[test]
+    fn replaces_at_most_once_automatically() {
+        use Action::*;
+        assert_eq!(decide(Verdict::Keep, false, false), Keep);
+        assert_eq!(decide(Verdict::Keep, true, true), Keep);
+        assert_eq!(decide(Verdict::ReplaceOlder, false, false), Replace);
+        assert_eq!(decide(Verdict::ReplaceNewer, false, false), Replace);
+        assert_eq!(decide(Verdict::ReplaceOlder, true, false), ConnectOnly);
+        assert_eq!(decide(Verdict::ReplaceNewer, true, false), ConnectOnly);
+        assert_eq!(decide(Verdict::ReplaceOlder, false, true), ConnectOnly);
     }
 
     #[test]
