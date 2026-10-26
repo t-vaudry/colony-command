@@ -3,6 +3,7 @@
 // dialog resumes an existing session.
 
 import type { Daemon } from "./daemon";
+import { chooseCrew, suggest, type Suggestion } from "./crewsuggest";
 import { prefs } from "./prefs";
 import type { Agent, Crew } from "./types";
 
@@ -21,6 +22,9 @@ interface Folder {
 }
 
 const OTHER = "__other__";
+
+/** How long typing pauses before the first message is read for a crew suggestion. */
+const SUGGEST_DEBOUNCE_MS = 400;
 
 const WORKTREE_MARK = "/.colony/worktrees/";
 
@@ -58,6 +62,20 @@ export class NewSessionDialog {
   private saveCrew = document.getElementById("ns-save-crew") as HTMLInputElement;
   private crewName = document.getElementById("ns-crew-name") as HTMLInputElement;
   private crewNote = document.getElementById("ns-crew-note")!;
+  private crewWhy = document.getElementById("ns-crew-why")!;
+  private crewWhyText = document.getElementById("ns-crew-why-text")!;
+  private crewWhyUndo = document.getElementById("ns-crew-why-undo") as HTMLButtonElement;
+  private folderDefault = document.getElementById("ns-folder-default") as HTMLInputElement;
+  private folderDefaultText = document.getElementById("ns-folder-default-text")!;
+  /** The user has touched the crew select in this dialog: nothing overrides it now. */
+  private picked = false;
+  /** The user has touched the "default for this folder" box. */
+  private folderBoxTouched = false;
+  /** The crew set as the chosen folder's default. */
+  private folderCrew: string | null = null;
+  private suggestion: Suggestion | null = null;
+  private suggestTimer: ReturnType<typeof setTimeout> | undefined;
+  private folderSeq = 0;
   private checkSeq = 0;
   /** The crew choice can't start (the advisor doesn't fit the model). */
   private crewBlocked = false;
@@ -76,7 +94,30 @@ export class NewSessionDialog {
     private termSize: () => { cols: number; rows: number },
   ) {
     this.folder.addEventListener("change", () => this.folderChanged());
+    this.other.addEventListener("change", () => void this.lookupFolderCrew());
+    // "change" only fires for the user's own picks, never for ones the dialog makes.
+    this.crew.addEventListener("change", () => {
+      this.picked = true;
+      this.showCrewWhy("picked");
+    });
+    this.host.addEventListener("change", () => void this.lookupFolderCrew());
+    this.folderDefault.addEventListener("change", () => {
+      this.folderBoxTouched = true;
+    });
+    this.crewWhyUndo.addEventListener("click", () => {
+      this.picked = true;
+      this.crew.value = "default";
+      this.showCrewWhy("picked");
+      void this.checkCrew();
+    });
     for (const el of [this.crew, this.model, this.advisor, this.swarm, this.host]) el.addEventListener("change", () => void this.checkCrew());
+    this.prompt.addEventListener("input", () => {
+      clearTimeout(this.suggestTimer);
+      this.suggestTimer = setTimeout(() => {
+        this.suggestion = suggest(this.prompt.value);
+        this.applyCrew();
+      }, SUGGEST_DEBOUNCE_MS);
+    });
     this.saveCrew.addEventListener("change", () => {
       this.crewName.hidden = !this.saveCrew.checked;
     });
@@ -109,6 +150,11 @@ export class NewSessionDialog {
     this.name.value = "";
     this.prompt.value = "";
     for (const el of [this.model, this.advisor, this.swarm]) el.value = "";
+    this.picked = false;
+    this.folderBoxTouched = false;
+    this.folderCrew = null;
+    this.suggestion = null;
+    clearTimeout(this.suggestTimer);
     this.saveCrew.checked = false;
     this.crewName.hidden = true;
     this.crewName.value = "";
@@ -153,13 +199,57 @@ export class NewSessionDialog {
     this.fillCrews();
   }
 
-  /** Crew choices from the daemon, keeping the one picked (or last time). */
+  /** Crew choices from the daemon; which one is selected follows `applyCrew`. */
   private fillCrews(): void {
-    const keep = this.crew.value || prefs.crew;
+    const keep = this.picked ? this.crew.value : null;
     this.crew.innerHTML = "";
     for (const c of this.daemon.crews) this.crew.add(new Option(c.label, c.id));
-    this.crew.value = this.daemon.crews.some((c) => c.id === keep) ? keep! : "default";
+    if (keep) this.crew.value = keep;
+    this.applyCrew();
+  }
+
+  /** The folder chosen, as the daemon keys it: where `dir` and `host` are. */
+  private chosenDir(): string {
+    return this.folder.value === OTHER ? this.other.value.trim() : this.folder.value;
+  }
+
+  /** Ask for the chosen folder's default crew, then preselect. */
+  private async lookupFolderCrew(): Promise<void> {
+    const seq = ++this.folderSeq;
+    const dir = this.chosenDir();
+    const host = this.host.value;
+    const found = dir && host ? await this.daemon.folderCrew(host, dir) : null;
+    if (seq !== this.folderSeq) return;
+    this.folderCrew = found;
+    this.folderDefaultText.textContent = `Make this the default for ${dir ? dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dir : "this folder"}`;
+    if (!this.folderBoxTouched) this.folderDefault.checked = false;
+    this.applyCrew();
+  }
+
+  /** Preselect the crew: the user's own pick, else the folder's default, else the suggestion, else last time's. */
+  private applyCrew(): void {
+    const chosen = chooseCrew({
+      picked: this.picked ? this.crew.value : null,
+      folderDefault: this.folderCrew,
+      suggestion: this.suggestion,
+      remembered: prefs.crew,
+      available: this.daemon.crews.map((c) => c.id),
+    });
+    if (chosen.source !== "picked") this.crew.value = chosen.crew;
+    if (chosen.source === "folder" && !this.folderBoxTouched) this.folderDefault.checked = true;
+    this.showCrewWhy(chosen.source);
     void this.checkCrew();
+  }
+
+  /** The muted line under the select saying why this crew is selected. */
+  private showCrewWhy(source: string): void {
+    const label = this.daemon.crews.find((c) => c.id === this.crew.value)?.label ?? this.crew.value;
+    let text = "";
+    if (source === "folder") text = "Default crew for this folder";
+    else if (source === "suggested" && this.suggestion) text = `Suggested: ${label}, ${this.suggestion.why}`;
+    this.crewWhy.hidden = !text;
+    this.crewWhyText.textContent = text;
+    this.crewWhyUndo.hidden = !(source === "suggested" && this.suggestion?.crew === "light");
   }
 
   /** Ask the daemon whether this crew choice can start, and show why not or what's limited. */
@@ -211,6 +301,9 @@ export class NewSessionDialog {
     if (usable(want)) this.host.value = want!;
     else this.host.value = this.daemon.hosts.find((h) => h.available)?.id ?? "";
     this.isolate.checked = !isOther && this.othersWorking(this.folder.value);
+    this.folderBoxTouched = false;
+    this.folderDefault.checked = false;
+    void this.lookupFolderCrew();
   }
 
   /** Whether bots are already live in this folder's district: a new one should not share their checkout. */
@@ -245,7 +338,10 @@ export class NewSessionDialog {
         if (!crew.id || !this.daemon.saveCrew(crew)) throw new Error("Couldn't save the crew: choose a name with letters or digits.");
         choice = { crew: crew.id };
       }
-      prefs.setCrew(choice.crew);
+      // Only the user's own picks are remembered; a suggestion shouldn't stick.
+      if (this.picked || name) prefs.setCrew(choice.crew);
+      if (this.folderDefault.checked) this.daemon.setFolderCrew(this.host.value, dir, choice.crew);
+      else if (this.folderBoxTouched && this.folderCrew) this.daemon.clearFolderCrew(this.host.value, dir);
       const started = await this.daemon.spawn({
         host: this.host.value,
         dir,

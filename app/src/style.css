@@ -635,6 +635,16 @@ button[disabled] {
 #ns-crew-note.warn {
   color: var(--attention, #c77d0a);
 }
+#ns-crew-why {
+  margin: -4px 0 8px;
+}
+#ns-crew-why .linklike {
+  all: unset;
+  cursor: pointer;
+  margin-left: 6px;
+  color: var(--accent);
+  text-decoration: underline;
+}
 #ns-form label.check {
   display: flex;
   align-items: center;
