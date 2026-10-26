@@ -224,7 +224,7 @@ export class NewSessionDialog {
     const found = dir && host ? await this.daemon.folderCrew(host, dir) : null;
     if (seq !== this.folderSeq) return;
     this.folderCrew = found;
-    this.folderDefaultText.textContent = `Make this crew the default for ${dir ? dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dir : "this folder"} (not Customize changes)`;
+    this.folderDefaultText.textContent = `Make this crew the default for ${dir ? dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dir : "this folder"}`;
     if (!this.folderBoxTouched) this.folderDefault.checked = false;
     this.applyCrew();
   }
