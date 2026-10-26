@@ -494,6 +494,13 @@ pub struct Agent {
     pub max_turns: Option<u32>,
     #[serde(default)]
     pub hit_max_turns: bool,
+    /// Size of the context in tokens (the input side of the newest response), 0 when not
+    /// known yet, and when that was measured. A new measurement replaces the old one: after
+    /// `/compact` or `/clear` the size drops sharply. Subagents have their own.
+    #[serde(default)]
+    pub context_tokens: u64,
+    #[serde(default)]
+    pub context_at: Option<u64>,
     /// The folder it is working in, relative to its project folder and rolled
     /// up to a couple of levels (`src/auth`; empty for the project folder).
     /// Follows the files its tool calls name; kept after the call finishes.
@@ -579,6 +586,8 @@ impl Agent {
             turns: 0,
             max_turns: None,
             hit_max_turns: false,
+            context_tokens: 0,
+            context_at: None,
             work_dir: None,
             collision: None,
             diff_stat: None,
@@ -586,6 +595,12 @@ impl Agent {
             cpu_active_at: None,
             ambiguous_ending: false,
         }
+    }
+
+    /// The context was emptied or summarized; its new size is unknown until the next response.
+    fn reset_context(&mut self, ts: u64) {
+        self.context_tokens = 0;
+        self.context_at = Some(ts);
     }
 
     fn set_state(&mut self, state: AgentState, reason: Option<String>, ts: u64) {
@@ -853,6 +868,9 @@ impl Colony {
                 if source.as_deref() != Some("compact") {
                     main.background_tasks = 0;
                 }
+                if matches!(source.as_deref(), Some("compact" | "clear")) {
+                    main.reset_context(e.ts);
+                }
                 match source.as_deref() {
                     Some("compact") => {}
                     Some("clear") => main.set_state(AgentState::Idle, None, e.ts),
@@ -1101,6 +1119,7 @@ impl Colony {
             }
             DomainEvent::Compacting => main.reason = Some("compacting context".into()),
             DomainEvent::Compacted => {
+                main.reset_context(e.ts);
                 if main.reason.as_deref() == Some("compacting context") {
                     main.reason = None;
                 }
@@ -1227,7 +1246,7 @@ impl Colony {
     /// transcript lines are not agent activity, and usage for a session that is
     /// off the map (ended, dismissed) still counts toward the project's spend.
     fn apply_usage(&mut self, e: &Envelope) -> Vec<String> {
-        let DomainEvent::UsageUpdated { agent_id, seq, model, tokens, advisor, consults, advisor_model, new_message } = &e.event else { return Vec::new() };
+        let DomainEvent::UsageUpdated { agent_id, seq, model, tokens, advisor, consults, advisor_model, new_message, context } = &e.event else { return Vec::new() };
         let sid = &e.session_id;
         let own = agent_id.as_deref().map_or_else(|| sid.clone(), |a| sub_id(sid, a));
         let last = self.usage_seq.entry(own.clone()).or_insert(0);
@@ -1270,6 +1289,12 @@ impl Colony {
                 if *advisor {
                     let who = model.as_deref().and_then(models::family).map_or("advisor", |f| f.key());
                     a.log(e.ts, ActivityKind::Advisor, format!("Consulted the {who} advisor{}", if *consults > 1 { format!(" ({consults} calls)") } else { String::new() }), None, None);
+                }
+                // The newest response replaces the size, whatever it was before. A response written
+                // before the last reset (a compaction, say) is stale and ignored.
+                if !*advisor && *context > 0 && Some(e.ts) >= a.context_at {
+                    a.context_tokens = *context;
+                    a.context_at = Some(e.ts);
                 }
                 if advisor_model.is_some() && a.advisor_model != *advisor_model {
                     a.advisor_model = advisor_model.clone();
@@ -1853,7 +1878,7 @@ mod tests {
         let env = |ts, event| Envelope { ts, host: HostId::Windows, session_id: "s".into(), cwd: Some("C:/x/p".into()), event };
         let mut c = Colony::new();
         c.apply(&env(1_000, DomainEvent::SessionStarted { source: None, model: None }));
-        c.apply(&env(2_000, DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: None, tokens: Default::default(), advisor: false, consults: 0, advisor_model: None, new_message: false }));
+        c.apply(&env(2_000, DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: None, tokens: Default::default(), advisor: false, consults: 0, advisor_model: None, new_message: false, context: 0 }));
         assert!(c.usage_seq.contains_key("s"));
         c.apply(&env(3_000, DomainEvent::SessionEnded));
         c.tick(3_000 + ENDED_TTL_MS + 1_000);

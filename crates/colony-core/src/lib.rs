@@ -6,6 +6,7 @@
 //! renders. Pure logic only, so the daemon, the WSL probe, and tests share it.
 
 pub mod auth;
+pub mod context;
 pub mod crew;
 pub mod event;
 pub mod hook;

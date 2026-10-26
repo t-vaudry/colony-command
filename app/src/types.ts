@@ -94,6 +94,8 @@ export interface Agent {
   turns?: number;
   max_turns?: number | null;
   hit_max_turns?: boolean;
+  /** Size of the context in tokens (input side of the latest response); 0 or absent until known. */
+  context_tokens?: number;
   /** Folder it is working in, relative to its project folder, rolled up (`src/auth`; "" is the project folder). */
   work_dir?: string | null;
   /** Another agent is editing the same file or folder. A warning only; fades on its own. */

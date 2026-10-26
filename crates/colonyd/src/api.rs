@@ -185,6 +185,10 @@ enum Command {
     StateFeedback { id: String, should_be: String },
     /// Turn the optional Haiku question-or-done classifier on or off.
     SetClassifier { enabled: bool },
+    /// Where a bot's context counts as getting full, in percent of its window.
+    SetContextPct { pct: u32 },
+    /// Type `/compact` into a Colony-started bot that is waiting at its prompt.
+    Compact { id: String },
     /// Show a leftover worktree's folder in the file manager.
     OpenWorktree { session_id: String },
     /// Delete a leftover worktree and its branch, uncommitted work and all.
@@ -325,6 +329,17 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
             let _ = shared.deltas.send(json!({ "type": "settings", "settings": saved.1 }).to_string());
             saved.0.map(|_| None).map_err(|e| format!("could not save settings: {e}"))
         }
+        Command::SetContextPct { pct } if !(10..=95).contains(&pct) => Err("the context limit is between 10 and 95 percent".into()),
+        Command::SetContextPct { pct } => {
+            let saved = {
+                let mut s = shared.settings.lock().unwrap();
+                s.context_pct = Some(pct);
+                (s.save(&crate::quality::settings_path()), s.public())
+            };
+            let _ = shared.deltas.send(json!({ "type": "settings", "settings": saved.1 }).to_string());
+            saved.0.map(|_| None).map_err(|e| format!("could not save settings: {e}"))
+        }
+        Command::Compact { id } => compact(shared, &id).await.map(|_| None),
         Command::OpenWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Open).await.map(|_| None),
         Command::DiscardWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Discard).await.map(|_| None),
         Command::ForgetWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Forget).await.map(|_| None),
@@ -640,6 +655,23 @@ async fn reply(shared: &Shared, id: &str, text: &str) -> Result<(), String> {
         return Ok(());
     }
     shared.pty.paste(&term, text)?;
+    tokio::time::sleep(PASTE_SETTLE).await;
+    shared.pty.input(&term, b"\r")
+}
+
+/// Type `/compact` into a session Colony started. Only while it sits at its prompt: typed
+/// into a working session it would queue behind the task or answer a question it asked.
+async fn compact(shared: &Shared, id: &str) -> Result<(), String> {
+    let term = {
+        let colony = shared.colony.read().await;
+        let a = colony.agents.get(id).ok_or("no such session")?;
+        let term = a.terminal.clone().ok_or("Colony didn't start this session, so it can't type into it. Run /compact in its own window.")?;
+        if !matches!(a.state, colony_core::AgentState::Idle | colony_core::AgentState::ReadyToReview) {
+            return Err("Claude is busy or waiting on you; compact when it is idle.".into());
+        }
+        term
+    };
+    shared.pty.paste(&term, "/compact")?;
     tokio::time::sleep(PASTE_SETTLE).await;
     shared.pty.input(&term, b"\r")
 }

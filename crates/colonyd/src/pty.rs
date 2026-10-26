@@ -268,7 +268,7 @@ impl PtyHost {
         if req.auto && !crate::resume::still_wanted(&session_id) {
             return Err("that session was dismissed or ended; not restarting it".into());
         }
-        let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows, crew.env()).await?;
+        let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows, session_env(&crew, crate::quality::Settings::load(&crate::quality::settings_path()).context_pct())).await?;
         log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
         if !req.auto {
             crate::resume::remember(&session_id, &req);
@@ -614,6 +614,16 @@ fn start_ptyd() -> Result<(), String> {
     Ok(())
 }
 
+/// The marks a crew session carries: the crew's, and for one with a swarm the context size
+/// (in tokens) from which its hook nudges it: `pct` of the main model's window.
+fn session_env(crew: &colony_core::crew::Resolved, pct: u32) -> Vec<(String, String)> {
+    let mut env = crew.env();
+    if !env.is_empty() && crew.swarm_model.is_some() {
+        env.push(("COLONY_CONTEXT_NUDGE".into(), colony_core::context::nudge_tokens(crew.model.as_deref(), pct).to_string()));
+    }
+    env
+}
+
 /// A model name safe to pass to `--model` or type after `/model`: an alias or
 /// an id, nothing that could be another flag or a second command.
 pub fn checked_model(m: &str) -> Result<&str, String> {
@@ -760,6 +770,24 @@ mod tests {
         assert!(checked_model("--dangerously-skip-permissions").is_err());
         assert!(checked_model("haiku; rm -rf /").is_err());
         assert!(checked_model("").is_err());
+    }
+
+    #[test]
+    fn crew_sessions_carry_the_context_nudge_size() {
+        use colony_core::crew::Resolved;
+        let crew = |model: &str, swarm: Option<&str>| Resolved {
+            crew: Some("default".into()),
+            model: Some(model.into()),
+            advisor: Some("opus".into()),
+            effort: None,
+            swarm_model: swarm.map(str::to_string),
+        };
+        let get = |env: &[(String, String)]| env.iter().find(|(k, _)| k == "COLONY_CONTEXT_NUDGE").map(|(_, v)| v.clone());
+        assert_eq!(get(&session_env(&crew("claude-sonnet-5-5", Some("haiku")), 70)).as_deref(), Some("140000"));
+        assert_eq!(get(&session_env(&crew("claude-sonnet-5-5[1m]", Some("haiku")), 50)).as_deref(), Some("500000"));
+        assert_eq!(get(&session_env(&crew("claude-sonnet-5-5", None), 70)), None, "no swarm, no nudge");
+        let plain = Resolved { crew: None, swarm_model: Some("haiku".into()), ..crew("sonnet", None) };
+        assert!(session_env(&plain, 70).is_empty(), "not a crew session");
     }
 
     #[test]

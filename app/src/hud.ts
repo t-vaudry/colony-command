@@ -4,6 +4,7 @@
 import type { Daemon } from "./daemon";
 import { costChart } from "./costchart";
 import { modelLine } from "./modelcost";
+import { ContextWatch, contextRow, contextSettingRow, DEFAULT_PCT, showContextNotices } from "./context";
 import { latencyChart } from "./latencychart";
 import { daySummary } from "./daysummary";
 import { crewBlock, crewTag } from "./crewhealth";
@@ -412,8 +413,11 @@ export class Hud {
     });
   }
 
+  private ctxWatch = new ContextWatch();
+
   private render(): void {
     const all = [...this.daemon.agents.values()];
+    showContextNotices(document.getElementById("toast")!, this.ctxWatch.check(all, this.daemon.settings.context_pct ?? DEFAULT_PCT), (id) => this.daemon.compact(id));
     const count = (...s: AgentState[]) => all.filter((a) => s.includes(a.state)).length;
     setHtml(this.counts, [
       ["crit", "blocked", count("blocked", "crashed")],
@@ -679,7 +683,7 @@ export class Hud {
       ${field("Objective", "objective", text(a.objective_full ?? a.objective), "short")}
       ${showReply ? field(a.state === "ready_to_review" ? "Result" : "Latest reply", "reply", `<div class="md">${this.mdCached(reply!)}</div>`) : ""}
       <div class="facts">
-        ${diffRow}${collisionRow}${subModel}${usageRow}${modelUse}
+        ${diffRow}${collisionRow}${subModel}${usageRow}${contextRow(a, this.daemon.settings.context_pct)}${modelUse}
       </div>
       ${this.modelRows(a)}
       ${crewBlock(a, kids)}
@@ -701,7 +705,7 @@ export class Hud {
           ${fact("Tool calls", a.tool_calls ? String(a.tool_calls) : null)}
           ${fact("Session id", a.session_id, "mono")}
         </div>
-        ${main ? this.classifierRow() : ""}
+        ${main ? this.classifierRow() + contextSettingRow(this.daemon.settings.context_pct) : ""}
       </details>
       ${!a.hooks_seen && !a.terminal ? `<p class="muted small">Seen through the session registry only, so state is coarse. New sessions report full detail through hooks.</p>` : ""}
       ${
@@ -1031,6 +1035,8 @@ export class Hud {
       if (!this.daemon.stateFeedback(el.dataset.wrongFor, el.dataset.wrongIs)) this.toast("Not connected to colonyd.");
       this.schedule();
     }
+    if (el.dataset.compact && !this.daemon.compact(el.dataset.compact)) this.toast("Not connected to colonyd.");
+    if (el.dataset.contextPct && !this.daemon.setContextPct(Number(el.dataset.contextPct))) this.toast("Not connected to colonyd.");
     if (el.dataset.classifier) {
       if (!this.daemon.setClassifier(el.dataset.classifier === "on")) this.toast("Not connected to colonyd.");
     }

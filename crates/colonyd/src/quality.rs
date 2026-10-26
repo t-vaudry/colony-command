@@ -4,7 +4,7 @@
 //! All of it lives under `~/.colony`:
 //! - `feedback.jsonl`    one line per "Wrong state" click
 //! - `thresholds.json`   optional overrides for stall and question limits
-//! - `settings.json`     `{"haiku_classifier": false, "anthropic_api_key": null}`
+//! - `settings.json`     `{"haiku_classifier": false, "anthropic_api_key": null, "context_pct": 70}`
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -48,6 +48,10 @@ pub struct Settings {
     /// Never sent to the map.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anthropic_api_key: Option<String>,
+    /// Percent of the context window at which Colony says a bot's context is getting full
+    /// (and crew sessions are told); unset means the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_pct: Option<u32>,
 }
 
 impl Settings {
@@ -70,9 +74,14 @@ impl Settings {
             .filter(|k| !k.is_empty())
     }
 
+    /// The share of the context window that counts as getting full.
+    pub fn context_pct(&self) -> u32 {
+        colony_core::context::clamp_pct(self.context_pct.unwrap_or(colony_core::context::DEFAULT_NUDGE_PCT))
+    }
+
     /// What the map is told: whether the classifier is on and whether it could run.
     pub fn public(&self) -> serde_json::Value {
-        json!({ "haiku_classifier": self.haiku_classifier, "haiku_key_present": self.api_key().is_some() })
+        json!({ "haiku_classifier": self.haiku_classifier, "haiku_key_present": self.api_key().is_some(), "context_pct": self.context_pct() })
     }
 }
 
@@ -252,12 +261,24 @@ mod tests {
         let dir = temp("set");
         let p = dir.join("settings.json");
         assert!(!Settings::load(&p).haiku_classifier);
-        Settings { haiku_classifier: true, anthropic_api_key: Some("k".into()) }.save(&p).unwrap();
+        Settings { haiku_classifier: true, anthropic_api_key: Some("k".into()), context_pct: None }.save(&p).unwrap();
         let s = Settings::load(&p);
         assert!(s.haiku_classifier);
         assert_eq!(s.anthropic_api_key.as_deref(), Some("k"));
         // The map never sees the key itself.
         assert!(!s.public().to_string().contains("\"k\""));
+    }
+
+    #[test]
+    fn context_limit_defaults_to_70_and_ignores_nonsense() {
+        let dir = temp("ctxpct");
+        let p = dir.join("settings.json");
+        assert_eq!(Settings::load(&p).context_pct(), 70);
+        assert_eq!(Settings::load(&p).public()["context_pct"], 70);
+        std::fs::write(&p, r#"{"context_pct": 80}"#).unwrap();
+        assert_eq!(Settings::load(&p).context_pct(), 80);
+        std::fs::write(&p, r#"{"context_pct": 3}"#).unwrap();
+        assert_eq!(Settings::load(&p).context_pct(), 70);
     }
 
     #[test]

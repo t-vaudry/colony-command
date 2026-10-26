@@ -1474,3 +1474,29 @@ textarea.resume-reply {
     animation-duration: 2.4s;
   }
 }
+
+.ctx .ctx-bar {
+  display: block;
+  height: 3px;
+  margin-top: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink) 14%, transparent);
+  overflow: hidden;
+}
+.ctx .ctx-bar i {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+  opacity: 0.55;
+}
+.ctx.warn {
+  font-weight: 600;
+  color: #b45309;
+}
+.ctx.warn .ctx-bar i {
+  background: #d97706;
+  opacity: 1;
+}
+#toast button {
+  margin-left: 8px;
+}
