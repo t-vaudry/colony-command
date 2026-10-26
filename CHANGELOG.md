@@ -5,6 +5,10 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-26
+
+- Start new sessions in the background (#62)
+
 ## [0.1.8] - 2026-10-26
 
 ### Fixed
