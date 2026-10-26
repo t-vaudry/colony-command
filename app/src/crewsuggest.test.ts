@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { chooseCrew, suggest, type CrewInputs } from "./crewsuggest";
+import { chooseCrew, folderDefaultAction, suggest, type CrewInputs } from "./crewsuggest";
 
 interface Case {
   prompt: string;
@@ -20,6 +20,26 @@ describe("suggest", () => {
     const got = suggest(c.prompt);
     expect(got?.crew ?? null).toBe(c.crew);
     expect(got?.why ?? null).toBe(c.why);
+  });
+});
+
+describe("folderDefaultAction", () => {
+  it("leaves the default alone when the dialog ticked the box itself", () => {
+    expect(folderDefaultAction({ touched: false, checked: true, hadDefault: true })).toBe("none");
+  });
+
+  it("leaves it alone when a one-off pick unticked the auto-ticked box", () => {
+    expect(folderDefaultAction({ touched: false, checked: false, hadDefault: true })).toBe("none");
+  });
+
+  it("sets it when the user ticks the box", () => {
+    expect(folderDefaultAction({ touched: true, checked: true, hadDefault: false })).toBe("set");
+    expect(folderDefaultAction({ touched: true, checked: true, hadDefault: true })).toBe("set");
+  });
+
+  it("clears an existing default the user unticks, and does nothing without one", () => {
+    expect(folderDefaultAction({ touched: true, checked: false, hadDefault: true })).toBe("clear");
+    expect(folderDefaultAction({ touched: true, checked: false, hadDefault: false })).toBe("none");
   });
 });
 

@@ -3,7 +3,7 @@
 // dialog resumes an existing session.
 
 import type { Daemon } from "./daemon";
-import { chooseCrew, suggest, type Suggestion } from "./crewsuggest";
+import { chooseCrew, folderDefaultAction, suggest, type Suggestion } from "./crewsuggest";
 import { prefs } from "./prefs";
 import type { Agent, Crew } from "./types";
 
@@ -98,6 +98,8 @@ export class NewSessionDialog {
     // "change" only fires for the user's own picks, never for ones the dialog makes.
     this.crew.addEventListener("change", () => {
       this.picked = true;
+      // An auto-ticked box showed the folder's default; this pick is for one bot.
+      if (!this.folderBoxTouched) this.folderDefault.checked = false;
       this.showCrewWhy("picked");
     });
     this.host.addEventListener("change", () => void this.lookupFolderCrew());
@@ -106,6 +108,7 @@ export class NewSessionDialog {
     });
     this.crewWhyUndo.addEventListener("click", () => {
       this.picked = true;
+      if (!this.folderBoxTouched) this.folderDefault.checked = false;
       this.crew.value = "default";
       this.showCrewWhy("picked");
       void this.checkCrew();
@@ -221,7 +224,7 @@ export class NewSessionDialog {
     const found = dir && host ? await this.daemon.folderCrew(host, dir) : null;
     if (seq !== this.folderSeq) return;
     this.folderCrew = found;
-    this.folderDefaultText.textContent = `Make this the default for ${dir ? dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dir : "this folder"}`;
+    this.folderDefaultText.textContent = `Make this crew the default for ${dir ? dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dir : "this folder"} (not Customize changes)`;
     if (!this.folderBoxTouched) this.folderDefault.checked = false;
     this.applyCrew();
   }
@@ -340,8 +343,10 @@ export class NewSessionDialog {
       }
       // Only the user's own picks are remembered; a suggestion shouldn't stick.
       if (this.picked || name) prefs.setCrew(choice.crew);
-      if (this.folderDefault.checked) this.daemon.setFolderCrew(this.host.value, dir, choice.crew);
-      else if (this.folderBoxTouched && this.folderCrew) this.daemon.clearFolderCrew(this.host.value, dir);
+      // Only the crew id is stored; Customize overrides apply to this bot alone.
+      const action = folderDefaultAction({ touched: this.folderBoxTouched, checked: this.folderDefault.checked, hadDefault: !!this.folderCrew });
+      if (action === "set") this.daemon.setFolderCrew(this.host.value, dir, choice.crew);
+      else if (action === "clear") this.daemon.clearFolderCrew(this.host.value, dir);
       const started = await this.daemon.spawn({
         host: this.host.value,
         dir,

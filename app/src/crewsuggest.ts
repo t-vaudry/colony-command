@@ -80,6 +80,16 @@ export interface CrewInputs {
   available: string[];
 }
 
+/**
+ * What Start does to the folder's default crew. A box the dialog ticked itself
+ * only shows the current default, so only the user's own tick or untick counts.
+ */
+export function folderDefaultAction(i: { touched: boolean; checked: boolean; hadDefault: boolean }): "set" | "clear" | "none" {
+  if (!i.touched) return "none";
+  if (i.checked) return "set";
+  return i.hadDefault ? "clear" : "none";
+}
+
 /** The crew to preselect, and why: the user's pick, then the folder's default, the suggestion, the last pick. */
 export function chooseCrew(i: CrewInputs): { crew: string; source: CrewSource } {
   const ok = (id: string | null): id is string => !!id && i.available.includes(id);
