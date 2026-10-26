@@ -4,6 +4,7 @@
 mod autostart;
 mod daemon;
 mod gating;
+mod links;
 mod notify;
 mod speech;
 mod tray;
@@ -97,6 +98,7 @@ fn main() {
         // A second launch (a login start plus a manual one) just shows the first window.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show(app)))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updater::Pending::default())
         .manage(notify::Patience::default())
@@ -104,15 +106,14 @@ fn main() {
         .setup(|app| {
             // The window starts hidden (tauri.conf.json) so a login start can stay
             // in the tray. Without a tray there'd be no way back, so show it then.
+            let window = links::main_window(app)?;
             let handle = app.handle();
             let tray_ok = tray::init(handle);
             if tray_ok {
                 tray::hide_on_close(handle);
             }
             if !(tray_ok && std::env::args().any(|a| a == "--tray")) {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                }
+                let _ = window.show();
             }
             // Start the daemon while the window loads rather than on first ask.
             std::thread::spawn(|| {
