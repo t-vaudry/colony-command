@@ -20,6 +20,7 @@ export interface DaemonSettings {
   /** Spend caps in USD; unset is no limit. */
   budget_bot_usd?: number | null;
   budget_day_usd?: number | null;
+  budget_overrides?: Record<string, number>;
 }
 
 type Message =
@@ -89,6 +90,8 @@ export class Daemon {
   error: string | null = null;
   /** Daemon clock minus local clock, so durations match the daemon's timestamps. */
   skew = 0;
+  private clockOffset: number | null = null;
+  private clockTimer: ReturnType<typeof setInterval> | undefined;
   private info: DaemonInfo | null = null;
   private downSince: number | null = null;
   private ws: WebSocket | null = null;
@@ -174,7 +177,7 @@ export class Daemon {
         this.offers = new Map(Object.entries(m.offers ?? {}));
         this.settings = m.settings ?? this.settings;
         // The day cap counts from the map's local midnight, which only this clock knows.
-        this.send({ type: "clock", utc_offset_min: -new Date().getTimezoneOffset() });
+        this.syncClock(true);
         this.skew = m.now - Date.now();
         this.status = "live";
         this.error = null;
@@ -285,6 +288,15 @@ export class Daemon {
   /** Turn the opt-in Haiku classifier for unclear endings on or off. */
   setClassifier(enabled: boolean): boolean {
     return this.send({ type: "set_classifier", enabled });
+  }
+
+  /** Tell the daemon this clock's UTC offset: on connecting (`force`), and again whenever it
+   *  changes, e.g. when daylight saving starts in a long-running window. */
+  private syncClock(force = false): void {
+    const offset = -new Date().getTimezoneOffset();
+    if (!force && offset === this.clockOffset) return;
+    if (this.send({ type: "clock", utc_offset_min: offset })) this.clockOffset = offset;
+    this.clockTimer ??= setInterval(() => this.syncClock(), 60_000);
   }
 
   /** Set the per-bot and per-day spend caps in USD; null switches one off. */

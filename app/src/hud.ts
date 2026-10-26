@@ -685,7 +685,7 @@ export class Hud {
       ${field("Objective", "objective", text(a.objective_full ?? a.objective), "short")}
       ${showReply ? field(a.state === "ready_to_review" ? "Result" : "Latest reply", "reply", `<div class="md">${this.mdCached(reply!)}</div>`) : ""}
       <div class="facts">
-        ${diffRow}${collisionRow}${subModel}${usageRow}${contextRow(a, this.daemon.settings.context_pct)}${botBudgetRow(a.kind, a.cost_usd, this.daemon.settings)}${modelUse}
+        ${diffRow}${collisionRow}${subModel}${usageRow}${contextRow(a, this.daemon.settings.context_pct)}${botBudgetRow(a.kind, a.id, a.cost_usd, this.daemon.settings)}${modelUse}
       </div>
       ${this.modelRows(a)}
       ${crewBlock(a, kids)}

@@ -31,6 +31,8 @@ use crate::{log, Shared};
 const SETTLE: Duration = Duration::from_secs(20);
 /// Usage arrives in bursts: look once per this long at most.
 const COALESCE: Duration = Duration::from_secs(1);
+/// Bots missing from the map count as gone only this long after startup.
+const FORGET_AFTER: Duration = Duration::from_secs(90);
 /// Steps taken are remembered (for Undo) this long.
 const KEEP_MS: u64 = 3 * 24 * 60 * 60 * 1000;
 /// Largest cap accepted, in USD.
@@ -71,6 +73,24 @@ pub struct State {
     /// Bots to step down at their next safe point.
     pub pending: BTreeMap<String, Scope>,
     pub stepped: BTreeMap<String, Stepped>,
+    /// Caps raised for one bot (agent id to USD), over the global per-bot cap.
+    pub overrides: BTreeMap<String, f64>,
+}
+
+impl State {
+    /// The per-bot cap that applies to a bot: its own, else the global one.
+    pub fn bot_cap(&self, id: &str, global: Option<f64>) -> Option<f64> {
+        self.overrides.get(id).copied().or(global)
+    }
+
+    /// Forget bots that are gone (ended or dismissed), and steps too old to undo.
+    pub fn forget(&mut self, live: &[String], now: u64) {
+        let here = |id: &String| live.contains(id);
+        self.bots.retain(|id, _| here(id));
+        self.overrides.retain(|id, _| here(id));
+        self.pending.retain(|id, _| here(id));
+        self.stepped.retain(|id, s| now.saturating_sub(s.at) < KEEP_MS && here(id));
+    }
 }
 
 pub fn state_path() -> PathBuf {
@@ -93,6 +113,7 @@ impl State {
 }
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+static BOOT: OnceLock<std::time::Instant> = OnceLock::new();
 
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.get_or_init(|| Mutex::new(State::load(&state_path()))).lock().unwrap_or_else(|e| e.into_inner())
@@ -160,17 +181,19 @@ pub fn plan(st: &mut State, caps: Caps, day: Day, bots: &[Bot]) -> Plan {
         st.day = DayMark { day: day.number, mark: Mark::default() };
         st.pending.retain(|_, s| *s != Scope::Day);
     }
+    let overrides = st.overrides.clone();
     // A step waits only while its cap is still exceeded, and its bot is still ours.
     st.pending.retain(|id, scope| {
         let Some(b) = bots.iter().find(|b| b.id == *id && b.colony) else { return false };
         match scope {
-            Scope::Bot => caps.bot.is_some_and(|cap| b.cost >= cap),
+            Scope::Bot => overrides.get(id).copied().or(caps.bot).is_some_and(|cap| b.cost >= cap),
             Scope::Day => caps.day.is_some_and(|cap| day.spent >= cap),
         }
     });
 
-    if let Some(cap) = caps.bot {
+    {
         for b in bots {
+            let Some(cap) = st.bot_cap(&b.id, caps.bot) else { continue };
             match st.bots.entry(b.id.clone()).or_default().cross(b.cost, cap) {
                 Crossing::Nothing => {}
                 Crossing::Warn => out.notices.push(Notice {
@@ -270,7 +293,7 @@ fn models_of(req: &crate::pty::SpawnRequest, crews: &[crew::Crew], reported: Opt
 }
 
 /// Every bot the caps apply to, with what a step would change.
-async fn observe(shared: &Shared, now: u64) -> (Vec<Bot>, Day) {
+async fn observe(shared: &Shared, now: u64) -> (Vec<Bot>, Day, Vec<String>) {
     let crews = crate::crews::saved();
     let colony = shared.colony.read().await;
     let off = shared.settings.lock().unwrap().utc_offset_min.unwrap_or(0);
@@ -291,7 +314,8 @@ async fn observe(shared: &Shared, now: u64) -> (Vec<Bot>, Day) {
             }
         })
         .collect();
-    (bots, Day { number: budget::local_day(now, off), spent })
+    let live = colony.agents.values().filter(|a| a.state != AgentState::Ended).map(|a| a.id.clone()).collect();
+    (bots, Day { number: budget::local_day(now, off), spent }, live)
 }
 
 fn caps_of(shared: &Shared) -> Caps {
@@ -308,22 +332,24 @@ fn show(shared: &Shared, n: Notice) {
 /// at a safe point.
 pub async fn evaluate(shared: &Shared) {
     let caps = caps_of(shared);
-    if caps.bot.is_none() && caps.day.is_none() && state().pending.is_empty() {
+    if caps.bot.is_none() && caps.day.is_none() && state().pending.is_empty() && state().overrides.is_empty() {
         return;
     }
     let now = now_ms();
-    let (bots, day) = observe(shared, now).await;
+    let (bots, day, live) = observe(shared, now).await;
     let (plan, snapshot) = {
         let mut st = state();
         let before = st.clone();
         let plan = plan(&mut st, caps, day, &bots);
-        // Forget bots that are gone, and steps nobody can undo any more.
-        st.bots.retain(|id, _| bots.iter().any(|b| b.id == *id));
-        st.stepped.retain(|id, s| now.saturating_sub(s.at) < KEEP_MS && bots.iter().any(|b| b.id == *id));
+        // Not before replay and the roster have had time to bring bots back.
+        if BOOT.get().is_some_and(|t| t.elapsed() > FORGET_AFTER) {
+            st.forget(&live, now);
+        }
         (plan, (*st != before).then(|| st.clone()))
     };
     if let Some(s) = snapshot {
         save(&s);
+        mirror_overrides(shared, &s);
     }
     for n in plan.notices {
         show(shared, n);
@@ -377,7 +403,7 @@ async fn step_bot(shared: &Shared, id: &str, scope: Scope, day_spent: f64) -> Re
     let did = describe(&step, now.model.as_deref(), now.advisor.as_deref());
     state().stepped.insert(id.to_string(), Stepped { scope, model: before.model, advisor: before.advisor, at: now_ms() });
     let (cap, spent) = match scope {
-        Scope::Bot => (caps_of(shared).bot, cost),
+        Scope::Bot => (state().bot_cap(id, caps_of(shared).bot), cost),
         Scope::Day => (caps_of(shared).day, day_spent),
     };
     let why = match scope {
@@ -420,40 +446,80 @@ pub async fn undo(shared: &Shared, id: &str) -> Result<(), String> {
     };
     let spent = if stepped.scope == Scope::Bot { cost } else { day_spent };
     let new_cap = budget::headroom(spent);
-    let raised = update_caps(shared, |s| {
-        let cap = if stepped.scope == Scope::Bot { &mut s.budget_bot_usd } else { &mut s.budget_day_usd };
-        if cap.is_some_and(|c| c < new_cap) {
-            *cap = Some(new_cap);
-            true
-        } else {
-            false
-        }
-    });
-    {
+    let global = caps_of(shared);
+    let raised = {
         let mut st = state();
         st.stepped.remove(id);
         st.pending.remove(id);
-        // The new cap starts quiet: the bot is just under it by design.
-        let cap = new_cap_for(shared, stepped.scope).unwrap_or(new_cap);
-        match stepped.scope {
-            Scope::Bot => st.bots.entry(id.to_string()).or_default().settle(cap),
-            Scope::Day => st.day.mark.settle(cap),
-        }
+        let raised = match stepped.scope {
+            Scope::Bot => st.undo_bot_cap(id, global.bot, spent),
+            // The day cap is the user's one shared limit: only ever raised.
+            Scope::Day => global.day.filter(|c| *c < new_cap).map(|_| {
+                st.day.mark.settle(new_cap);
+                new_cap
+            }),
+        };
         save(&st);
+        mirror_overrides(shared, &st);
+        raised
+    };
+    if stepped.scope == Scope::Day {
+        if let Some(cap) = raised {
+            update_caps(shared, |s| {
+                s.budget_day_usd = Some(cap);
+                true
+            });
+        }
     }
     let text = format!("Undid the budget step for {name}: back to its earlier models.");
     let _ = shared.events.send(Envelope { ts: now_ms(), host, session_id: id.to_string(), cwd: None, event: DomainEvent::BudgetStep { text: text.clone() } }).await;
-    let note = if raised { format!(" The {} cap is now {}.", if stepped.scope == Scope::Bot { "per-bot" } else { "daily" }, budget::money(new_cap)) } else { String::new() };
+    let note = raised.map_or(String::new(), |cap| format!(" {} is now {}.", if stepped.scope == Scope::Bot { "This bot's cap" } else { "The daily cap" }, budget::money(cap)));
     crate::api::notice(shared, format!("{text}{note}"));
     Ok(())
 }
 
-fn new_cap_for(shared: &Shared, scope: Scope) -> Option<f64> {
-    let caps = caps_of(shared);
-    match scope {
-        Scope::Bot => caps.bot,
-        Scope::Day => caps.day,
+impl State {
+    /// "Raise cap" for one bot: its own cap goes up, others' stay. Returns the new cap,
+    /// or `None` when there is no cap to raise.
+    pub fn raise_bot(&mut self, id: &str, global: Option<f64>, spent: f64) -> Option<f64> {
+        let new_cap = budget::raised(self.bot_cap(id, global)?, spent);
+        self.set_override(id, new_cap);
+        Some(new_cap)
     }
+
+    /// Undo's cap for one bot: 20% over its spend, if that is more than it has now.
+    pub fn undo_bot_cap(&mut self, id: &str, global: Option<f64>, spent: f64) -> Option<f64> {
+        let new_cap = budget::headroom(spent);
+        if !self.bot_cap(id, global).is_some_and(|c| c < new_cap) {
+            return None;
+        }
+        self.set_override(id, new_cap);
+        Some(new_cap)
+    }
+
+    /// Give a bot its own cap and count that cap's crossings as seen: the bot
+    /// is under it by design, and a step queued for the old cap is off.
+    fn set_override(&mut self, id: &str, cap: f64) {
+        self.overrides.insert(id.to_string(), cap);
+        self.bots.entry(id.to_string()).or_default().settle(cap);
+        if self.pending.get(id) == Some(&Scope::Bot) {
+            self.pending.remove(id);
+        }
+    }
+}
+
+/// Keep the copy of the per-bot overrides that the map is told about in step
+/// with the saved state.
+fn mirror_overrides(shared: &Shared, st: &State) {
+    let public = {
+        let mut s = shared.settings.lock().unwrap();
+        if s.budget_overrides == st.overrides {
+            return;
+        }
+        s.budget_overrides = st.overrides.clone();
+        s.public()
+    };
+    let _ = shared.deltas.send(json!({ "type": "settings", "settings": public }).to_string());
 }
 
 /// Change the caps, save them and tell the maps. Returns what `f` returned.
@@ -493,28 +559,36 @@ pub fn set_caps(shared: &Shared, bot: Option<f64>, day: Option<f64>) -> Result<(
 /// The "Raise cap" button: more room than what is spent so far.
 pub async fn raise(shared: &Shared, scope: Scope, id: &str) -> Result<(), String> {
     let now = now_ms();
-    let (bots, day) = observe(shared, now).await;
-    let spent = match scope {
-        Scope::Bot => bots.iter().find(|b| b.id == id).map(|b| b.cost).ok_or("that bot is gone")?,
-        Scope::Day => day.spent,
-    };
-    let mut new_cap = 0.0;
-    update_caps(shared, |s| {
-        let cap = if scope == Scope::Bot { &mut s.budget_bot_usd } else { &mut s.budget_day_usd };
-        let Some(old) = *cap else { return false };
-        new_cap = budget::raised(old, spent);
-        *cap = Some(new_cap);
-        true
-    });
-    if new_cap > 0.0 {
-        let mut st = state();
-        st.pending.retain(|k, s| !(*s == scope && (scope == Scope::Day || k == id)));
-        match scope {
-            Scope::Bot => st.bots.entry(id.to_string()).or_default().settle(new_cap),
-            Scope::Day => st.day.mark.settle(new_cap),
+    let (bots, day, _) = observe(shared, now).await;
+    match scope {
+        Scope::Bot => {
+            let b = bots.iter().find(|b| b.id == id).ok_or("that bot is gone")?;
+            let new_cap = {
+                let mut st = state();
+                let new_cap = st.raise_bot(id, caps_of(shared).bot, b.cost);
+                save(&st);
+                mirror_overrides(shared, &st);
+                new_cap
+            };
+            if let Some(cap) = new_cap {
+                crate::api::notice(shared, format!("{}'s budget is now {}.", b.name, budget::money(cap)));
+            }
         }
-        save(&st);
-        crate::api::notice(shared, format!("The {} budget is now {}.", if scope == Scope::Bot { "per-bot" } else { "daily" }, budget::money(new_cap)));
+        Scope::Day => {
+            let mut new_cap = None;
+            update_caps(shared, |s| {
+                new_cap = s.budget_day_usd.map(|old| budget::raised(old, day.spent));
+                s.budget_day_usd = new_cap.or(s.budget_day_usd);
+                new_cap.is_some()
+            });
+            if let Some(cap) = new_cap {
+                let mut st = state();
+                st.pending.retain(|_, s| *s != Scope::Day);
+                st.day.mark.settle(cap);
+                save(&st);
+                crate::api::notice(shared, format!("The daily budget is now {}.", budget::money(cap)));
+            }
+        }
     }
     Ok(())
 }
@@ -525,17 +599,27 @@ pub fn set_clock(shared: &Shared, utc_offset_min: i32) {
         return;
     }
     let mut s = shared.settings.lock().unwrap();
-    if s.utc_offset_min != Some(utc_offset_min) {
-        s.utc_offset_min = Some(utc_offset_min);
+    if apply_offset(&mut s, utc_offset_min) {
         if let Err(e) = s.save(&crate::quality::settings_path()) {
             log(format!("could not save settings: {e}"));
         }
     }
 }
 
+/// Take the offset the map reports, which changes when its clock goes in or out
+/// of daylight saving time; true if it differs from the one held. The next
+/// look at the readings uses it, so nothing needs restarting.
+fn apply_offset(s: &mut crate::quality::Settings, utc_offset_min: i32) -> bool {
+    let changed = s.utc_offset_min != Some(utc_offset_min);
+    s.utc_offset_min = Some(utc_offset_min);
+    changed
+}
+
 /// React to what the maps get: usage moving, bots changing state, caps changing.
 pub async fn run(shared: std::sync::Arc<Shared>) {
     let mut rx = shared.deltas.subscribe();
+    let _ = BOOT.set(std::time::Instant::now());
+    shared.settings.lock().unwrap().budget_overrides = state().overrides.clone();
     tokio::time::sleep(SETTLE).await;
     loop {
         match rx.recv().await {
@@ -662,6 +746,69 @@ mod tests {
         assert_eq!(st.pending.len(), 1);
         let p = plan(&mut st, Caps { bot: Some(10.0), day: None }, day(0.0), &[Bot { safe: true, ..busy }]);
         assert!(p.apply.is_empty() && st.pending.is_empty());
+    }
+
+    #[test]
+    fn raising_the_cap_for_one_bot_leaves_the_others_alone() {
+        let mut st = State::default();
+        assert_eq!(st.raise_bot("a", Some(5.0), 5.2), Some(8.0));
+        assert_eq!(st.bot_cap("a", Some(5.0)), Some(8.0));
+        assert_eq!(st.bot_cap("b", Some(5.0)), Some(5.0));
+        // B still hits the global cap; A, at $6, does not.
+        let p = plan(&mut st, BOT5, day(0.0), &[bot("a", 6.0), bot("b", 6.0)]);
+        assert_eq!(p.apply, vec![("b".to_string(), Scope::Bot)]);
+        // Raising again builds on A's own cap.
+        assert_eq!(st.raise_bot("a", Some(5.0), 8.0), Some(12.0));
+        // No cap at all: nothing to raise.
+        assert_eq!(State::default().raise_bot("a", None, 3.0), None);
+    }
+
+    #[test]
+    fn undo_for_one_bot_does_not_touch_the_others() {
+        let mut st = State::default();
+        st.raise_bot("b", Some(5.0), 6.0);
+        let before = st.bot_cap("b", Some(5.0));
+        // A was stepped down at $5.10: its cap becomes spend + 20%.
+        assert_eq!(st.undo_bot_cap("a", Some(5.0), 5.1), Some(6.12));
+        assert_eq!(st.bot_cap("a", Some(5.0)), Some(6.12));
+        assert_eq!(st.bot_cap("b", Some(5.0)), before);
+        assert_eq!(st.bot_cap("c", Some(5.0)), Some(5.0));
+        // Already roomier than that: left alone.
+        assert_eq!(st.undo_bot_cap("b", Some(5.0), 5.5), None);
+        // And the bot doesn't get stepped again right away.
+        let p = plan(&mut st, BOT5, day(0.0), &[bot("a", 5.1)]);
+        assert!(p.notices.is_empty() && p.apply.is_empty());
+    }
+
+    #[test]
+    fn an_override_is_dropped_with_its_bot() {
+        let mut st = State::default();
+        st.raise_bot("a", Some(5.0), 5.2);
+        st.raise_bot("b", Some(5.0), 5.2);
+        st.forget(&["b".to_string()], 0);
+        assert_eq!(st.bot_cap("a", Some(5.0)), Some(5.0));
+        assert_eq!(st.bot_cap("b", Some(5.0)), Some(8.0));
+        assert!(!st.bots.contains_key("a") && !st.pending.contains_key("a"));
+    }
+
+    #[test]
+    fn overrides_survive_a_restart() {
+        let dir = std::env::temp_dir().join(format!("colony-budget-ov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut st = State::default();
+        st.raise_bot("a", Some(5.0), 5.2);
+        st.save(&dir.join("budget.json")).unwrap();
+        assert_eq!(State::load(&dir.join("budget.json")).bot_cap("a", Some(5.0)), Some(8.0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_map_can_report_a_new_offset_when_daylight_saving_changes() {
+        let mut s = crate::quality::Settings::default();
+        assert!(apply_offset(&mut s, -300));
+        assert!(!apply_offset(&mut s, -300));
+        assert!(apply_offset(&mut s, -240));
+        assert_eq!(s.utc_offset_min, Some(-240));
     }
 
     #[test]

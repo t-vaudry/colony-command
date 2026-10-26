@@ -60,6 +60,10 @@ pub struct Settings {
     /// The map's offset from UTC in minutes, as it last reported it: the day cap
     /// counts from local midnight, which only the map's clock knows.
     pub utc_offset_min: Option<i32>,
+    /// Caps raised for single bots (agent id to USD), kept in `budget.json` and
+    /// copied here for the map. Not saved with the settings.
+    #[serde(skip)]
+    pub budget_overrides: std::collections::BTreeMap<String, f64>,
 }
 
 impl Settings {
@@ -95,6 +99,7 @@ impl Settings {
             "context_pct": self.context_pct(),
             "budget_bot_usd": self.budget_bot_usd,
             "budget_day_usd": self.budget_day_usd,
+            "budget_overrides": self.budget_overrides,
         })
     }
 }

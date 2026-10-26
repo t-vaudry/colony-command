@@ -6,6 +6,8 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 export interface BudgetCaps {
   budget_bot_usd?: number | null;
   budget_day_usd?: number | null;
+  /** Caps raised for single bots, by agent id. */
+  budget_overrides?: Record<string, number>;
 }
 
 /** A button on a notice. `command` goes back to the daemon as it is. */
@@ -36,12 +38,13 @@ export function budgetText(spent: number, cap: number | null | undefined): strin
 }
 
 /** The bot panel's row; empty for a subagent or without a cap. */
-export function botBudgetRow(kind: string, spent: number | undefined, caps: BudgetCaps): string {
-  const cap = caps.budget_bot_usd;
+export function botBudgetRow(kind: string, id: string, spent: number | undefined, caps: BudgetCaps): string {
+  const own = caps.budget_overrides?.[id];
+  const cap = own ?? caps.budget_bot_usd;
   if (kind !== "main" || !hasCap(cap)) return "";
   const used = percent(spent ?? 0, cap);
   const why = used >= 100 ? "Over its budget: Colony steps a bot it started down a notch after its turn." : "Subagents and the advisor count. At 80% you're warned; at 100% Colony drops the advisor, then the model a tier.";
-  return `<div class="fact"><span class="k">Budget</span><span class="${used >= 100 ? "reason" : ""}" title="${esc(why)}">${esc(budgetText(spent ?? 0, cap).slice("Budget ".length))}</span></div>`;
+  return `<div class="fact"><span class="k">Budget</span><span class="${used >= 100 ? "reason" : ""}" title="${esc(why)}">${esc(budgetText(spent ?? 0, cap).slice("Budget ".length))}${own === undefined ? "" : " (raised)"}</span></div>`;
 }
 
 /** What goes after "today" next to the day total: " · budget $20 (60%)". */

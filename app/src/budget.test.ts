@@ -21,12 +21,20 @@ describe("budget text", () => {
   });
 
   it("puts the budget row in a main bot's panel only", () => {
-    const row = botBudgetRow("main", 3.1, { budget_bot_usd: 5 });
+    const row = botBudgetRow("main", "a", 3.1, { budget_bot_usd: 5 });
     expect(row).toContain("Budget");
     expect(row).toContain("~$3.10 / $5 · 62%");
-    expect(botBudgetRow("subagent", 3.1, { budget_bot_usd: 5 })).toBe("");
-    expect(botBudgetRow("main", 3.1, {})).toBe("");
-    expect(botBudgetRow("main", 6, { budget_bot_usd: 5 })).toContain("reason");
+    expect(botBudgetRow("subagent", "a", 3.1, { budget_bot_usd: 5 })).toBe("");
+    expect(botBudgetRow("main", "a", 3.1, {})).toBe("");
+    expect(botBudgetRow("main", "a", 6, { budget_bot_usd: 5 })).toContain("reason");
+  });
+
+  it("uses a bot's own raised cap, and only for that bot", () => {
+    const caps = { budget_bot_usd: 5, budget_overrides: { a: 7.5 } };
+    expect(botBudgetRow("main", "a", 6.1, caps)).toContain("~$6.10 / $7.50 · 81% (raised)");
+    const other = botBudgetRow("main", "b", 3.1, caps);
+    expect(other).toContain("~$3.10 / $5 · 62%");
+    expect(other).not.toContain("raised");
   });
 
   it("puts the day cap next to the day total", () => {
