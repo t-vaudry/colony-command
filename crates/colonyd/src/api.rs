@@ -74,7 +74,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
+    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
@@ -122,6 +122,20 @@ enum Command {
     Ack { id: String },
     /// Start a session (or resume one) in a terminal Colony owns.
     Spawn(SpawnRequest),
+    /// Save a crew: a new one, or an edited copy of a built-in.
+    SaveCrew { crew: colony_core::crew::Crew },
+    /// Remove a saved crew, or reset a built-in crew to how Colony ships it.
+    DeleteCrew { id: String },
+    /// Whether a crew choice can start, and what will be limited; answered with `crew_check`.
+    CheckCrew {
+        req: u64,
+        #[serde(default)]
+        host: Option<colony_core::HostId>,
+        #[serde(flatten)]
+        pick: colony_core::crew::CrewPick,
+        #[serde(default)]
+        model: Option<String>,
+    },
     /// Stream this terminal to the map: scrollback first, then live output.
     Attach { term: String },
     Detach,
@@ -239,6 +253,18 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
                 }
                 Err(e) => Err(e),
             }
+        }
+        Command::SaveCrew { crew } => crate::crews::save(crew).map(|all| {
+            let _ = shared.deltas.send(json!({ "type": "crews", "items": all }).to_string());
+            None
+        }),
+        Command::DeleteCrew { id } => crate::crews::delete(&id).map(|all| {
+            let _ = shared.deltas.send(json!({ "type": "crews", "items": all }).to_string());
+            None
+        }),
+        Command::CheckCrew { req, host, pick, model } => {
+            let c = crate::crews::check(host.as_ref(), &pick, model.as_deref());
+            Ok(Some(json!({ "type": "crew_check", "req": req, "error": c.error, "warnings": c.warnings }).to_string()))
         }
         Command::Attach { term } => {
             let sb = pty.scrollback(&term);
@@ -1033,6 +1059,9 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
         chrome: Some(false),
         session_id: None,
         model: None,
+        crew: None,
+        advisor: None,
+        swarm: None,
         isolate: false,
         cols: 120,
         rows: 32,
@@ -1048,8 +1077,11 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
     req.prompt = prompt;
     req.auto = false;
     req.name = None;
+    let mut dropped = None;
     if model.is_some() {
         req.model = model.clone();
+        // Keep the advisor if it still pairs with the new main model.
+        dropped = crate::crews::fit_model(&mut req)?;
     }
     shared.pty.kill(&term)?;
     if !shared.pty.closed(&term, Duration::from_secs(10)).await {
@@ -1059,6 +1091,9 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
     let host = shared.colony.read().await.agents.get(id).map(|a| a.host.clone()).unwrap_or(HostId::Windows);
     if let Some(model) = &model {
         let _ = shared.events.send(Envelope { ts: now_ms(), host, session_id, cwd: None, event: DomainEvent::ModelSet { model: model.clone() } }).await;
+    }
+    if let Some(note) = dropped {
+        notice(shared, note);
     }
     log(format!("restarted session{} in terminal {}", model.map(|m| format!(" on {m}")).unwrap_or_default(), spawned.term_id));
     Ok(())
@@ -1168,5 +1203,24 @@ mod batch_tests {
         let v: serde_json::Value = serde_json::from_str(&b).unwrap();
         assert_eq!(v["type"], "batch");
         assert_eq!(v["msgs"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod crew_command_tests {
+    use super::Command;
+
+    #[test]
+    fn crew_commands_parse_from_the_map() {
+        let c: Command = serde_json::from_str(r#"{"type":"check_crew","req":3,"host":"wsl:Ubuntu","crew":"default","advisor":"none","model":"opus"}"#).unwrap();
+        match c {
+            Command::CheckCrew { req, host, pick, model } => {
+                assert_eq!((req, model.as_deref(), pick.crew.as_deref(), pick.advisor.as_deref()), (3, Some("opus"), Some("default"), Some("none")));
+                assert!(matches!(host, Some(colony_core::HostId::Wsl(d)) if d == "Ubuntu"));
+            }
+            _ => panic!("wrong command"),
+        }
+        let c: Command = serde_json::from_str(r#"{"type":"spawn","host":"win","dir":"C:/w","crew":"default","swarm":"none"}"#).unwrap();
+        assert!(matches!(c, Command::Spawn(r) if r.crew.as_deref() == Some("default") && r.swarm.as_deref() == Some("none")));
     }
 }

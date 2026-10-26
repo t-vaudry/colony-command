@@ -223,6 +223,24 @@ export interface HostOption {
   note?: string;
 }
 
+/** Which models a bot uses: main, advisor and swarm. Unset means Claude Code's own. */
+export interface Crew {
+  id: string;
+  label: string;
+  model?: string | null;
+  advisor?: string | null;
+  effort?: string | null;
+  /** Subagent swarm model; unset means no swarm. */
+  swarm_model?: string | null;
+  /** One of Colony's own crews, possibly an edited copy. */
+  builtin?: boolean;
+}
+
+export interface CrewCheck {
+  error: string | null;
+  warnings: string[];
+}
+
 export interface SpawnRequest {
   host: string;
   dir: string;
@@ -232,6 +250,12 @@ export interface SpawnRequest {
   permission_mode?: string;
   chrome?: boolean;
   model?: string;
+  /** Crew id; `model` then overrides its main model for this bot. */
+  crew?: string;
+  /** This bot's advisor instead of its crew's; "none" for no advisor. */
+  advisor?: string;
+  /** This bot's swarm model instead of its crew's; "none" for no swarm. */
+  swarm?: string;
   /** Start in its own git worktree and branch. */
   isolate?: boolean;
   cols?: number;

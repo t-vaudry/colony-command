@@ -3,7 +3,8 @@
 // dialog resumes an existing session.
 
 import type { Daemon } from "./daemon";
-import type { Agent } from "./types";
+import { prefs } from "./prefs";
+import type { Agent, Crew } from "./types";
 
 export interface Prefill {
   dir?: string;
@@ -50,7 +51,16 @@ export class NewSessionDialog {
   private host = document.getElementById("ns-host") as HTMLSelectElement;
   private name = document.getElementById("ns-name") as HTMLInputElement;
   private mode = document.getElementById("ns-mode") as HTMLSelectElement;
+  private crew = document.getElementById("ns-crew") as HTMLSelectElement;
   private model = document.getElementById("ns-model") as HTMLSelectElement;
+  private advisor = document.getElementById("ns-advisor") as HTMLSelectElement;
+  private swarm = document.getElementById("ns-swarm") as HTMLSelectElement;
+  private saveCrew = document.getElementById("ns-save-crew") as HTMLInputElement;
+  private crewName = document.getElementById("ns-crew-name") as HTMLInputElement;
+  private crewNote = document.getElementById("ns-crew-note")!;
+  private checkSeq = 0;
+  /** The crew choice can't start (the advisor doesn't fit the model). */
+  private crewBlocked = false;
   private chrome = document.getElementById("ns-chrome") as HTMLInputElement;
   private isolate = document.getElementById("ns-isolate") as HTMLInputElement;
   private prompt = document.getElementById("ns-prompt") as HTMLTextAreaElement;
@@ -66,6 +76,10 @@ export class NewSessionDialog {
     private termSize: () => { cols: number; rows: number },
   ) {
     this.folder.addEventListener("change", () => this.folderChanged());
+    for (const el of [this.crew, this.model, this.advisor, this.swarm, this.host]) el.addEventListener("change", () => void this.checkCrew());
+    this.saveCrew.addEventListener("change", () => {
+      this.crewName.hidden = !this.saveCrew.checked;
+    });
     document.getElementById("ns-cancel")!.addEventListener("click", () => this.dlg.close());
     this.form.addEventListener("submit", (e) => {
       e.preventDefault();
@@ -94,6 +108,10 @@ export class NewSessionDialog {
     this.error.textContent = "";
     this.name.value = "";
     this.prompt.value = "";
+    for (const el of [this.model, this.advisor, this.swarm]) el.value = "";
+    this.saveCrew.checked = false;
+    this.crewName.hidden = true;
+    this.crewName.value = "";
     this.populate();
     this.dlg.showModal();
     (this.resume ? this.prompt : this.folder).focus();
@@ -132,6 +150,54 @@ export class NewSessionDialog {
     }
     this.folderChanged(prefill.host);
     this.host.disabled = !!this.resume;
+    this.fillCrews();
+  }
+
+  /** Crew choices from the daemon, keeping the one picked (or last time). */
+  private fillCrews(): void {
+    const keep = this.crew.value || prefs.crew;
+    this.crew.innerHTML = "";
+    for (const c of this.daemon.crews) this.crew.add(new Option(c.label, c.id));
+    this.crew.value = this.daemon.crews.some((c) => c.id === keep) ? keep! : "default";
+    void this.checkCrew();
+  }
+
+  /** Ask the daemon whether this crew choice can start, and show why not or what's limited. */
+  private async checkCrew(): Promise<void> {
+    const seq = ++this.checkSeq;
+    if (!this.crew.value) return;
+    const c = await this.daemon.checkCrew({ host: this.host.value || undefined, ...this.choice() });
+    if (seq !== this.checkSeq) return;
+    this.crewBlocked = !!c.error;
+    this.start.disabled = this.crewBlocked;
+    this.crewNote.hidden = !c.error && c.warnings.length === 0;
+    this.crewNote.className = c.error ? "error small" : "muted small warn";
+    this.crewNote.textContent = c.error ?? c.warnings.join(" ");
+    if (c.error) document.getElementById("ns-customize")!.setAttribute("open", "");
+  }
+
+  /** The crew and this bot's overrides, as the daemon takes them. */
+  private choice(): { crew: string; model?: string; advisor?: string; swarm?: string } {
+    return {
+      crew: this.crew.value,
+      model: this.model.value || undefined,
+      advisor: this.advisor.value || undefined,
+      swarm: this.swarm.value || undefined,
+    };
+  }
+
+  /** The crew the customized choice amounts to, to save under a name. */
+  private customCrew(name: string): Crew {
+    const base: Crew | undefined = this.daemon.crews.find((c) => c.id === this.crew.value);
+    const pick = (over: string, was: string | null | undefined) => (over === "none" ? null : over || was || null);
+    return {
+      id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, ""),
+      label: name,
+      model: this.model.value || base?.model || null,
+      advisor: pick(this.advisor.value, base?.advisor),
+      swarm_model: pick(this.swarm.value, base?.swarm_model),
+      effort: base?.effort ?? null,
+    };
   }
 
   /** Default the host to the one this folder's sessions use. */
@@ -164,9 +230,22 @@ export class NewSessionDialog {
       this.error.textContent = "No host can run Claude Code. Install Claude Code on Windows or in a WSL distro.";
       return;
     }
+    if (this.crewBlocked) {
+      this.error.textContent = "Fix the crew choice first.";
+      return;
+    }
     this.start.disabled = true;
     this.error.textContent = "";
     try {
+      let choice = this.choice();
+      const name = this.saveCrew.checked ? this.crewName.value.trim() : "";
+      if (this.saveCrew.checked && !name) throw new Error("Name the crew to save it.");
+      if (name) {
+        const crew = this.customCrew(name);
+        if (!crew.id || !this.daemon.saveCrew(crew)) throw new Error("Couldn't save the crew: choose a name with letters or digits.");
+        choice = { crew: crew.id };
+      }
+      prefs.setCrew(choice.crew);
       const started = await this.daemon.spawn({
         host: this.host.value,
         dir,
@@ -174,7 +253,7 @@ export class NewSessionDialog {
         name: this.resume ? undefined : this.name.value.trim() || undefined,
         resume: this.resume ?? undefined,
         permission_mode: this.mode.value || undefined,
-        model: this.model.value || undefined,
+        ...choice,
         isolate: this.resume ? undefined : this.isolate.checked,
         // Off unless ticked, which also skips Claude in Chrome's first-run question.
         chrome: this.chrome.checked,

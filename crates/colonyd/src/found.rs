@@ -277,7 +277,7 @@ pub async fn bring_back(shared: &Shared, pick: &[String]) -> Result<(), String> 
         }
         paused.insert(
             f.session_id.clone(),
-            Paused { host: f.host.clone(), dir: f.dir.clone(), name: f.name.clone(), at: now, model: None, permission_mode: f.permission_mode.clone(), chrome: None, interrupted: true },
+            Paused { host: f.host.clone(), dir: f.dir.clone(), name: f.name.clone(), at: now, model: None, permission_mode: f.permission_mode.clone(), chrome: None, pick: Default::default(), interrupted: true },
         );
     }
     crate::pause::store(&paused);

@@ -5,6 +5,7 @@ export type MotionPref = "system" | "reduce" | "full";
 
 const KEY_FOCUS = "colony.focus";
 const KEY_MOTION = "colony.motion";
+const KEY_CREW = "colony.crew";
 const MOTION_ORDER: MotionPref[] = ["system", "reduce", "full"];
 
 const media = matchMedia("(prefers-reduced-motion: reduce)");
@@ -28,7 +29,14 @@ function write(key: string, value: string): void {
 class Prefs {
   focus = read(KEY_FOCUS) === "1";
   motion: MotionPref = MOTION_ORDER.find((m) => m === read(KEY_MOTION)) ?? "system";
+  /** The crew picked last in the New session dialog. */
+  crew = read(KEY_CREW);
   private listeners: Array<() => void> = [];
+
+  setCrew(id: string): void {
+    this.crew = id;
+    write(KEY_CREW, id);
+  }
 
   constructor() {
     media.addEventListener("change", () => this.changed());

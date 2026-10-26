@@ -621,6 +621,15 @@ button[disabled] {
   gap: 14px;
   align-items: end;
 }
+#ns-form .row3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 8px 0;
+}
+#ns-crew-note.warn {
+  color: var(--attention, #c77d0a);
+}
 #ns-form label.check {
   display: flex;
   align-items: center;

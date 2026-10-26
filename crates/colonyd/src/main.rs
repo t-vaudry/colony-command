@@ -9,6 +9,7 @@
 mod api;
 mod approvals;
 mod classifier;
+mod crews;
 mod diffstat;
 mod eventlog;
 mod found;
