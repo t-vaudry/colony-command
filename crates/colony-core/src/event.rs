@@ -167,6 +167,10 @@ pub enum DomainEvent {
     /// With `advisor` set, the tokens are advisor consultations (`consults`
     /// of them) and `model` is the advisor's, which they are priced at.
     /// `advisor_model` is the advisor attached to the session, when there is one.
+    ///
+    /// `context` is the whole input side of this response, not a delta like
+    /// `tokens`: the size of the context the agent sent. 0 when unknown, and
+    /// on advisor consultations.
     UsageUpdated {
         #[serde(default)]
         agent_id: Option<String>,
@@ -186,6 +190,8 @@ pub enum DomainEvent {
         /// transcript lines, later ones only growing its usage): the count of assistant turns.
         #[serde(default)]
         new_message: bool,
+        #[serde(default)]
+        context: u64,
     },
     /// The crew colonyd started this session with, resolved (see `crew::resolve`).
     /// `id` is the crew's id; the models are as launched, `None` for "Claude Code's choice".

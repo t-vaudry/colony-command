@@ -78,6 +78,7 @@ impl Run {
                 consults,
                 advisor_model: None,
                 new_message: !advisor,
+                context: 0,
             },
         });
     }
@@ -161,6 +162,7 @@ fn growing_lines_of_one_message_are_one_turn() {
                 consults: 0,
                 advisor_model: None,
                 new_message: false,
+                context: 0,
             },
         });
     }
@@ -185,6 +187,7 @@ fn consult_at(r: &mut Run, ts: u64) {
             consults: 1,
             advisor_model: None,
             new_message: false,
+            context: 0,
         },
     });
 }

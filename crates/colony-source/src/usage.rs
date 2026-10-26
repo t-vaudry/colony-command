@@ -189,6 +189,8 @@ impl UsageReader {
         let session = u.session.unwrap_or_else(|| file_session.to_string());
         let agent = file_agent.clone().or_else(|| if u.sidechain { u.agent } else { None });
         let ts = u.ts.unwrap_or_else(crate::now_ms);
+        // The context is the whole input side of this line, not the growth counted above.
+        let context = colony_core::context::context_of(&u.tokens);
         let mut emit = |model: Option<String>, tokens: Tokens, advisor: bool, consults: u32| {
             let seq = self.seq.entry((session.clone(), agent.clone())).or_insert(0);
             *seq += 1;
@@ -206,6 +208,7 @@ impl UsageReader {
                     consults,
                     advisor_model: u.advisor_model.clone(),
                     new_message: new_message && !advisor,
+                    context: if advisor { 0 } else { context },
                 },
             });
         };
@@ -433,6 +436,27 @@ mod tests {
         // 50 output, then 90 in total -> 50 + 40.
         assert_eq!((got[2].3.output, got[3].3.output), (50, 40));
         assert_eq!(got[3].3.input, 0);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn context_is_the_full_input_side_even_when_the_tokens_are_a_delta() {
+        let d = tmp("context");
+        fs::write(d.join(format!("projects/C--code-api/{SID}.jsonl")), MAIN).unwrap();
+        let ev = reader(&d).scan();
+        let ctx: Vec<u64> = ev
+            .iter()
+            .map(|e| match &e.event {
+                DomainEvent::UsageUpdated { context, .. } => *context,
+                other => panic!("not usage: {other:?}"),
+            })
+            .collect();
+        assert_eq!(ctx[0], 12 + 20_000 + 1_500, "input + cache read + cache creation");
+        // The last response is two lines; the second one's tokens are only the growth (no
+        // input), but its context is still the whole input side.
+        assert_eq!(ctx.len(), 4);
+        assert_ne!(ctx[3], 0);
+        assert_eq!(ctx[3], ctx[2]);
         let _ = fs::remove_dir_all(&d);
     }
 

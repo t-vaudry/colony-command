@@ -17,6 +17,7 @@
 //! Nothing here may block or break a session: every failure is swallowed and
 //! the hook exits 0 with no output, which Claude Code treats as "no opinion".
 
+pub mod context;
 pub mod nudge;
 
 use std::fs;
@@ -47,6 +48,8 @@ pub struct Ctx {
     pub advisor: Option<String>,
     /// `COLONY_SWARM`: the session has the Haiku swarm, `swarm-audit` included.
     pub swarm: Option<String>,
+    /// `COLONY_CONTEXT_NUDGE`: the context size, in tokens, from which a crew session is nudged.
+    pub context_nudge: Option<u64>,
 }
 
 /// Where the Claude Code version can be learned; payloads don't carry it.
@@ -73,6 +76,7 @@ impl Ctx {
             },
             advisor: var("COLONY_ADVISOR"),
             swarm: var("COLONY_SWARM"),
+            context_nudge: var("COLONY_CONTEXT_NUDGE").and_then(|v| v.parse().ok()),
         }
     }
 }
@@ -103,6 +107,17 @@ pub fn run(input: &str, ctx: &Ctx) -> Option<String> {
             // Tell colonyd, so the map can show whether nudges are followed. Best effort.
             let sid = parsed.as_ref().and_then(|v| v.get("session_id")).and_then(Value::as_str).unwrap_or("");
             let _ = write_unique(&ctx.colony_home.join(dir), nudge_record(sid, kind, unix_nanos() / 1_000_000).as_bytes());
+            return Some(out);
+        }
+    }
+    // A crew session's context grew large (needs the swarm to hand work to).
+    if let (Some(limit), Some(_), Some(v)) = (ctx.context_nudge, &ctx.swarm, &parsed) {
+        if std::process::id() % 16 == 0 {
+            nudge::prune_state(&ctx.colony_home.join(context::STATE_DIR), SystemTime::now(), nudge::STATE_MAX_FILES, nudge::STATE_MAX_AGE);
+        }
+        if let Some(out) = context::nudge(&ctx.colony_home, v, limit) {
+            let sid = v.get("session_id").and_then(Value::as_str).unwrap_or("");
+            let _ = write_unique(&ctx.colony_home.join(dir), nudge_record(sid, "context", unix_nanos() / 1_000_000).as_bytes());
             return Some(out);
         }
     }
@@ -286,7 +301,7 @@ mod tests {
             }
         });
         fs::write(home.join("daemon.json"), format!(r#"{{"port":{port},"token":"abc123"}}"#)).unwrap();
-        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default(), advisor: None, swarm: None };
+        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default(), advisor: None, swarm: None, context_nudge: None };
         let input = r#"{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"Bash"}"#;
 
         assert!(run(input, &ctx).is_some(), "without the marker the request goes to colonyd");
@@ -301,7 +316,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("colony-hook-probe-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         fs::create_dir_all(&home).unwrap();
-        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default(), advisor: None, swarm: None };
+        let ctx = Ctx { colony_home: home.clone(), claude_home: home.join(".claude"), version_hint: VersionHint::default(), advisor: None, swarm: None, context_nudge: None };
         let input = r#"{"hook_event_name":"PostToolUse","session_id":"s","tool_name":"Bash"}"#;
         let count = |d: &str| fs::read_dir(home.join(d)).map(|r| r.count()).unwrap_or(0);
 

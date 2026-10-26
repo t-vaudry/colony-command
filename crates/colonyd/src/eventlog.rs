@@ -346,7 +346,7 @@ mod tests {
     fn usage_updates_are_not_logged() {
         let p = tmp();
         let mut log = EventLog::open(&p, 1_000);
-        log.record(&ev(2_000, DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: None, tokens: Default::default(), advisor: false, consults: 0, advisor_model: None, new_message: false }));
+        log.record(&ev(2_000, DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: None, tokens: Default::default(), advisor: false, consults: 0, advisor_model: None, new_message: false, context: 0 }));
         log.flush();
         assert!(read_window(&p, 0, u64::MAX).is_empty());
     }

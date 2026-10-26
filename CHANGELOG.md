@@ -6,6 +6,7 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 ## [Unreleased]
 
 - Crews: each bot's panel shows whether its crew is used (searches delegated or done by hand, swarm agents that ran out of turns, advisor use, and whether nudges were followed), with a one-line roll-up in the day summary.
+- Context watch: each bot's panel shows how full its context is ("Context 142k / 200k · 71%"). Past 70% of the window (configurable) Colony says so once, offers a Compact button for bots it started, and nudges crew sessions to hand searches and test runs to the swarm.
 - Crews: bots can use a swarm of cheap Haiku helpers for searching and auditing, with Opus advising only at key decisions, to spend far fewer tokens.
 - Crews: the New session dialog picks a crew instead of a model. The default
   crew is Sonnet builds, Haiku swarms, Opus reviews (Opus attached as the

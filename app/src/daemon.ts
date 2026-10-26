@@ -14,6 +14,8 @@ export interface DaemonSettings {
   haiku_classifier: boolean;
   /** A key was found, so turning it on can work. The key itself is never sent. */
   haiku_key_present: boolean;
+  /** Percent of the context window at which Colony warns that a bot's context is getting full. */
+  context_pct?: number;
 }
 
 type Message =
@@ -262,6 +264,16 @@ export class Daemon {
   /** "Wrong state": log what the bot showed and what the user says it should have been. */
   stateFeedback(id: string, shouldBe: string): boolean {
     return this.send({ type: "state_feedback", id, should_be: shouldBe });
+  }
+
+  /** Where bots' context counts as getting full, in percent of the window. */
+  setContextPct(pct: number): boolean {
+    return this.send({ type: "set_context_pct", pct });
+  }
+
+  /** Type /compact into a bot Colony started; the daemon refuses while it is working. Errors come back as toasts. */
+  compact(id: string): boolean {
+    return this.send({ type: "compact", id });
   }
 
   /** Turn the opt-in Haiku classifier for unclear endings on or off. */
