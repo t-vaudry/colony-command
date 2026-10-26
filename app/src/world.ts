@@ -5,6 +5,7 @@
 import { Application, Container, Graphics, Particle, ParticleContainer, Text, type Texture } from "pixi.js";
 import type { Daemon } from "./daemon";
 import { prefs } from "./prefs";
+import { toolProp, type Prop } from "./props";
 import { modelLabel, money, spentToday, type Agent, type AgentState } from "./types";
 
 interface Palette {
@@ -92,6 +93,12 @@ interface Body {
   dot: Particle | null;
   /** The building it is working at, when it has one. */
   dir: string;
+  /** When (this.t) the last failed tool call made it stumble. */
+  stumbleAt: number;
+  /** When (this.t) its next idle stretch starts, or the current one started. */
+  stretchAt: number;
+  /** 1 awake, easing to 0 as an ended bot powers down. */
+  power: number;
 }
 
 /** A directory agents are working in, drawn inside its project's district. */
@@ -109,6 +116,8 @@ interface Spark {
   vy: number;
   life: number;
   color: number;
+  /** Downward pull; negative for smoke that rises. */
+  grav: number;
 }
 
 const DW = 300;
@@ -145,6 +154,13 @@ const EDITING: AgentState[] = ["working"];
 const ATTENTION: AgentState[] = ["needs_input", "awaiting_reply", "blocked", "crashed"];
 /** Attention budget: healthy work stays under this ceiling. Alarm states may exceed it. */
 const HEALTHY = { swingRate: 4, swingAmp: 0.25, stepRate: 6, stepBob: 1.5, sparkRate: 1 };
+/** Personality touches: short flourishes, all held still when the bot is calm. */
+const STUMBLE_S = 0.7;
+const STRETCH_S = 1.6;
+const STRETCH_EVERY = [20, 40] as const;
+/** How long the lightbulb shows after an advisor consult. */
+const BULB_MS = 2500;
+const BULB = 0xfacc15;
 /** In Focus mode, what is not asking for you fades to this. */
 const FOCUS_DIM = 0.18;
 const FOCUS_DIM_REVIEW = 0.5;
@@ -286,7 +302,9 @@ export class World {
         this.bodies.set(a.id, this.newBody(a));
         membership = true;
       } else {
+        const failed = a.consecutive_failures > b.a.consecutive_failures;
         b.a = a;
+        if (failed) this.stumble(b);
         if (b.label && b.label.text !== a.name) b.label.text = a.name;
       }
     }
@@ -441,7 +459,20 @@ export class World {
       diff: null,
       consult: null,
       dir: "",
+      stumbleAt: -Infinity,
+      stretchAt: this.t + rand(5, STRETCH_EVERY[1]),
+      power: a.state === "ended" ? 0 : 1,
     };
+  }
+
+  /** A failed tool call: a stagger and a puff of smoke. */
+  private stumble(b: Body): void {
+    b.stumbleAt = this.t;
+    if (!b.inView || this.tier !== 0 || this.calm(b.a)) return;
+    const r = b.a.kind === "subagent" ? 6 : 10;
+    for (let i = 0; i < 4; i++) {
+      this.sparks.push({ x: b.x + rand(-4, 4), y: b.y - r * 1.3, vx: rand(-8, 8), vy: rand(-22, -12), life: 0.6, color: this.pal.muted, grav: -10 });
+    }
   }
 
   private layout(): void {
@@ -618,7 +649,7 @@ export class World {
       s.life -= dt;
       s.x += s.vx * dt;
       s.y += s.vy * dt;
-      s.vy += 60 * dt;
+      s.vy += s.grav * dt;
       if (s.life <= 0) this.sparks.splice(i, 1);
     }
     this.draw();
@@ -679,7 +710,10 @@ export class World {
         if (d && near()) {
           b.dwell -= dt;
           if (b.inView && this.tier < 2 && !this.calm(a) && Math.random() < dt * HEALTHY.sparkRate) {
-            this.sparks.push({ x: b.x + rand(-6, 6), y: b.y - 16, vx: rand(-10, 10), vy: rand(-32, -16), life: 0.6, color: this.pal.ok });
+            // Hammering kicks up dust and a pencil drops ink; anything else gives off the usual sparks.
+            const prop = toolProp(a.current_tool?.name);
+            const color = prop === "run" ? this.pal.muted : prop === "write" ? this.pal.ink : this.pal.ok;
+            this.sparks.push({ x: b.x + rand(-6, 6), y: b.y - 16, vx: rand(-10, 10), vy: rand(-32, -16), life: 0.6, color, grav: 60 });
           }
           if (b.dwell <= 0) {
             const s = bld ? this.doorSpot(d, bld) : this.spot(d);
@@ -725,6 +759,7 @@ export class World {
         break;
       }
       case "idle": {
+        if (this.t > b.stretchAt + STRETCH_S) b.stretchAt = this.t + rand(...STRETCH_EVERY);
         const h = this.home(a);
         if (near()) {
           b.dwell -= dt;
@@ -761,6 +796,8 @@ export class World {
       }
     }
     b.alpha += (alpha - b.alpha) * Math.min(1, dt * 4);
+    const power = a.state === "ended" ? 0 : 1;
+    b.power = this.reduced ? power : b.power + (power - b.power) * Math.min(1, dt * 1.5);
     const dx = b.tx - b.x;
     const dy = b.ty - b.y;
     const dist = Math.hypot(dx, dy);
@@ -908,10 +945,93 @@ export class World {
     return this.districts.get(this.projectOf(a))?.color ?? this.pal.idle;
   }
 
-  private arm(g: Graphics, x: number, y: number, r: number, sub: boolean, al: number, side: number, ang: number): void {
+  /** Draws an arm and returns where its hand is. */
+  private arm(g: Graphics, x: number, y: number, r: number, sub: boolean, al: number, side: number, ang: number): { x: number; y: number } {
+    const hand = { x: x + side * r * 0.8 + Math.cos(ang) * r * 0.9 * side, y: y - r * 0.1 + Math.sin(ang) * r * 0.9 };
     g.moveTo(x + side * r * 0.8, y - r * 0.1)
-      .lineTo(x + side * r * 0.8 + Math.cos(ang) * r * 0.9 * side, y - r * 0.1 + Math.sin(ang) * r * 0.9)
+      .lineTo(hand.x, hand.y)
       .stroke({ width: sub ? 1.2 : 1.8, color: this.pal.ink, alpha: al });
+    return hand;
+  }
+
+  /** The tool a working bot holds in its right hand (angle `ang`), or wears on its head. */
+  private drawProp(g: Graphics, prop: Prop, x: number, y: number, hand: { x: number; y: number }, ang: number, r: number, al: number, still: boolean): void {
+    const p = this.pal;
+    // Along the arm, and across it.
+    const dx = Math.cos(ang);
+    const dy = Math.sin(ang);
+    const w = Math.max(1, r * 0.12);
+    switch (prop) {
+      case "look": {
+        const cx = hand.x + dx * r * 0.25 + r * 0.15;
+        const cy = hand.y - r * 0.45;
+        g.moveTo(hand.x, hand.y).lineTo(cx - r * 0.2, cy + r * 0.25).stroke({ width: w * 1.4, color: p.ink, alpha: al });
+        g.circle(cx, cy, r * 0.34).fill({ color: 0xffffff, alpha: 0.45 * al }).stroke({ width: w, color: p.ink, alpha: al });
+        break;
+      }
+      case "write": {
+        const tx = hand.x + r * 0.2;
+        const ty = hand.y + r * 0.3;
+        g.moveTo(hand.x - r * 0.2, hand.y - r * 0.6).lineTo(tx, ty).stroke({ width: w * 2.2, color: BULB, alpha: al });
+        g.moveTo(tx - r * 0.06, ty - r * 0.12).lineTo(tx + r * 0.04, ty + r * 0.08).stroke({ width: w * 1.4, color: p.ink, alpha: al });
+        break;
+      }
+      case "run": {
+        // The handle stands up out of the fist, square to the arm; the head sits across its top.
+        const ex = hand.x + dy * r * 0.6;
+        const ey = hand.y - dx * r * 0.6;
+        g.moveTo(hand.x, hand.y).lineTo(ex, ey).stroke({ width: w * 1.4, color: p.ink, alpha: al });
+        g.moveTo(ex - dx * r * 0.2, ey - dy * r * 0.2).lineTo(ex + dx * r * 0.4, ey + dy * r * 0.4).stroke({ width: w * 3, color: p.ink, alpha: al });
+        break;
+      }
+      case "web": {
+        const ax = x + r * 0.2;
+        const ay = y - r * 1.75;
+        g.moveTo(x + r * 0.1, y - r * 1.15).lineTo(ax, ay).stroke({ width: w, color: p.ink, alpha: al });
+        g.circle(ax, ay, w * 1.3).fill({ color: p.accent, alpha: al });
+        // Two rings drifting out from the tip.
+        if (!still) {
+          for (const off of [0, 0.5]) {
+            const k = (this.t * 0.8 + off) % 1;
+            g.arc(ax, ay, r * (0.3 + k * 0.7), -2.5, -0.65).stroke({ width: w * 0.9, color: p.accent, alpha: (1 - k) * al });
+          }
+        }
+        break;
+      }
+      case "delegate": {
+        // A megaphone: narrow at the hand, wide at the far end.
+        const n = r * 0.12;
+        const f = r * 0.32;
+        const ex = hand.x + dx * r * 0.6;
+        const ey = hand.y + dy * r * 0.6;
+        g.poly([hand.x - dy * n, hand.y + dx * n, ex - dy * f, ey + dx * f, ex + dy * f, ey - dx * f, hand.x + dy * n, hand.y - dx * n])
+          .fill({ color: p.accent, alpha: al })
+          .stroke({ width: w * 0.8, color: p.ink, alpha: al });
+        break;
+      }
+    }
+  }
+
+  /** Just after an advisor consult: a lightbulb pops up beside the head. */
+  private drawBulb(g: Graphics, a: Agent, x: number, y: number, r: number, al: number, still: boolean): void {
+    const age = a.last_consult_at ? Date.now() - a.last_consult_at : Infinity;
+    if (age < 0 || age > BULB_MS) return;
+    // Pop in with a little overshoot, fade out at the end.
+    const k = Math.min(1, age / 300);
+    const s = still ? 1 : 1 + 2.7 * (k - 1) ** 3 + 1.7 * (k - 1) ** 2;
+    const fade = Math.min(1, (BULB_MS - age) / 500) * al;
+    const bx = x + r + 5;
+    const by = y - r - 6;
+    const br = r * 0.42 * s;
+    g.rect(bx - br * 0.45, by + br * 0.75, br * 0.9, br * 0.55).fill({ color: this.pal.ink, alpha: fade });
+    g.circle(bx, by, br).fill({ color: BULB, alpha: fade }).stroke({ width: 1, color: this.pal.ink, alpha: fade });
+    if (!still && age < 1200) {
+      for (const ang of [-2.4, -1.57, -0.74]) {
+        g.moveTo(bx + Math.cos(ang) * br * 1.4, by + Math.sin(ang) * br * 1.4)
+          .lineTo(bx + Math.cos(ang) * br * 2, by + Math.sin(ang) * br * 2)
+          .stroke({ width: 1, color: BULB, alpha: fade });
+      }
+    }
   }
 
   private drawBot(g: Graphics, a: Agent, b: Body): void {
@@ -924,8 +1044,16 @@ export class World {
     const calm = this.calm(a);
     const tier = this.tier;
     const bob = calm ? 0 : b.moving ? Math.abs(Math.sin(b.phase * HEALTHY.stepRate)) * HEALTHY.stepBob : Math.sin(b.phase * 2) * 0.6;
-    const x = b.x;
-    const y = b.y - bob;
+    // A failed tool call: a stagger that settles.
+    const sk = (this.t - b.stumbleAt) / STUMBLE_S;
+    const stagger = calm || sk < 0 || sk >= 1 ? 0 : Math.sin(sk * 22) * (1 - sk) * r * 0.25;
+    // Idle now and then: arms up, eyes shut, a little taller.
+    const tk = (this.t - b.stretchAt) / STRETCH_S;
+    const stretch = st === "idle" && !b.moving && !calm && tier === 0 && tk >= 0 && tk < 1 ? Math.sin(Math.PI * tk) : 0;
+    // An ended session slumps as it powers down.
+    const off = a.kind === "main" ? 1 - b.power : 0;
+    const x = b.x + stagger;
+    const y = b.y - bob + off * r * 0.15;
     const sc = this.stateColor(st);
     const body = this.districtColor(a);
 
@@ -970,30 +1098,47 @@ export class World {
         this.arm(g, x, y, r, sub, al, -1, 0.9);
         this.arm(g, x, y, r, sub, al, 1, up ? -1.6 : 0.9);
       } else if (st === "working") {
-        const w = calm ? 0 : Math.sin(this.t * HEALTHY.swingRate + b.phase) * HEALTHY.swingAmp;
+        const prop = toolProp(a.current_tool?.name);
+        // A hammer comes down hard and lifts slowly; other tools sway.
+        const swing = prop === "run" ? 1 - 2 * Math.abs(Math.sin(this.t * HEALTHY.swingRate * 0.75 + b.phase)) : Math.sin(this.t * HEALTHY.swingRate + b.phase);
+        const ang = 0.2 + (calm ? 0 : swing * HEALTHY.swingAmp);
         this.arm(g, x, y, r, sub, al, -1, 0.6);
-        this.arm(g, x, y, r, sub, al, 1, 0.2 + w);
+        const hand = this.arm(g, x, y, r, sub, al, 1, ang);
+        if (prop) this.drawProp(g, prop, x, y, hand, ang, r, al, calm);
       } else {
-        this.arm(g, x, y, r, sub, al, -1, 1.1);
-        this.arm(g, x, y, r, sub, al, 1, 1.1);
+        const ang = 1.1 - 3 * stretch;
+        this.arm(g, x, y, r, sub, al, -1, ang);
+        this.arm(g, x, y, r, sub, al, 1, ang);
       }
     }
 
     // Body and eyes.
-    const squash = resting && !b.moving ? 0.85 : 1;
+    const squash = (resting && !b.moving ? 0.85 : 1) + 0.2 * stretch - 0.12 * off;
     const bodyShape = g.ellipse(x, y - r * 0.2, r, r * squash).fill({ color: body, alpha: (resting ? 0.6 : 1) * al });
     if (tier === 0) {
       bodyShape.stroke({ width: 1.2, color: p.ink, alpha: al });
       const lookingAtYou = ATTENTION.includes(st);
-      const lx = lookingAtYou ? 0 : b.face * 1.2;
-      const ly = lookingAtYou ? 1.2 : 0;
+      let lx = lookingAtYou ? 0 : b.face * 1.2;
+      let ly = lookingAtYou ? 1.2 : 0;
+      // In an edit collision, it glares at whoever it is colliding with.
+      const rival = a.collision && EDITING.includes(st) ? a.collision.with.map((w) => this.bodies.get(w)).find((o) => o && o.a.state === st) : undefined;
+      if (rival) {
+        const d = Math.hypot(rival.x - x, rival.y - y) || 1;
+        lx = ((rival.x - x) / d) * 1.4;
+        ly = ((rival.y - y) / d) * 1.4;
+      }
       const er = sub ? 1.7 : 2.7;
+      // Eyelid cover, in eye radii: 0 open, 1.1 drowsy, 2 shut.
+      const lid = Math.max(resting ? 1.1 + 0.9 * off : 0, 2 * Math.min(1, stretch * 1.6));
       for (const s of [-1, 1]) {
         const ex = x + s * r * 0.38;
         const ey = y - r * 0.35;
         g.circle(ex, ey, er).fill({ color: 0xffffff, alpha: al });
-        if (resting) g.rect(ex - er, ey - er, er * 2, er * 1.1).fill({ color: body, alpha: al });
-        g.circle(ex + lx * er * 0.35, ey + ly * er * 0.35, er * 0.5).fill({ color: 0x111111, alpha: al });
+        if (lid > 0) g.rect(ex - er, ey - er, er * 2, er * lid).fill({ color: body, alpha: al });
+        if (lid < 1.9) g.circle(ex + lx * er * 0.35, ey + ly * er * 0.35, er * 0.5).fill({ color: 0x111111, alpha: al });
+        else g.moveTo(ex - er * 0.8, ey + er * 0.3).lineTo(ex + er * 0.8, ey + er * 0.3).stroke({ width: 1, color: p.ink, alpha: al });
+        // Brows slanting down toward the middle.
+        if (rival) g.moveTo(ex + s * er * 1.1, ey - er * 1.7).lineTo(ex - s * er * 0.7, ey - er * 1.05).stroke({ width: sub ? 1 : 1.4, color: p.ink, alpha: al });
       }
     }
 
@@ -1028,6 +1173,9 @@ export class World {
       g.poly([wx - 6, wy + 6, wx, wy - 6, wx + 6, wy + 6]).fill({ color: WARN, alpha: al }).stroke({ width: 1, color: p.ink, alpha: al });
       g.rect(wx - 0.7, wy - 2, 1.4, 4.5).fill({ color: p.ink, alpha: al });
     }
+
+    // The porch and dock signs sit where the bulb would.
+    if (tier === 0 && (st === "working" || st === "idle" || st === "spawning")) this.drawBulb(g, a, x, y, r, al, this.reduced);
 
     if (this.selected === a.id) g.circle(b.x, b.y - r * 0.2, r + 6).stroke({ width: 2, color: p.accent });
     this.placeLabel(a, b, r, al);
