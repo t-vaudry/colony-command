@@ -5,6 +5,8 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-26
+
 ### Fixed
 
 - Updating Colony no longer leaves an older background service (colonyd) running: the app now replaces a colonyd from a different version (your sessions keep running) and says so, instead of showing "unknown variant" errors and no crews. If it can't be stopped safely, the map shows an "out of date" banner with a Restart button.
