@@ -501,6 +501,17 @@ into `capture/`. The hook never blocks or breaks a session: any failure is
 swallowed, it exits 0, and it returns within about 50 ms unless it is holding a
 permission request for the map.
 
+The only things it prints are a permission decision (PermissionRequest) and, in
+crew sessions (Colony sets `COLONY_ADVISOR` when an advisor is attached, and
+`COLONY_SWARM` when the Haiku swarm is), three advisor nudges, never a hard gate:
+`additionalContext` the second time the same tool error happens (once per error),
+`additionalContext` on `ExitPlanMode` (once per turn) asking for the advisor's view
+of the plan first, and one `{"decision":"block"}` at Stop when files changed this
+turn and no `swarm-audit` ran since (never when `stop_hook_active`, never twice in
+a turn). They remember what they need in `~/.colony/advisor/<session_id>.json`
+(pruned after 7 days or past 300 files), written only when the advisor is attached.
+Without those variables the output is exactly as before.
+
 It also keeps the first payload of each event per Claude Code version in
 `~/.colony/fixtures/<version>/` (unscrubbed; scrub before copying any into
 `crates/colony-hook/tests/fixtures/`, which the contract tests read).
