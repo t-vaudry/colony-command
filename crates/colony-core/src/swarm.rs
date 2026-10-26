@@ -13,16 +13,16 @@ Opus usage must stay low. Return a compact summary, never raw dumps. Give paths 
 /// The `--agents` JSON defining the swarm subagents, all on `model`.
 pub fn agents_json(model: &str) -> String {
     let search = json!({
-        "description": "Maps the repo: layout, where a concept lives, entry points. Delegate any \
-question that needs more than one or two lookups or a sweep across many files.",
+        "description": "Maps the repo: layout, where a concept lives, entry points. For questions \
+needing more than one or two lookups.",
         "prompt": format!(
             "You map codebases. Answer the question with the few files and directories that \
 matter: layout, where the concept lives, entry points. Use Glob, Grep and Read only. {COMMON}"),
         "tools": ["Read", "Glob", "Grep"],
     });
     let grep = json!({
-        "description": "Finds every call site or usage of a symbol, with file:line and one line \
-of context each. Delegate when a symbol likely has many usages.",
+        "description": "Finds every usage of a symbol as file:line with context. For symbols \
+with many usages.",
         "prompt": format!(
             "You find every usage of the symbol you are given (definitions, calls, re-exports, \
 tests). Use Glob, Grep and Read only. Report one line per hit: file:line, then a few words of \
@@ -30,17 +30,18 @@ context. {COMMON}"),
         "tools": ["Read", "Glob", "Grep"],
     });
     let audit = json!({
-        "description": "Reviews and tests the current changes in an isolated worktree. Delegate \
-test runs, builds with long output, and pre-completion review. Pass a snapshot SHA from \
-`git stash create` (if it prints nothing, use HEAD), the base commit (default: merge-base with \
-the default branch), and the test/build commands if known.",
+        "description": "Reviews and tests current changes in an isolated worktree. For test runs, \
+builds with long output, and pre-completion review.",
         "prompt": format!(
             "You audit changes in your own worktree, which starts from the default branch, not the \
-caller's checkout. First run `git checkout --detach <sha>` with the snapshot SHA you were given. \
-Review `git diff <base>..<sha>` (base as given, else the merge-base with the default branch). \
+caller's checkout. You are given a snapshot SHA, a base commit (default: merge-base with the \
+default branch), the caller's checkout path, and maybe test/build commands. First run \
+`git checkout --detach <sha>`. Then copy the caller's untracked files into your worktree: \
+`git -C <checkout> ls-files --others --exclude-standard` lists them; copy each, reading only \
+from the caller's side. Run `git add -A` in your worktree and review `git diff --cached <base>`. \
 Run the test and build commands you were given, or find them. Report ONLY failures, risky lines \
 (file:line) and missing tests, as a short structured list. Never push, never commit to branches, \
-never touch the caller's checkout. {COMMON}"),
+never modify the caller's checkout. {COMMON}"),
         "tools": ["Read", "Glob", "Grep", "Bash", "PowerShell"],
         "isolation": "worktree",
     });
@@ -68,7 +69,8 @@ pub fn rules(swarm: bool, advisor: bool) -> String {
             "Swarm: delegate to swarm-search or swarm-grep any search needing more than one or \
 two lookups, sweeping many files, or returning large output. Do one-shot lookups yourself (a known \
 path, one targeted grep). Delegate test runs and builds with long output to swarm-audit, passing \
-a snapshot SHA from `git stash create` (empty output: use HEAD) and the base commit. Run \
+a snapshot SHA from `git stash create` (empty output: use HEAD), the base commit and your \
+checkout path. Run \
 independent swarm agents in parallel. Don't repeat a search a swarm agent already answered.",
         );
     }
@@ -144,7 +146,9 @@ mod tests {
         let agents = parsed();
         let p = agents["swarm-audit"]["prompt"].as_str().unwrap();
         assert!(p.contains("git checkout --detach <sha>"));
-        assert!(p.contains("git diff <base>..<sha>"));
+        assert!(p.contains("ls-files --others --exclude-standard"));
+        assert!(p.contains("checkout path"));
+        assert!(p.contains("git diff --cached <base>"));
         assert!(p.contains("Never push"));
     }
 
@@ -152,7 +156,7 @@ mod tests {
     fn rules_follow_the_flags() {
         assert_eq!(rules(false, false), "");
         let swarm = rules(true, false);
-        assert!(swarm.contains("swarm-search") && swarm.contains("git stash create"));
+        assert!(swarm.contains("swarm-search") && swarm.contains("git stash create") && swarm.contains("checkout path"));
         assert!(!swarm.contains("Advisor"));
         let adv = rules(false, true);
         assert!(adv.contains("Advisor") && !adv.contains("swarm-search"));
