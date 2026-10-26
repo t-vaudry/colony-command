@@ -3,6 +3,7 @@
 
 import type { Daemon } from "./daemon";
 import { costChart } from "./costchart";
+import { modelLine } from "./modelcost";
 import { latencyChart } from "./latencychart";
 import { daySummary } from "./daysummary";
 import { detail, playheadX, REPLAY_FRAMES, timelapse } from "./timelapse";
@@ -476,7 +477,8 @@ export class Hud {
     const t = spentToday(this.daemon.spend, this.daemon.now());
     if (t.tokens === 0) return "";
     const note = t.partial ? " · partial" : "";
-    const why = "Estimate from list prices, since local midnight, all projects." + (t.partial ? " Some sessions ran a model without a known price: their tokens are counted but not their cost." : "");
+    const split = modelLine(t.models);
+    const why = "Estimate from list prices, since local midnight, all projects." + (t.partial ? " Some sessions ran a model without a known price: their tokens are counted but not their cost." : "") + (split ? ` By model: ${split}.` : "");
     return `<button type="button" class="chip spend" data-show-cost title="${esc(why)} Click for cost by project.">${money(t.usd)} today${note} · ${compact(t.tokens)} tokens</button>`;
   }
 
@@ -598,6 +600,12 @@ export class Hud {
     const usageRow = a.tokens && a.tokens.input + a.tokens.output + a.tokens.cache_read + a.tokens.cache_creation > 0
       ? `<div class="fact"><span class="k">Usage</span><span title="Estimate from list prices${a.kind === "main" ? "; includes subagents" : ""}${a.cost_partial ? ". Some tokens were from a model without a known price, so the cost is low." : ""}">${esc(`${compact(a.tokens.input + a.tokens.cache_creation + a.tokens.cache_read)} in · ${compact(a.tokens.output)} out · ${money(a.cost_usd ?? 0)}${a.cost_partial ? " partial" : ""}`)}</span></div>`
       : "";
+    // Where the tokens went, by model; subagents show the model they run.
+    const split = modelLine(a.by_model);
+    const modelUse = split
+      ? `<div class="fact"><span class="k">By model</span><span title="Advisor consultations are priced at the advisor's model, not the main one's.">${esc(split)}</span></div>`
+      : "";
+    const subModel = a.kind === "subagent" && a.model ? `<div class="fact"><span class="k">Model</span><span>${esc(modelLabel(a.model) ?? a.model)}</span></div>` : "";
     const collisionRow = a.collision
       ? `<div class="fact"><span class="k">Overlap</span><span class="reason" title="A warning only: nothing is blocked.">${esc(
           `${a.collision.scope === "file" ? "Also editing" : "Same folder as"} ${a.collision.with.map((w) => this.daemon.agents.get(w)?.name ?? "another bot").join(", ")}: ${a.collision.path.split(/[\\/]/).slice(-2).join("/")}`,
@@ -670,7 +678,7 @@ export class Hud {
       ${field("Objective", "objective", text(a.objective_full ?? a.objective), "short")}
       ${showReply ? field(a.state === "ready_to_review" ? "Result" : "Latest reply", "reply", `<div class="md">${this.mdCached(reply!)}</div>`) : ""}
       <div class="facts">
-        ${diffRow}${collisionRow}${usageRow}
+        ${diffRow}${collisionRow}${subModel}${usageRow}${modelUse}
       </div>
       ${this.modelRows(a)}
       ${
@@ -766,6 +774,10 @@ export class Hud {
           case "reply":
             mark = "Claude";
             body = `<div class="act-text md">${this.mdCached(x.text)}</div>`;
+            break;
+          case "advisor":
+            mark = "◆";
+            body = `<div class="act-text">${esc(x.text)}</div>`;
             break;
           case "problem":
             mark = "!";

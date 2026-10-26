@@ -1,3 +1,4 @@
+import { modelLine } from "./modelcost";
 import { BUCKET_MS, compact, median, money, spentToday, waitText, type ProjectLatency, type ProjectSpend } from "./types";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -40,9 +41,11 @@ export function daySummary(spend: Map<string, ProjectSpend>, latency: Map<string
   const row = (l: Line) =>
     `${l.name}: ${money(l.usd)}${l.partial ? " (partial)" : ""}, ${l.waits.length ? `${l.waits.length} answered, median ${waitText(median(l.waits))}` : "nothing waited on you"}`;
   const day = new Date(now).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
-  const text = [`Colony, ${day}`, head, ...lines.map(row)].join("\n");
+  const split = modelLine(spentToday(spend, now).models);
+  const text = [`Colony, ${day}`, head, ...(split ? [`By model: ${split}`] : []), ...lines.map(row)].join("\n");
   const html =
     `<div class="k">Today so far</div><p><b>${esc(head)}</b></p>` +
+    (split ? `<p class="muted small">${esc(split)}</p>` : "") +
     lines.map((l) => `<div class="row"><span class="k">${esc(l.name)}</span><span>${esc(row(l).slice(l.name.length + 2))}</span></div>`).join("") +
     `<p class="muted small">Since local midnight, from the cost and response ledgers; estimates at list prices.</p>` +
     `<div class="actions"><button type="button" data-copy="${esc(text)}">Copy summary</button></div>`;

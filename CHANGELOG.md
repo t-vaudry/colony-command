@@ -13,6 +13,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 - Crews: in sessions with an advisor, the hook nudges Claude to consult Opus when the
   same error happens twice, before a plan locks, and once before it finishes a turn
   that changed files. These are nudges: the first ExitPlanMode of a turn is bounced once, nothing is blocked for good.
+- Cost by model: a bot's usage and the day's total now show where the money
+  went (for example Sonnet, Haiku and an Opus advisor) with the Opus share,
+  advisor tokens are priced at the advisor's rates, each advisor consult shows
+  on the map, and Colony no longer suggests Opus for planning when an Opus
+  advisor is attached.
 
 ## [0.1.5] - 2026-10-21
 

@@ -80,6 +80,13 @@ export interface Agent {
   cost_usd?: number;
   /** Some tokens were from a model without a known price, so the cost is low. */
   cost_partial?: boolean;
+  /** Tokens and cost split by model; the advisor's share is under an advisor: key. */
+  by_model?: ModelCost[];
+  /** The advisor model attached to the session, e.g. "claude-opus-5-5". */
+  advisor_model?: string | null;
+  /** Advisor consultations so far, and when the latest happened. */
+  consults?: number;
+  last_consult_at?: number | null;
   /** Folder it is working in, relative to its project folder, rolled up (`src/auth`; "" is the project folder). */
   work_dir?: string | null;
   /** Another agent is editing the same file or folder. A warning only; fades on its own. */
@@ -91,7 +98,7 @@ export interface Agent {
 /** One line of an agent's recent history. */
 export interface Activity {
   at: number;
-  kind: "prompt" | "tool" | "reply" | "problem";
+  kind: "prompt" | "tool" | "reply" | "problem" | "advisor";
   text: string;
   /** How a tool call ended; absent while it runs. */
   ok?: boolean;
@@ -325,9 +332,21 @@ export interface Tokens {
   cache_creation: number;
 }
 
+/** What one model accounts for: a family ("sonnet"), or "advisor:opus" for advisor consultations. */
+export interface ModelCost {
+  model: string;
+  tokens: number;
+  cost_usd: number;
+  partial: boolean;
+  /** Advisor consultations; only on advisor keys. */
+  consults?: number;
+}
+
 /** Spend in one 15-minute ledger bucket. */
 export interface Spend {
   tokens: Tokens;
+  /** The same spend split by model. Absent from older daemons. */
+  by_model?: ModelCost[];
   cost_usd: number;
   /** Includes a model without a known price: the cost is low. */
   partial: boolean;
@@ -340,6 +359,18 @@ export interface ProjectSpend {
 }
 
 export const BUCKET_MS = 15 * 60_000;
+
+/** Add `more` into `into`, by model key. */
+export function mergeModels(into: Map<string, ModelCost>, more: ModelCost[] | undefined): void {
+  for (const m of more ?? []) {
+    const t = into.get(m.model) ?? { model: m.model, tokens: 0, cost_usd: 0, partial: false, consults: 0 };
+    t.tokens += m.tokens;
+    t.cost_usd += m.cost_usd;
+    t.partial ||= m.partial;
+    t.consults = (t.consults ?? 0) + (m.consults ?? 0);
+    into.set(m.model, t);
+  }
+}
 
 /** An estimate, so always shown with "~". */
 export function money(usd: number): string {
@@ -355,11 +386,12 @@ export function compact(n: number): string {
 }
 
 /** What a project (or everything, with no key) spent since local midnight. */
-export function spentToday(spend: Map<string, ProjectSpend>, now: number, key?: string): { usd: number; partial: boolean; tokens: number } {
+export function spentToday(spend: Map<string, ProjectSpend>, now: number, key?: string): { usd: number; partial: boolean; tokens: number; models: ModelCost[] } {
   const midnight = new Date(now);
   midnight.setHours(0, 0, 0, 0);
   const from = midnight.getTime() / BUCKET_MS;
-  const out = { usd: 0, partial: false, tokens: 0 };
+  const out = { usd: 0, partial: false, tokens: 0, models: [] as ModelCost[] };
+  const models = new Map<string, ModelCost>();
   for (const [k, p] of spend) {
     if (key !== undefined && k !== key) continue;
     for (const [b, s] of Object.entries(p.buckets)) {
@@ -367,8 +399,10 @@ export function spentToday(spend: Map<string, ProjectSpend>, now: number, key?: 
       out.usd += s.cost_usd;
       out.partial ||= s.partial;
       out.tokens += s.tokens.input + s.tokens.output + s.tokens.cache_read + s.tokens.cache_creation;
+      mergeModels(models, s.by_model);
     }
   }
+  out.models = [...models.values()];
   return out;
 }
 

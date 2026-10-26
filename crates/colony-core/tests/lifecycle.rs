@@ -621,6 +621,9 @@ fn usage(r: &mut Run, sid: &str, agent: Option<&str>, seq: u64, model: &str, inp
             seq,
             model: Some(model.into()),
             tokens: colony_core::Tokens { input, output, cache_read: 0, cache_creation: 0 },
+            advisor: false,
+            consults: 0,
+            advisor_model: None,
         },
     };
     r.colony.apply(&e)

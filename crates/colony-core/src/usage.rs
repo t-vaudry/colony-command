@@ -41,6 +41,44 @@ pub struct Spend {
     pub cost_usd: f64,
     #[serde(default)]
     pub partial: bool,
+    /// The same spend split by model, in the order each first appeared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_model: Vec<ModelCost>,
+}
+
+/// What one model (see `model_key`) accounts for in a `Spend`.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelCost {
+    pub model: String,
+    /// All four kinds of token added up.
+    #[serde(default)]
+    pub tokens: u64,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default)]
+    pub partial: bool,
+    /// Advisor consultations (only on `advisor:` keys).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub consults: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// Add to the entry for `model` in a per-model split, making it if need be.
+pub fn file_under(by_model: &mut Vec<ModelCost>, model: &str, t: &Tokens, cost: Option<f64>, consults: u32) {
+    let i = by_model.iter().position(|m| m.model == model).unwrap_or_else(|| {
+        by_model.push(ModelCost { model: model.to_string(), ..Default::default() });
+        by_model.len() - 1
+    });
+    let m = &mut by_model[i];
+    m.tokens += t.total();
+    m.consults += consults;
+    match cost {
+        Some(c) => m.cost_usd += c,
+        None => m.partial = true,
+    }
 }
 
 impl Spend {
@@ -50,6 +88,28 @@ impl Spend {
             Some(c) => self.cost_usd += c,
             None => self.partial = true,
         }
+    }
+
+    /// As `add`, and filed under the model (`model_key`) that spent it.
+    pub fn add_for(&mut self, model: &str, t: &Tokens, cost: Option<f64>, consults: u32) {
+        self.add(t, cost);
+        file_under(&mut self.by_model, model, t, cost, consults);
+    }
+
+    /// The entry for a model key, if it has spent anything.
+    pub fn model(&self, model: &str) -> Option<&ModelCost> {
+        self.by_model.iter().find(|m| m.model == model)
+    }
+}
+
+/// Key for the per-model split: the family ("opus"), `advisor:` before it for
+/// advisor consultations, "other" for a model that isn't a known family.
+pub fn model_key(model: Option<&str>, advisor: bool) -> String {
+    let name = model.and_then(crate::models::family).map_or("other", |f| f.key());
+    if advisor {
+        format!("advisor:{name}")
+    } else {
+        name.to_string()
     }
 }
 

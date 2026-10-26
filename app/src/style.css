@@ -1354,6 +1354,9 @@ details.menu[open] > summary {
   color: var(--accent);
   font-weight: 600;
 }
+.act.advisor .act-mark {
+  color: var(--accent);
+}
 .act.reply .act-mark {
   color: var(--done);
   font-weight: 600;

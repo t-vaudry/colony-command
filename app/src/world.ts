@@ -5,7 +5,7 @@
 import { Application, Container, Graphics, Particle, ParticleContainer, Text, type Texture } from "pixi.js";
 import type { Daemon } from "./daemon";
 import { prefs } from "./prefs";
-import { money, spentToday, type Agent, type AgentState } from "./types";
+import { modelLabel, money, spentToday, type Agent, type AgentState } from "./types";
 
 interface Palette {
   ground: number;
@@ -82,6 +82,8 @@ interface Body {
   glyph: Text | null;
   /** Changed-file counts under a package on the dock. */
   diff: Text | null;
+  /** "Opus consult" tag, shown briefly after an advisor call. */
+  consult: Text | null;
   /** Cached home spot, cleared when the layout changes. */
   home: { x: number; y: number } | null;
   inView: boolean;
@@ -135,6 +137,8 @@ function hash(s: string): number {
   return h >>> 0;
 }
 
+/** How long the consult tag stays over a bot. */
+const CONSULT_MS = 8000;
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 /** Only bots at work show a collision: ones on the porch or dock are not editing. */
 const EDITING: AgentState[] = ["working"];
@@ -291,6 +295,7 @@ export class World {
         b.label?.destroy();
         b.glyph?.destroy();
         b.diff?.destroy();
+        b.consult?.destroy();
         if (b.ring) this.dots.removeParticle(b.ring);
         if (b.dot) this.dots.removeParticle(b.dot);
         this.bodies.delete(id);
@@ -434,6 +439,7 @@ export class World {
       label: null,
       glyph: null,
       diff: null,
+      consult: null,
       dir: "",
     };
   }
@@ -1077,7 +1083,23 @@ export class World {
     if (b.diff) b.diff.visible = false;
   }
 
+  /** A short "Opus consult" tag over a bot that just asked its advisor. */
+  private placeConsult(a: Agent, b: Body, r: number, alpha: number): void {
+    const age = a.last_consult_at ? Date.now() - a.last_consult_at : Infinity;
+    if (age < 0 || age > CONSULT_MS || this.tier >= 2) {
+      if (b.consult) b.consult.visible = false;
+      return;
+    }
+    const tag = (b.consult ??= this.text(10, this.pal.accent, "700"));
+    const text = `${modelLabel(a.advisor_model ?? null)?.split(" ")[0] ?? "Advisor"} consult`;
+    if (tag.text !== text) tag.text = text;
+    tag.visible = true;
+    tag.position.set(b.x, b.y - r - 24);
+    tag.alpha = alpha * Math.min(1, (CONSULT_MS - age) / 1500);
+  }
+
   private placeLabel(a: Agent, b: Body, r: number, alpha: number): void {
+    this.placeConsult(a, b, r, alpha);
     const show = this.selected === a.id || (this.tier < 2 && (a.kind === "main" || this.cam.s > 1.6));
     if (!show) {
       if (b.label) b.label.visible = false;
