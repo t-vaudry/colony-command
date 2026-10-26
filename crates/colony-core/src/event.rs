@@ -182,6 +182,10 @@ pub enum DomainEvent {
         consults: u32,
         #[serde(default)]
         advisor_model: Option<String>,
+        /// The first line seen of this API response (a response is written as several
+        /// transcript lines, later ones only growing its usage): the count of assistant turns.
+        #[serde(default)]
+        new_message: bool,
     },
     /// The crew colonyd started this session with, resolved (see `crew::resolve`).
     /// `id` is the crew's id; the models are as launched, `None` for "Claude Code's choice".

@@ -42,6 +42,8 @@ struct Seen {
     main: Tokens,
     advisor: Tokens,
     consults: u32,
+    /// A usage event for the main model went out already: later lines are not a new turn.
+    counted: bool,
 }
 
 struct FileState {
@@ -179,6 +181,11 @@ impl UsageReader {
             consults = u.consults.saturating_sub(before.consults);
             before.consults = before.consults.max(u.consults);
         }
+        let new_message = !tokens.is_zero()
+            && match u.message_key.as_ref().and_then(|k| self.by_message.get_mut(k)) {
+                Some(seen) => !std::mem::replace(&mut seen.counted, true),
+                None => true,
+            };
         let session = u.session.unwrap_or_else(|| file_session.to_string());
         let agent = file_agent.clone().or_else(|| if u.sidechain { u.agent } else { None });
         let ts = u.ts.unwrap_or_else(crate::now_ms);
@@ -198,6 +205,7 @@ impl UsageReader {
                     advisor,
                     consults,
                     advisor_model: u.advisor_model.clone(),
+                    new_message: new_message && !advisor,
                 },
             });
         };
@@ -452,6 +460,9 @@ mod tests {
         assert_eq!(got[1], (2, "claude-opus-5-5".into(), opus_a, true, 1));
         assert_eq!((got[2].3, got[2].4, got[3].0, got[3].2.input), (false, 0, 4, 31_000));
         assert_eq!(got[3].4, 1);
+        // Several lines per message, but only two distinct messages: two turns.
+        let turns = ev.iter().filter(|e| matches!(e.event, DomainEvent::UsageUpdated { new_message: true, .. })).count();
+        assert_eq!(turns, 2);
         // The consultation is stamped when its message was first written.
         assert_eq!(ev[1].ts, parse_rfc3339_ms("2026-10-09T14:03:02.000Z").unwrap());
         let _ = fs::remove_dir_all(&d);

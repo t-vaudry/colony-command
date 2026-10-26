@@ -190,9 +190,33 @@ pub struct CrewHealth {
     pub sub_consults: Vec<Count>,
     #[serde(default)]
     pub nudges: Vec<NudgeStat>,
-    /// Kinds of nudges sent and not yet followed or abandoned (a new prompt abandons them).
+    /// The last few nudges and advisor consults (or audits) with their times, so follow-through is
+    /// decided by `ts` and not by which of the two reached the reducer first.
     #[serde(default)]
-    pub open_nudges: Vec<String>,
+    pub recent_nudges: Vec<RecentNudge>,
+    /// `(ts, audit)`: `audit` is a swarm-audit start, which only answers a `done` nudge.
+    #[serde(default)]
+    pub recent_answers: Vec<(u64, bool)>,
+}
+
+/// How many recent nudges and answers are kept for matching.
+const RECENT_KEEP: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecentNudge {
+    pub kind: String,
+    pub ts: u64,
+    /// The next prompt after it, which ends its window.
+    #[serde(default)]
+    pub until: Option<u64>,
+    #[serde(default)]
+    pub followed: bool,
+}
+
+impl RecentNudge {
+    fn answered_by(&self, ts: u64, audit: bool) -> bool {
+        !self.followed && self.ts <= ts && self.until.is_none_or(|u| ts < u) && (!audit || self.kind == "done")
+    }
 }
 
 impl CrewHealth {
@@ -211,25 +235,50 @@ impl CrewHealth {
         }
     }
 
-    fn nudge_sent(&mut self, kind: &str) {
-        match self.nudges.iter_mut().find(|s| s.kind == kind) {
-            Some(s) => s.sent += 1,
-            None => self.nudges.push(NudgeStat { kind: kind.to_string(), sent: 1, followed: 0 }),
-        }
-        self.open_nudges.push(kind.to_string());
+    fn stat(&mut self, kind: &str) -> &mut NudgeStat {
+        let i = match self.nudges.iter().position(|s| s.kind == kind) {
+            Some(i) => i,
+            None => {
+                self.nudges.push(NudgeStat { kind: kind.to_string(), sent: 0, followed: 0 });
+                self.nudges.len() - 1
+            }
+        };
+        &mut self.nudges[i]
     }
 
-    /// The advisor was consulted (`audit`: a swarm-audit started instead, which only answers a `done`).
-    fn nudges_followed(&mut self, audit: bool) {
-        let open = std::mem::take(&mut self.open_nudges);
-        for kind in open {
-            if audit && kind != "done" {
-                self.open_nudges.push(kind);
-                continue;
-            }
-            if let Some(s) = self.nudges.iter_mut().find(|s| s.kind == kind) {
-                s.followed += 1;
-            }
+    fn nudge_sent(&mut self, kind: &str, ts: u64) {
+        self.stat(kind).sent += 1;
+        let mut n = RecentNudge { kind: kind.to_string(), ts, until: None, followed: false };
+        // An answer that was applied before the nudge it answers.
+        if self.recent_answers.iter().any(|&(at, audit)| n.answered_by(at, audit)) {
+            n.followed = true;
+            self.stat(kind).followed += 1;
+        }
+        self.recent_nudges.push(n);
+        if self.recent_nudges.len() > RECENT_KEEP {
+            self.recent_nudges.remove(0);
+        }
+    }
+
+    /// A new prompt ends the window of the nudges before it.
+    fn prompt_at(&mut self, ts: u64) {
+        for n in self.recent_nudges.iter_mut().filter(|n| n.until.is_none() && n.ts <= ts) {
+            n.until = Some(ts);
+        }
+    }
+
+    /// The advisor was consulted at `ts` (`audit`: a swarm-audit started instead, which only answers a `done`).
+    /// Whatever the order events reached us in, it counts for the nudges whose window holds `ts`.
+    fn answered(&mut self, ts: u64, audit: bool) {
+        self.recent_answers.push((ts, audit));
+        if self.recent_answers.len() > RECENT_KEEP {
+            self.recent_answers.remove(0);
+        }
+        let hit: Vec<usize> = (0..self.recent_nudges.len()).filter(|&i| self.recent_nudges[i].answered_by(ts, audit)).collect();
+        for i in hit {
+            self.recent_nudges[i].followed = true;
+            let kind = self.recent_nudges[i].kind.clone();
+            self.stat(&kind).followed += 1;
         }
     }
 }
@@ -837,13 +886,13 @@ impl Colony {
                 }
                 main.consecutive_failures = 0;
                 // A nudge not followed by now is not going to be.
-                main.crew_health.open_nudges.clear();
+                main.crew_health.prompt_at(e.ts);
                 main.set_state(AgentState::Working, None, e.ts);
             }
             DomainEvent::CrewSet { id, label, model, advisor, swarm_model } => {
                 main.crew = Some(CrewInfo { id: id.clone(), label: label.clone(), model: model.clone(), advisor: advisor.clone(), swarm_model: swarm_model.clone() });
             }
-            DomainEvent::NudgeSent { kind } => main.crew_health.nudge_sent(kind),
+            DomainEvent::NudgeSent { kind } => main.crew_health.nudge_sent(kind, e.ts),
             DomainEvent::ToolStarted { agent_id, tool, target, tool_use_id, background } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
                 settle_if_after(a, e.ts);
@@ -985,7 +1034,7 @@ impl Colony {
                     let health = &mut self.agents.get_mut(&sid).expect("main agent exists").crew_health;
                     CrewHealth::bump(&mut health.delegated, t, 1);
                     if t == "swarm-audit" {
-                        health.nudges_followed(true);
+                        health.answered(e.ts, true);
                     }
                 }
             }
@@ -1178,7 +1227,7 @@ impl Colony {
     /// transcript lines are not agent activity, and usage for a session that is
     /// off the map (ended, dismissed) still counts toward the project's spend.
     fn apply_usage(&mut self, e: &Envelope) -> Vec<String> {
-        let DomainEvent::UsageUpdated { agent_id, seq, model, tokens, advisor, consults, advisor_model } = &e.event else { return Vec::new() };
+        let DomainEvent::UsageUpdated { agent_id, seq, model, tokens, advisor, consults, advisor_model, new_message } = &e.event else { return Vec::new() };
         let sid = &e.session_id;
         let own = agent_id.as_deref().map_or_else(|| sid.clone(), |a| sub_id(sid, a));
         let last = self.usage_seq.entry(own.clone()).or_insert(0);
@@ -1214,8 +1263,8 @@ impl Colony {
                 if a.kind == AgentKind::Subagent && !*advisor && a.model.is_none() {
                     a.model = model.clone();
                 }
-                // One usage line per assistant message, which is what `maxTurns` counts.
-                if a.kind == AgentKind::Subagent && !*advisor {
+                // Distinct assistant messages, which is what `maxTurns` counts.
+                if a.kind == AgentKind::Subagent && *new_message {
                     a.turns += 1;
                 }
                 if *advisor {
@@ -1237,7 +1286,7 @@ impl Colony {
                 match who {
                     None => {
                         health.main_consults += consults;
-                        health.nudges_followed(false);
+                        health.answered(e.ts, false);
                     }
                     Some(t) => CrewHealth::bump(&mut health.sub_consults, &t, *consults),
                 }
@@ -1804,7 +1853,7 @@ mod tests {
         let env = |ts, event| Envelope { ts, host: HostId::Windows, session_id: "s".into(), cwd: Some("C:/x/p".into()), event };
         let mut c = Colony::new();
         c.apply(&env(1_000, DomainEvent::SessionStarted { source: None, model: None }));
-        c.apply(&env(2_000, DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: None, tokens: Default::default(), advisor: false, consults: 0, advisor_model: None }));
+        c.apply(&env(2_000, DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: None, tokens: Default::default(), advisor: false, consults: 0, advisor_model: None, new_message: false }));
         assert!(c.usage_seq.contains_key("s"));
         c.apply(&env(3_000, DomainEvent::SessionEnded));
         c.tick(3_000 + ENDED_TTL_MS + 1_000);

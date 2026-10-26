@@ -77,6 +77,7 @@ impl Run {
                 advisor,
                 consults,
                 advisor_model: None,
+                new_message: !advisor,
             },
         });
     }
@@ -138,6 +139,109 @@ fn a_swarm_agent_that_uses_all_its_turns_is_flagged() {
 }
 
 #[test]
+fn growing_lines_of_one_message_are_one_turn() {
+    let mut r = Run::new();
+    r.start("g1", "swarm-grep");
+    r.messages(Some("g1"), 2);
+    // Two more lines of the last message: usage grew, but it is no new turn.
+    for _ in 0..2 {
+        r.t += 1_000;
+        r.seq += 1;
+        r.colony.apply(&Envelope {
+            ts: r.t,
+            host: HostId::Windows,
+            session_id: SID.into(),
+            cwd: Some(CWD.into()),
+            event: DomainEvent::UsageUpdated {
+                agent_id: Some("g1".into()),
+                seq: r.seq,
+                model: Some("claude-haiku-5-5".into()),
+                tokens: Tokens { output: 5, ..Default::default() },
+                advisor: false,
+                consults: 0,
+                advisor_model: None,
+                new_message: false,
+            },
+        });
+    }
+    assert_eq!(r.sub("g1").turns, 2);
+    assert_eq!(r.sub("g1").tokens.output, 2 * 10 + 2 * 5, "the tokens still count");
+}
+
+/// Applies a main-session consult stamped `ts`, whenever it reaches the reducer.
+fn consult_at(r: &mut Run, ts: u64) {
+    r.seq += 1;
+    r.colony.apply(&Envelope {
+        ts,
+        host: HostId::Windows,
+        session_id: SID.into(),
+        cwd: Some(CWD.into()),
+        event: DomainEvent::UsageUpdated {
+            agent_id: None,
+            seq: r.seq,
+            model: Some("claude-opus-5-5".into()),
+            tokens: Tokens { input: 1, ..Default::default() },
+            advisor: true,
+            consults: 1,
+            advisor_model: None,
+            new_message: false,
+        },
+    });
+}
+
+fn followed(r: &Run, kind: &str) -> u32 {
+    r.main().crew_health.nudges.iter().find(|s| s.kind == kind).map_or(0, |s| s.followed)
+}
+
+#[test]
+fn follow_through_goes_by_timestamps_in_either_arrival_order() {
+    // Consult in the nudge's turn, applied after the next prompt already was: still followed.
+    let mut r = Run::new();
+    r.nudge("twice"); // at t0
+    let nudged = r.t;
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "next"}));
+    let prompted = r.t;
+    consult_at(&mut r, nudged + 500);
+    assert!(nudged + 500 < prompted);
+    assert_eq!(followed(&r, "twice"), 1);
+
+    // A consult after the next prompt is too late, however it arrives.
+    consult_at(&mut r, prompted + 500);
+    assert_eq!(followed(&r, "twice"), 1, "nothing to double count");
+    r.nudge("plan");
+    let plan_at = r.t;
+    r.hook(json!({"hook_event_name": "UserPromptSubmit", "prompt": "later"}));
+    let late = r.t + 500;
+    consult_at(&mut r, late);
+    assert_eq!(followed(&r, "plan"), 0);
+    assert!(plan_at < r.t);
+
+    // The consult applied before its nudge (transcript polled first).
+    let mut r = Run::new();
+    let before = r.t + 1_500;
+    consult_at(&mut r, before);
+    r.nudge("done"); // stamped r.t + 1000 < before
+    assert_eq!(followed(&r, "done"), 1);
+
+    // And a consult from before the nudge does not count.
+    let mut r = Run::new();
+    let early = r.t - 10;
+    consult_at(&mut r, early);
+    r.nudge("done");
+    assert_eq!(followed(&r, "done"), 0);
+}
+
+#[test]
+fn only_a_few_recent_nudges_are_remembered() {
+    let mut r = Run::new();
+    for _ in 0..20 {
+        r.nudge("twice");
+    }
+    assert!(r.main().crew_health.recent_nudges.len() <= 8);
+    assert_eq!(r.main().crew_health.nudges[0].sent, 20);
+}
+
+#[test]
 fn advisor_consults_are_told_apart_by_who_made_them() {
     let mut r = Run::new();
     r.start("g1", "swarm-grep");
@@ -174,7 +278,7 @@ fn one_consult_answers_every_open_nudge() {
     r.nudge("done");
     r.consult(None);
     let h = &r.main().crew_health;
-    assert!(h.nudges.iter().all(|s| s.followed == 1) && h.open_nudges.is_empty());
+    assert!(h.nudges.iter().all(|s| s.followed == 1));
 }
 
 #[test]
@@ -195,7 +299,6 @@ fn a_done_nudge_is_also_followed_by_an_audit_but_other_kinds_are_not() {
     let h = &r.main().crew_health;
     let followed = |k: &str| h.nudges.iter().find(|s| s.kind == k).unwrap().followed;
     assert_eq!((followed("done"), followed("plan")), (1, 0));
-    assert_eq!(h.open_nudges, vec!["plan".to_string()]);
     assert_eq!(n(&h.delegated, "swarm-audit"), 1);
 }
 

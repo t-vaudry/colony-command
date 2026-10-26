@@ -50,6 +50,7 @@ impl Run {
                 advisor,
                 consults,
                 advisor_model: attached.map(str::to_string),
+                new_message: false,
             },
         });
     }
@@ -126,7 +127,7 @@ fn each_consult_is_an_activity_for_the_map() {
         host: HostId::Windows,
         session_id: SID.into(),
         cwd: None,
-        event: DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: Some("claude-opus-5-5".into()), tokens: Tokens { input: 1, ..Default::default() }, advisor: true, consults: 1, advisor_model: None },
+        event: DomainEvent::UsageUpdated { agent_id: None, seq: 1, model: Some("claude-opus-5-5".into()), tokens: Tokens { input: 1, ..Default::default() }, advisor: true, consults: 1, advisor_model: None, new_message: false },
     };
     r.colony.apply(&replay);
     assert_eq!(r.colony.agents[SID].consults, again);
