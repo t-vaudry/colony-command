@@ -148,6 +148,9 @@ pub enum DomainEvent {
     PauseRequested,
     /// The pause was taken back before it happened.
     PauseCancelled,
+    /// Colony moved this bot to a cheaper setup because it reached its budget,
+    /// or undid that. `text` is what the activity feed says.
+    BudgetStep { text: String },
     /// Colony stopped the session's process between turns. The conversation is
     /// on disk; resuming starts it again with `--resume`. The envelope `ts` is
     /// when it happened: hook events from before that belong to the old process.

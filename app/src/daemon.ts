@@ -3,6 +3,7 @@
 // input) go back over the same socket.
 
 import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest } from "./types";
+import type { NoticeAction } from "./budget";
 
 interface DaemonInfo {
   port: number;
@@ -16,6 +17,10 @@ export interface DaemonSettings {
   haiku_key_present: boolean;
   /** Percent of the context window at which Colony warns that a bot's context is getting full. */
   context_pct?: number;
+  /** Spend caps in USD; unset is no limit. */
+  budget_bot_usd?: number | null;
+  budget_day_usd?: number | null;
+  budget_overrides?: Record<string, number>;
 }
 
 type Message =
@@ -35,7 +40,7 @@ type Message =
   | { type: "remove"; id: string }
   | { type: "spawned"; term: string; session_id: string }
   | { type: "term_data"; term: string; data: string; reset: boolean }
-  | { type: "notice"; message: string }
+  | { type: "notice"; message: string; actions?: NoticeAction[] }
   | { type: "error"; message: string };
 
 export type ConnectionStatus = "connecting" | "live" | "offline";
@@ -85,13 +90,15 @@ export class Daemon {
   error: string | null = null;
   /** Daemon clock minus local clock, so durations match the daemon's timestamps. */
   skew = 0;
+  private clockOffset: number | null = null;
+  private clockTimer: ReturnType<typeof setInterval> | undefined;
   private info: DaemonInfo | null = null;
   private downSince: number | null = null;
   private ws: WebSocket | null = null;
   private listeners = new Set<() => void>();
   private termListeners = new Set<(term: string, bytes: Uint8Array, reset: boolean) => void>();
   private errorListeners = new Set<(message: string) => void>();
-  private noticeListeners = new Set<(message: string) => void>();
+  private noticeListeners = new Set<(message: string, actions?: NoticeAction[]) => void>();
   /** Spawn replies arrive in the order spawns were sent. */
   private crewChecks = new Map<number, (c: CrewCheck) => void>();
   private crewCheckSeq = 0;
@@ -106,7 +113,7 @@ export class Daemon {
   }
 
   /** Something Colony did on its own that the user should hear about. */
-  onNotice(fn: (message: string) => void): void {
+  onNotice(fn: (message: string, actions?: NoticeAction[]) => void): void {
     this.noticeListeners.add(fn);
   }
 
@@ -169,6 +176,8 @@ export class Daemon {
         this.rules = m.rules ?? [];
         this.offers = new Map(Object.entries(m.offers ?? {}));
         this.settings = m.settings ?? this.settings;
+        // The day cap counts from the map's local midnight, which only this clock knows.
+        this.syncClock(true);
         this.skew = m.now - Date.now();
         this.status = "live";
         this.error = null;
@@ -230,7 +239,7 @@ export class Daemon {
         return;
       }
       case "notice":
-        for (const fn of this.noticeListeners) fn(m.message);
+        for (const fn of this.noticeListeners) fn(m.message, m.actions);
         return;
       case "error": {
         // A failed spawn reports here too; otherwise it's about some other command.
@@ -279,6 +288,25 @@ export class Daemon {
   /** Turn the opt-in Haiku classifier for unclear endings on or off. */
   setClassifier(enabled: boolean): boolean {
     return this.send({ type: "set_classifier", enabled });
+  }
+
+  /** Tell the daemon this clock's UTC offset: on connecting (`force`), and again whenever it
+   *  changes, e.g. when daylight saving starts in a long-running window. */
+  private syncClock(force = false): void {
+    const offset = -new Date().getTimezoneOffset();
+    if (!force && offset === this.clockOffset) return;
+    if (this.send({ type: "clock", utc_offset_min: offset })) this.clockOffset = offset;
+    this.clockTimer ??= setInterval(() => this.syncClock(), 60_000);
+  }
+
+  /** Set the per-bot and per-day spend caps in USD; null switches one off. */
+  setBudgets(bot: number | null, day: number | null): boolean {
+    return this.send({ type: "set_budgets", bot, day });
+  }
+
+  /** A command a notice's button carries (raise a cap, undo a step down). */
+  sendCommand(command: object): boolean {
+    return this.send(command);
   }
 
   /** Mark finished work reviewed, or clear a crash. False if not connected. */
