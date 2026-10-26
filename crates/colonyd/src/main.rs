@@ -102,12 +102,39 @@ pub(crate) fn local_host() -> HostId {
     }
 }
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const MARKER_LEN: usize = colony_source::daemon_info::VERSION_MARKER_PREFIX.len() + VERSION.len() + 1;
+
+const fn version_marker() -> [u8; MARKER_LEN] {
+    let mut out = [0u8; MARKER_LEN];
+    let (prefix, version) = (colony_source::daemon_info::VERSION_MARKER_PREFIX.as_bytes(), VERSION.as_bytes());
+    let mut i = 0;
+    while i < prefix.len() {
+        out[i] = prefix[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < version.len() {
+        out[i + j] = version[j];
+        j += 1;
+    }
+    out
+}
+
+/// `COLONYD-VERSION:<version>\0` in the file, so the app can read the version of the
+/// colonyd on disk without running it (see `daemon_info::version_from_bytes`).
+#[used]
+static VERSION_MARKER: [u8; MARKER_LEN] = version_marker();
+
 #[tokio::main]
 async fn main() {
-    // The app asks this of the colonyd file next to it before replacing a running one.
-    // Nothing else may happen first: no logging, no COLONY_HOME, no daemon.
+    // For people and scripts. (The app reads the marker instead of running this: an old
+    // colonyd doesn't know the flag and would start a daemon.) Nothing else may happen
+    // first: no logging, no COLONY_HOME, no daemon.
     if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("{}", env!("CARGO_PKG_VERSION"));
+        // Referenced, so the linker can't drop the marker.
+        std::hint::black_box(&VERSION_MARKER);
+        println!("{VERSION}");
         return;
     }
     if let Some(w) = colony_source::process::elevation_warning("colonyd") {

@@ -117,7 +117,32 @@ pub enum Bundled {
     Unknown,
 }
 
-/// Reads the output of `colonyd --version` against the app's own version.
+/// colonyd embeds `COLONYD-VERSION:<version>\0` in its file, so the app can learn the
+/// version of the file on disk without running it (an old colonyd would start a daemon).
+pub const VERSION_MARKER_PREFIX: &str = "COLONYD-VERSION:";
+
+/// The version in the first well-formed marker in a colonyd file's bytes, if any. Other
+/// occurrences of the prefix (this code's own constant) are skipped unless a version and
+/// a NUL follow.
+pub fn version_from_bytes(bytes: &[u8]) -> Option<String> {
+    let prefix = VERSION_MARKER_PREFIX.as_bytes();
+    let mut from = 0;
+    while let Some(at) = bytes.get(from..)?.windows(prefix.len()).position(|w| w == prefix) {
+        let start = from + at + prefix.len();
+        let rest = &bytes[start..];
+        if let Some(end) = rest.iter().take(65).position(|&b| b == 0) {
+            if let Ok(v) = std::str::from_utf8(&rest[..end]) {
+                if parse_version(v).is_some() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+        from = start;
+    }
+    None
+}
+
+/// The version read from the colonyd file (`None`: no marker, an old file) against the app's own.
 pub fn judge_bundled(app_version: &str, output: Option<&str>) -> Bundled {
     match output.map(str::trim) {
         Some(v) if v == app_version => Bundled::Current,
@@ -257,6 +282,18 @@ pub fn terminate(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_marker_in_bytes() {
+        let mut file = b"MZ....junk".to_vec();
+        file.extend_from_slice(b"COLONYD-VERSION:not a version\0more");
+        file.extend_from_slice(b"COLONYD-VERSION:");
+        file.extend_from_slice(b"0.1.7\0tail");
+        assert_eq!(version_from_bytes(&file).as_deref(), Some("0.1.7"));
+        assert_eq!(version_from_bytes(b"an old colonyd with no marker"), None);
+        assert_eq!(version_from_bytes(b"COLONYD-VERSION:0.1.7"), None, "no NUL");
+        assert_eq!(version_from_bytes(b""), None);
+    }
 
     #[test]
     fn reads_the_bundled_version() {

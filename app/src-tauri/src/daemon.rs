@@ -161,46 +161,13 @@ fn stop(d: &DaemonInfo) -> Result<String, String> {
     Ok(image)
 }
 
-/// What the colonyd file next to this app says it is. An old file without `--version`
-/// would start a daemon instead of answering, so it runs against a scratch COLONY_HOME
-/// and an ephemeral port, and is killed (by its own handle) if it is still running
-/// after a few seconds. Anything but a clean version answer is `Unknown`.
+/// The version of the colonyd file next to this app, read from the bytes of the file
+/// (the marker colonyd embeds), never by running it: an old colonyd would start a daemon,
+/// and a colony-ptyd that outlives it. No marker (an old file) or no file is `Unknown`.
 fn bundled_version() -> Bundled {
     let Ok(exe) = daemon_exe() else { return Bundled::Unknown };
-    let scratch = std::env::temp_dir().join(format!("colony-version-probe-{}", std::process::id()));
-    let mut cmd = Command::new(&exe);
-    cmd.arg("--version")
-        .env("COLONY_HOME", &scratch)
-        .env("COLONY_PORT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let Ok(mut child) = cmd.spawn() else { return Bundled::Unknown };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let finished = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            _ => break false,
-        }
-    };
-    let mut out = String::new();
-    if finished {
-        if let Some(so) = child.stdout.take() {
-            let _ = so.take(256).read_to_string(&mut out);
-        }
-    } else {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    let _ = std::fs::remove_dir_all(&scratch);
-    daemon_info::judge_bundled(APP_VERSION, finished.then_some(out.as_str()))
+    let found = std::fs::read(&exe).ok().and_then(|bytes| daemon_info::version_from_bytes(&bytes));
+    daemon_info::judge_bundled(APP_VERSION, found.as_deref())
 }
 
 /// The banner text when the update didn't finish, until a daemon of this version runs.
