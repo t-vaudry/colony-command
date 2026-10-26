@@ -74,7 +74,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
+    json!({ "type": "snapshot", "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "crew_folders": crate::crews::folders(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
@@ -126,6 +126,12 @@ enum Command {
     SaveCrew { crew: colony_core::crew::Crew },
     /// Remove a saved crew, or reset a built-in crew to how Colony ships it.
     DeleteCrew { id: String },
+    /// Make a crew the default for a folder (kept in Colony's folder, not the repository).
+    SetFolderCrew { host: colony_core::HostId, dir: String, crew: String },
+    /// Forget a folder's default crew.
+    ClearFolderCrew { host: colony_core::HostId, dir: String },
+    /// The default crew of a folder, if any; answered with `folder_crew`.
+    FolderCrew { req: u64, host: colony_core::HostId, dir: String },
     /// Whether a crew choice can start, and what will be limited; answered with `crew_check`.
     CheckCrew {
         req: u64,
@@ -283,8 +289,19 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
             let _ = shared.deltas.send(json!({ "type": "crews", "items": all }).to_string());
             None
         }),
+        Command::SetFolderCrew { host, dir, crew } => crate::crews::set_folder_crew(&host, &dir, &crew).map(|all| {
+            let _ = shared.deltas.send(json!({ "type": "crew_folders", "items": all }).to_string());
+            None
+        }),
+        Command::ClearFolderCrew { host, dir } => crate::crews::clear_folder_crew(&host, &dir).map(|all| {
+            let _ = shared.deltas.send(json!({ "type": "crew_folders", "items": all }).to_string());
+            None
+        }),
+        Command::FolderCrew { req, host, dir } => {
+            Ok(Some(json!({ "type": "folder_crew", "req": req, "crew": crate::crews::folder_crew(&host, &dir) }).to_string()))
+        }
         Command::CheckCrew { req, host, pick, model } => {
-            let c = crate::crews::check(host.as_ref(), &pick, model.as_deref());
+            let c =crate::crews::check(host.as_ref(), &pick, model.as_deref());
             Ok(Some(json!({ "type": "crew_check", "req": req, "error": c.error, "warnings": c.warnings }).to_string()))
         }
         Command::Attach { term } => {
@@ -1292,6 +1309,10 @@ mod crew_command_tests {
             }
             _ => panic!("wrong command"),
         }
+        let c: Command = serde_json::from_str(r#"{"type":"set_folder_crew","host":"win","dir":"C:/w","crew":"light"}"#).unwrap();
+        assert!(matches!(c, Command::SetFolderCrew { crew, .. } if crew == "light"));
+        let c: Command = serde_json::from_str(r#"{"type":"clear_folder_crew","host":"wsl:Ubuntu","dir":"/home/u/w"}"#).unwrap();
+        assert!(matches!(c, Command::ClearFolderCrew { .. }));
         let c: Command = serde_json::from_str(r#"{"type":"spawn","host":"win","dir":"C:/w","crew":"default","swarm":"none"}"#).unwrap();
         assert!(matches!(c, Command::Spawn(r) if r.crew.as_deref() == Some("default") && r.swarm.as_deref() == Some("none")));
     }

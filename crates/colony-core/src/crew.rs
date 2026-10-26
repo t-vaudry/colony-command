@@ -16,6 +16,8 @@ use crate::swarm;
 pub const NONE: &str = "none";
 /// The crew a new bot gets unless told otherwise.
 pub const DEFAULT_CREW: &str = "default";
+/// The lighter crew for small jobs: Haiku builds, Sonnet advises, no swarm.
+pub const LIGHT_CREW: &str = "light";
 /// Crew that sets nothing: Claude Code behaves as it does outside Colony.
 pub const CLAUDE_DEFAULTS: &str = "claude-defaults";
 /// `--effort` levels Claude Code accepts.
@@ -70,6 +72,7 @@ pub fn builtins() -> Vec<Crew> {
     };
     vec![
         crew(DEFAULT_CREW, "Sonnet builds · Haiku swarms · Opus reviews", Some("sonnet"), Some("opus"), Some("haiku")),
+        crew(LIGHT_CREW, "Haiku builds · Sonnet reviews", Some("haiku"), Some("sonnet"), None),
         crew("opus-solo", "Opus alone", Some("opus"), None, None),
         crew(CLAUDE_DEFAULTS, "Claude Code's defaults", None, None, None),
     ]
@@ -190,6 +193,108 @@ impl Resolved {
     }
 }
 
+/// What `suggest` thinks of a prompt: a crew and the reason, in the words the
+/// dialog shows after "Suggested: <crew>,".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Suggestion {
+    pub crew: &'static str,
+    pub why: String,
+}
+
+// Word stems (a word starting with one counts) and phrases that mark a job as
+// large or open-ended. The same lists live in app/src/crewsuggest.ts; both
+// are tested against crates/colony-core/tests/crew-suggest.json.
+const BIG_STEMS: &[&str] = &["refactor", "migrat", "redesign", "design", "architect", "rewrit", "overhaul", "flak", "intermittent", "deadlock", "concurren", "scalab"];
+const BIG_PHRASES: &[&str] = &["across the", "from scratch", "all the files", "all files", "every file", "entire", "whole codebase", "race condition", "memory leak", "root cause", "end to end", "new feature", "randomly", "sometimes"];
+// Signs a "small" ask could be bigger than it sounds. Unsure beats wrong.
+const DOUBT_STEMS: &[&str] = &["break", "broke", "crash", "regress", "secur", "vulnerab", "pipeline", "whole", "fail", "outage"];
+const DOUBT_WORDS: &[&str] = &["production", "prod", "auth", "payment", "payments", "billing", "database", "db"];
+const DOUBT_PHRASES: &[&str] = &["doesn't work", "doesnt work", "not working", "isn't working", "stopped working"];
+const SMALL_STEMS: &[&str] = &["typo", "misspell", "spelling", "rename", "bump", "lint", "eslint", "clippy", "prettier", "rustfmt", "whitespace", "indent", "docstring", "changelog"];
+const SMALL_WORDS: &[&str] = &["comment", "comments"];
+const SMALL_PHRASES: &[&str] = &["one line", "one-line", "single line", "1 line", "unused import", "unused variable", "log line", "update the version"];
+const QUESTION_STARTS: &[&str] = &["what", "whats", "why", "how", "where", "which", "who", "when", "explain", "describe", "summarize", "summarise", "tell", "walk"];
+const ACTION_STEMS: &[&str] = &["fix", "implement", "chang", "updat", "writ", "creat", "remov", "delet", "edit", "generat", "convert", "install", "deploy"];
+const ACTION_WORDS: &[&str] = &["add", "make", "run", "set", "put", "move"];
+const SINGLE_FILE_VERBS: &[&str] = &["change", "set", "replace", "swap", "tweak", "update", "edit", "rename", "remove"];
+const FILE_EXTS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "json", "toml", "yaml", "yml", "md", "py", "go", "java", "css", "html", "cfg", "ini", "txt", "lock", "sh", "cpp", "cs", "rb"];
+/// A prompt longer than this (or with more lines) is a brief for a big job.
+const LONG_CHARS: usize = 600;
+const LONG_LINES: usize = 8;
+/// "Small" asks stay short; a long one has more in it than it names.
+const SMALL_MAX_CHARS: usize = 300;
+const SINGLE_FILE_MAX_CHARS: usize = 200;
+
+fn has_stem(words: &[&str], stems: &[&str]) -> bool {
+    words.iter().any(|w| stems.iter().any(|s| w.starts_with(s)))
+}
+
+fn has_word(words: &[&str], list: &[&str]) -> bool {
+    words.iter().any(|w| list.contains(w))
+}
+
+/// How many file-looking tokens there are: a known extension with a name before it.
+fn file_tokens(text: &str) -> usize {
+    text.split_whitespace()
+        .filter(|t| {
+            let t = t.trim_matches(|c: char| "\"'`,;:()?!.".contains(c));
+            t.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && FILE_EXTS.contains(&ext))
+        })
+        .count()
+}
+
+/// Which crew fits a first message, judged locally from its wording (no API
+/// calls). Conservative: a wrong "light" costs failed work, a wrong "default"
+/// costs tokens, so anything unclear is `None` and the dialog stays out of it.
+///
+/// - Large or open-ended (refactor, migrate, design, "across the codebase",
+///   flaky bugs, a long prompt, several files) -> `default`.
+/// - Pure questions -> `light`, unless they're about the whole codebase.
+/// - Mechanical asks (typo, rename, bump, lint, comment, one line, one named
+///   file) -> `light`, unless a word hints it matters more than it sounds
+///   ("the typo that breaks the whole build" is left alone).
+pub fn suggest(prompt: &str) -> Option<Suggestion> {
+    let norm = prompt.to_lowercase().replace('\u{2019}', "'");
+    let text = norm.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
+        return None;
+    }
+    let lower = text.as_str();
+    let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let chars = lower.chars().count();
+    let files = file_tokens(lower);
+    let sug = |crew, why: &str| Some(Suggestion { crew, why: why.into() });
+
+    if chars > LONG_CHARS || norm.lines().filter(|l| !l.trim().is_empty()).count() > LONG_LINES {
+        return sug(DEFAULT_CREW, "a long brief usually means a big job");
+    }
+    if has_stem(&words, BIG_STEMS) || BIG_PHRASES.iter().any(|p| lower.contains(p)) {
+        return sug(DEFAULT_CREW, "looks like a large or open-ended job");
+    }
+    if files >= 3 {
+        return sug(DEFAULT_CREW, "touches several files");
+    }
+    let doubt = has_stem(&words, DOUBT_STEMS) || has_word(&words, DOUBT_WORDS) || DOUBT_PHRASES.iter().any(|p| lower.contains(p));
+    let acts = has_stem(&words, ACTION_STEMS) || has_word(&words, ACTION_WORDS);
+    let asks = words.first().is_some_and(|w| QUESTION_STARTS.contains(w)) || lower.ends_with('?');
+    if asks && !acts {
+        if has_word(&words, &["codebase", "overview", "repo", "repository"]) || lower.contains("this project") {
+            return sug(DEFAULT_CREW, "asks about the whole codebase");
+        }
+        return if doubt { None } else { sug(LIGHT_CREW, "looks like a question") };
+    }
+    if doubt {
+        return None;
+    }
+    if chars <= SMALL_MAX_CHARS && (has_stem(&words, SMALL_STEMS) || has_word(&words, SMALL_WORDS) || SMALL_PHRASES.iter().any(|p| lower.contains(p))) {
+        return sug(LIGHT_CREW, "looks like a small, mechanical fix");
+    }
+    if chars <= SINGLE_FILE_MAX_CHARS && files == 1 && has_word(&words, SINGLE_FILE_VERBS) {
+        return sug(LIGHT_CREW, "touches one file");
+    }
+    None
+}
+
 /// (family, version x 10): "claude-opus-5-5" and the alias "opus" -> (Opus, 55).
 fn version(model: &str) -> Option<(Family, u32)> {
     let fam = family(model)?;
@@ -293,9 +398,9 @@ mod tests {
         let mine = Crew { id: "default".into(), label: "Mine".into(), model: Some("haiku".into()), advisor: None, effort: Some("high".into()), swarm_model: None, builtin: false };
         let extra = Crew { id: "x".into(), label: "X".into(), ..mine.clone() };
         let all = merged(&[mine, extra]);
-        assert_eq!(all.len(), 4);
+        assert_eq!(all.len(), builtins().len() + 1);
         assert_eq!(all[0].label, "Mine");
-        assert!(all[0].builtin && !all[3].builtin);
+        assert!(all[0].builtin && !all[all.len() - 1].builtin);
         let args = resolve(&all, &pick("default"), None).unwrap().args();
         assert_eq!(args, ["--model", "haiku", "--effort", "high"]);
         assert!(resolve(&all, &pick("nope"), None).is_err());
@@ -328,6 +433,44 @@ mod tests {
         assert!(check_pairing("claude-fable-5", "fable").is_ok());
         assert!(check_pairing("claude-opus-5-5[1m]", "opus").is_ok());
         assert!(check_pairing("sonnet", "gpt").is_err());
+    }
+
+    #[test]
+    fn light_crew_is_a_working_builtin() {
+        let r = resolve(&[], &pick(LIGHT_CREW), None).unwrap();
+        assert_eq!(r.args()[..4], ["--model", "haiku", "--advisor", "sonnet"]);
+        assert_eq!(r.swarm_model, None);
+        let ids: Vec<String> = builtins().into_iter().map(|c| c.id).collect();
+        assert!(["default", "opus-solo", "claude-defaults"].iter().all(|id| ids.iter().any(|i| i == id)));
+    }
+
+    #[derive(Deserialize)]
+    struct Case {
+        prompt: String,
+        /// "light", "default" or null for no suggestion.
+        crew: Option<String>,
+        why: Option<String>,
+        #[serde(default)]
+        #[allow(dead_code)]
+        note: Option<String>,
+    }
+
+    /// The table app/src/crewsuggest.test.ts reads too, so the two can't drift.
+    #[test]
+    fn suggestions_match_the_shared_table() {
+        let cases: Vec<Case> = serde_json::from_str(include_str!("../tests/crew-suggest.json")).unwrap();
+        assert!(cases.len() >= 25);
+        for c in cases {
+            let got = suggest(&c.prompt);
+            assert_eq!(got.as_ref().map(|s| s.crew.to_string()), c.crew, "{:?}", c.prompt);
+            assert_eq!(got.map(|s| s.why), c.why, "{:?}", c.prompt);
+        }
+    }
+
+    #[test]
+    fn a_long_prompt_is_a_big_job() {
+        assert_eq!(suggest(&"fix typo ".repeat(80)).unwrap().crew, DEFAULT_CREW);
+        assert_eq!(suggest(&"fix typo\n".repeat(9)).unwrap().crew, DEFAULT_CREW);
     }
 
     #[test]

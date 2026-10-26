@@ -4,6 +4,8 @@
 //! copies of the built-in ones (see `colony_core::crew`). Built-ins always
 //! exist, so removing a saved copy of one resets it.
 
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Mutex;
 
 use colony_core::crew::{self, Crew, CrewPick};
@@ -106,6 +108,68 @@ pub fn delete(id: &str) -> Result<Vec<Crew>, String> {
     Ok(crew::merged(&saved))
 }
 
+/// Crew defaults per folder, keyed like projects are (`paths::project_key`):
+/// the same folder however it's written, and case-insensitive on Windows.
+pub type FolderCrews = BTreeMap<String, String>;
+
+fn folders_path() -> std::path::PathBuf {
+    colony_home().join("crew-folders.json")
+}
+
+/// The folder defaults on disk. Kept in Colony's folder, never in the repository.
+pub fn folders() -> FolderCrews {
+    read_folders(&folders_path())
+}
+
+fn read_folders(path: &Path) -> FolderCrews {
+    std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn write_folders(path: &Path, map: &FolderCrews) -> Result<(), String> {
+    let body = serde_json::to_vec_pretty(map).expect("serializes");
+    let tmp = path.with_extension("json.tmp");
+    std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")))
+        .and_then(|_| std::fs::write(&tmp, body))
+        .and_then(|_| std::fs::rename(&tmp, path))
+        .map_err(|e| format!("could not save crew-folders.json: {e}"))
+}
+
+/// The key a folder is stored under.
+pub fn folder_key(host: &HostId, dir: &str) -> String {
+    colony_core::paths::project_key(host, dir)
+}
+
+/// The default crew of a folder, if one is set and the crew still exists.
+pub fn folder_crew(host: &HostId, dir: &str) -> Option<String> {
+    let id = folders().remove(&folder_key(host, dir))?;
+    all().iter().any(|c| c.id == id).then_some(id)
+}
+
+/// Make `crew` the default for a folder. Returns all folder defaults.
+pub fn set_folder_crew(host: &HostId, dir: &str, crew: &str) -> Result<FolderCrews, String> {
+    if dir.trim().is_empty() {
+        return Err("choose a folder first".into());
+    }
+    if !all().iter().any(|c| c.id == crew) {
+        return Err(format!("no crew named {crew:?}"));
+    }
+    let _g = lock();
+    let mut map = folders();
+    map.insert(folder_key(host, dir), crew.to_string());
+    write_folders(&folders_path(), &map)?;
+    Ok(map)
+}
+
+/// Remove a folder's default. Returns all folder defaults.
+pub fn clear_folder_crew(host: &HostId, dir: &str) -> Result<FolderCrews, String> {
+    let _g = lock();
+    let mut map = folders();
+    if map.remove(&folder_key(host, dir)).is_some() {
+        write_folders(&folders_path(), &map)?;
+    }
+    Ok(map)
+}
+
 /// What the dialog shows before Start.
 #[derive(Debug, Serialize)]
 pub struct Check {
@@ -201,6 +265,41 @@ mod tests {
         let note = fit_with(&[], &mut req).unwrap().unwrap();
         assert!(note.contains("sonnet"), "{note}");
         assert_eq!(req.advisor.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn a_folder_is_the_same_folder_however_it_is_written() {
+        let win = HostId::Windows;
+        let k = folder_key(&win, r"C:\Work\App");
+        assert_eq!(k, folder_key(&win, "c:/work/app/"));
+        assert_eq!(k, folder_key(&win, "/mnt/c/Work/App"));
+        assert_eq!(k, folder_key(&HostId::Wsl("Ubuntu".into()), "/mnt/c/work/app"));
+        assert_ne!(k, folder_key(&win, r"C:\Work\Other"));
+        // A worktree stands for its repository's folder.
+        assert_eq!(k, folder_key(&win, r"C:\Work\App\.colony\worktrees\fix-1"));
+        // Linux paths keep their case, and belong to their distro.
+        let wsl = |d: &str| HostId::Wsl(d.into());
+        assert_ne!(folder_key(&wsl("Ubuntu"), "/home/u/App"), folder_key(&wsl("Ubuntu"), "/home/u/app"));
+        assert_ne!(folder_key(&wsl("Ubuntu"), "/home/u/app"), folder_key(&wsl("Debian"), "/home/u/app"));
+        assert_eq!(folder_key(&wsl("Ubuntu"), "/home/u/app/"), folder_key(&wsl("ubuntu"), "/home/u/app"));
+    }
+
+    #[test]
+    fn folder_defaults_persist_and_clear() {
+        let dir = std::env::temp_dir().join(format!("colony-crew-folders-{}", std::process::id()));
+        let path = dir.join("crew-folders.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(read_folders(&path).is_empty());
+        let mut map = FolderCrews::new();
+        map.insert(folder_key(&HostId::Windows, r"C:\Work\App"), "light".into());
+        write_folders(&path, &map).unwrap();
+        assert_eq!(read_folders(&path), map);
+        map.remove(&folder_key(&HostId::Windows, "c:/work/app"));
+        write_folders(&path, &map).unwrap();
+        assert!(read_folders(&path).is_empty());
+        std::fs::write(&path, "not json").unwrap();
+        assert!(read_folders(&path).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn request() -> SpawnRequest {

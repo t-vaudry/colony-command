@@ -24,8 +24,10 @@ export interface DaemonSettings {
 }
 
 type Message =
-  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
+  | { type: "snapshot"; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
   | { type: "crews"; items: Crew[] }
+  | { type: "crew_folders"; items: Record<string, string> }
+  | { type: "folder_crew"; req: number; crew: string | null }
   | { type: "crew_check"; req: number; error: string | null; warnings: string[] }
   | { type: "settings"; settings: DaemonSettings }
   | { type: "rules"; items: Rule[] }
@@ -70,6 +72,8 @@ export class Daemon {
   hosts: HostOption[] = [];
   /** Built-in and saved crews: which models a new bot uses. */
   crews: Crew[] = [];
+  /** The default crew of each folder, by project key. */
+  crewFolders: Record<string, string> = {};
   /** Estimated spend per project key, in 15-minute buckets. */
   spend = new Map<string, ProjectSpend>();
   /** How long agents waited on a human, per project key, in 15-minute buckets. */
@@ -102,6 +106,7 @@ export class Daemon {
   /** Spawn replies arrive in the order spawns were sent. */
   private crewChecks = new Map<number, (c: CrewCheck) => void>();
   private crewCheckSeq = 0;
+  private folderCrews = new Map<number, (crew: string | null) => void>();
   private pendingSpawns: { resolve: (v: { term: string; session_id: string }) => void; reject: (e: Error) => void }[] = [];
 
   onChange(fn: () => void): void {
@@ -169,6 +174,7 @@ export class Daemon {
         this.agents = new Map(m.agents.map((a) => [a.id, a]));
         this.hosts = m.hosts ?? this.hosts;
         this.crews = m.crews ?? this.crews;
+        this.crewFolders = m.crew_folders ?? this.crewFolders;
         this.spend = new Map(Object.entries(m.spend ?? {}));
         this.latency = new Map(Object.entries(m.latency ?? {}));
         this.leftovers = m.leftovers ?? [];
@@ -197,6 +203,13 @@ export class Daemon {
       case "crews":
         this.crews = m.items;
         break;
+      case "crew_folders":
+        this.crewFolders = m.items;
+        break;
+      case "folder_crew":
+        this.folderCrews.get(m.req)?.(m.crew);
+        this.folderCrews.delete(m.req);
+        return;
       case "crew_check":
         this.crewChecks.get(m.req)?.({ error: m.error, warnings: m.warnings });
         this.crewChecks.delete(m.req);
@@ -340,6 +353,28 @@ export class Daemon {
   /** Save a crew (new, or an edited copy of a built-in). Errors arrive as errors. */
   saveCrew(crew: Crew): boolean {
     return this.send({ type: "save_crew", crew });
+  }
+
+  /** The default crew of a folder, or null (also when the daemon can't be asked). */
+  folderCrew(host: string, dir: string): Promise<string | null> {
+    return new Promise((resolve) => {
+      const req = ++this.crewCheckSeq;
+      this.folderCrews.set(req, resolve);
+      if (!this.send({ type: "folder_crew", req, host, dir })) {
+        this.folderCrews.delete(req);
+        resolve(null);
+      }
+    });
+  }
+
+  /** Make a crew the default for a folder. */
+  setFolderCrew(host: string, dir: string, crew: string): boolean {
+    return this.send({ type: "set_folder_crew", host, dir, crew });
+  }
+
+  /** Forget a folder's default crew. */
+  clearFolderCrew(host: string, dir: string): boolean {
+    return this.send({ type: "clear_folder_crew", host, dir });
   }
 
   /** Remove a saved crew, or reset a built-in one. */
