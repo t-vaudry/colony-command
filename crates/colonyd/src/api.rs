@@ -207,6 +207,8 @@ enum Command {
     Focus { id: String },
     /// Done with a session: end every copy of it and clear it off the map.
     Dismiss { id: String },
+    /// Give a session's main bot a new name.
+    Rename { id: String, name: String },
     /// A time-lapse of the logged events between two times (unix ms), sampled in `frames` steps.
     Replay { from: u64, to: u64, frames: usize },
     /// "Wrong state": log what the bot was shown as and what the user says it should be.
@@ -359,6 +361,7 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         Command::Terminate { id } => terminate(shared, &id).await.map(|_| None),
         Command::Focus { id } => focus(shared, &id).await.map(|_| None),
         Command::Dismiss { id } => dismiss(shared, &id).await.map(|_| None),
+        Command::Rename { id, name } => rename(shared, &id, &name).await.map(|_| None),
         Command::Replay { from, to, frames } => {
             let events = tokio::task::spawn_blocking(move || crate::eventlog::read_window(&crate::eventlog::path(), from, to)).await.unwrap_or_default();
             Ok(Some(crate::timelapse::build(&events, from, to, frames).to_string()))
@@ -844,6 +847,27 @@ async fn dismiss(shared: &Shared, id: &str) -> Result<(), String> {
         let _ = shared.deltas.send(m);
     }
     Ok(())
+}
+
+/// Give a session's main bot the name the user typed. Its subagents follow.
+async fn rename(shared: &Shared, id: &str, name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a name can't be empty".into());
+    }
+    if name.chars().count() > 40 {
+        return Err("keep the name to 40 characters or fewer".into());
+    }
+    let (host, session_id) = {
+        let colony = shared.colony.read().await;
+        let a = colony.agents.get(id).ok_or("no such bot")?;
+        if a.kind != colony_core::AgentKind::Main {
+            return Err("only a session's main bot can be renamed".into());
+        }
+        (a.host.clone(), a.session_id.clone())
+    };
+    let event = DomainEvent::Renamed { name: name.to_string() };
+    shared.events.send(Envelope { ts: now_ms(), host, session_id, cwd: None, event }).await.map_err(|_| "colonyd is shutting down".to_string())
 }
 
 /// Where a session is running.
@@ -1335,6 +1359,8 @@ mod crew_command_tests {
         assert!(matches!(c, Command::SetFolderCrew { crew, .. } if crew == "light"));
         let c: Command = serde_json::from_str(r#"{"type":"clear_folder_crew","host":"wsl:Ubuntu","dir":"/home/u/w"}"#).unwrap();
         assert!(matches!(c, Command::ClearFolderCrew { .. }));
+        let c: Command = serde_json::from_str(r#"{"type":"rename","id":"s1","name":"Ada"}"#).unwrap();
+        assert!(matches!(c, Command::Rename { name, .. } if name == "Ada"));
         let c: Command = serde_json::from_str(r#"{"type":"spawn","host":"win","dir":"C:/w","crew":"default","swarm":"none"}"#).unwrap();
         assert!(matches!(c, Command::Spawn(r) if r.crew.as_deref() == Some("default") && r.swarm.as_deref() == Some("none")));
     }

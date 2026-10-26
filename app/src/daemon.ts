@@ -534,6 +534,11 @@ export class Daemon {
     return this.send({ type: "dismiss", id });
   }
 
+  /** Give a session's main bot a new name. */
+  rename(id: string, name: string): boolean {
+    return this.send({ type: "rename", id, name });
+  }
+
   /** Ask for a time-lapse of the logged events; the answer lands in `replay`. */
   requestReplay(from: number, to: number, frames: number): boolean {
     return this.send({ type: "replay", from, to, frames });

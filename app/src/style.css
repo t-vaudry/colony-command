@@ -1213,6 +1213,14 @@ body.resizing * {
   display: grid;
   gap: 4px;
 }
+.head .rename {
+  display: flex;
+  gap: 6px;
+}
+.head .rename input {
+  flex: 1;
+  min-width: 0;
+}
 .actions.bar {
   align-items: center;
   margin-top: 0;

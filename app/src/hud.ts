@@ -120,6 +120,8 @@ export class Hud {
   private hintsDismissed = new Map<string, string>();
   /** Replies typed for bots Colony didn't start, sent after resuming them. */
   private resumeDrafts = new Map<string, string>();
+  /** The bot whose name is being edited in the panel, and what has been typed. */
+  private renaming: { id: string; value: string } | null = null;
   /** Bots whose one-click resume is waiting on the other copy being dealt with, with the message to send. */
   private quick = new Map<string, string>();
   /** Answers chosen so far for held questions, by request id. */
@@ -185,6 +187,11 @@ export class Hud {
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closeMenus();
     });
+    this.panel.addEventListener("keydown", (e) => {
+      if (!(e.target as HTMLElement).dataset?.draft?.startsWith("rename:")) return;
+      if (e.key === "Enter") this.finishRename(true);
+      else if (e.key === "Escape") this.finishRename(false);
+    });
     this.panel.addEventListener("input", (e) => {
       if ((e.target as HTMLElement).dataset.replayAt) {
         this.showFrame(Number((e.target as HTMLInputElement).value));
@@ -193,6 +200,10 @@ export class Hud {
       const el = e.target as HTMLInputElement;
       if (el.dataset.draft?.startsWith("reply:")) {
         this.resumeDrafts.set(el.dataset.draft.slice(6), el.value);
+        return;
+      }
+      if (el.dataset.draft?.startsWith("rename:") && this.renaming) {
+        this.renaming.value = el.value;
         return;
       }
       if (!el.dataset.other || !el.dataset.req) return;
@@ -567,7 +578,20 @@ export class Hud {
     return `<div class="k">Leftover worktrees</div><p class="muted">These bots are done, but their worktrees hold work Colony won&#39;t delete on its own.</p>${rows}`;
   }
 
+  /** Leave the rename field, sending the new name when it was saved and changed. */
+  private finishRename(save: boolean): void {
+    const r = this.renaming;
+    this.renaming = null;
+    if (save && r) {
+      const name = r.value.trim();
+      if (name && name !== this.daemon.agents.get(r.id)?.name && !this.daemon.rename(r.id, name)) this.toast("Not connected to colonyd.");
+    }
+    this.renderPanel();
+  }
+
   private renderPanel(): void {
+    // A rename left open on another bot doesn't come back with the selection.
+    if (this.renaming && this.renaming.id !== this.selected) this.renaming = null;
     // A new time-lapse arrived: start it from the beginning.
     // A request lost with the connection never answers.
     if (this.replayLoading && this.daemon.status !== "live") this.replayLoading = false;
@@ -665,6 +689,7 @@ export class Hud {
       main && !a.terminal && !a.paused_at ? `<button type="button" class="primary" data-resume="${esc(a.id)}" title="Start this session in a Colony terminal so you can talk to it from here">Resume in Colony</button>` : "",
       main
         ? `<details class="menu" data-sec="more"${secOpen("more")}><summary>More</summary><div class="menu-list">
+            <button type="button" data-rename="${esc(a.id)}">Rename</button>
             <button type="button" data-new-here="${esc(a.id)}">New session here</button>
             ${!a.terminal ? `<button type="button" data-copy="${esc(resume)}">Copy resume command</button>` : ""}
             ${adopted && live && (a.pids.length || a.pid) ? `<button type="button" class="danger" data-kill="${esc(a.id)}" title="Ends this session's claude process (and its tools) and nothing else. The conversation stays on disk and can be resumed.">Kill process</button>` : ""}
@@ -678,7 +703,11 @@ export class Hud {
       <div class="head">
         ${main ? originBadge : ""}
         <div class="k">${a.kind === "subagent" ? `Subagent of ${esc(parent?.name ?? "?")}` : esc(a.project_name ?? "unknown project")}</div>
-        <h2>${esc(a.name)}</h2>
+        ${
+          this.renaming?.id === a.id
+            ? `<div class="rename"><input type="text" data-draft="rename:${esc(a.id)}" value="${esc(this.renaming.value)}" maxlength="40" aria-label="Bot name"><button type="button" class="primary" data-rename-save="1">Save</button><button type="button" data-rename-cancel="1">Cancel</button></div>`
+            : `<h2>${esc(a.name)}</h2>`
+        }
         <div><span class="pill ${sev ?? a.state}">${esc(stateLabel(a))}</span> <span class="muted">for ${since(a.state_since)}</span></div>
       </div>
       ${bar ? `<div class="actions bar">${bar}</div>` : ""}
@@ -1023,6 +1052,16 @@ export class Hud {
         }
       }, 150);
     }
+    if (el.dataset.rename) {
+      const a = this.daemon.agents.get(el.dataset.rename);
+      if (a) {
+        this.renaming = { id: a.id, value: a.name };
+        this.renderPanel();
+        this.panel.querySelector<HTMLInputElement>("[data-draft^='rename:']")?.select();
+      }
+    }
+    if (el.dataset.renameSave) this.finishRename(true);
+    if (el.dataset.renameCancel) this.finishRename(false);
     if (el.dataset.dismiss) {
       const a = this.daemon.agents.get(el.dataset.dismiss);
       const busy = a && (a.state === "working" || a.state === "needs_input" || a.state === "awaiting_reply");
