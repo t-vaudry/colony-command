@@ -5,6 +5,8 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-10-26
+
 - Crews: each bot's panel shows whether its crew is used (searches delegated or done by hand, swarm agents that ran out of turns, advisor use, and whether nudges were followed), with a one-line roll-up in the day summary.
 - Context watch: each bot's panel shows how full its context is ("Context 142k / 200k · 71%"). Past 70% of the window (configurable) Colony says so once, offers a Compact button for bots it started, and nudges crew sessions to hand searches and test runs to the swarm.
 - Budgets: set an optional spend cap per bot and per day in a bot's Session details. You get a notice at 80%, and at 100% a bot Colony started drops its advisor (then moves down a model tier) after its current turn, with Raise cap and Undo.
