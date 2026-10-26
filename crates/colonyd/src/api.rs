@@ -189,6 +189,23 @@ enum Command {
     SetContextPct { pct: u32 },
     /// Type `/compact` into a Colony-started bot that is waiting at its prompt.
     Compact { id: String },
+    /// Set the spend caps in USD; a missing one is off (see `budget.rs`).
+    SetBudgets {
+        #[serde(default)]
+        bot: Option<f64>,
+        #[serde(default)]
+        day: Option<f64>,
+    },
+    /// Raise a cap after a budget notice; `id` is the bot for the per-bot cap.
+    RaiseBudget {
+        scope: crate::budget::Scope,
+        #[serde(default)]
+        id: String,
+    },
+    /// Put a bot's models back after a budget step down, and raise the cap.
+    UndoBudget { id: String },
+    /// The map's UTC offset in minutes, so the day cap counts from local midnight.
+    Clock { utc_offset_min: i32 },
     /// Show a leftover worktree's folder in the file manager.
     OpenWorktree { session_id: String },
     /// Delete a leftover worktree and its branch, uncommitted work and all.
@@ -340,6 +357,13 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
             saved.0.map(|_| None).map_err(|e| format!("could not save settings: {e}"))
         }
         Command::Compact { id } => compact(shared, &id).await.map(|_| None),
+        Command::SetBudgets { bot, day } => crate::budget::set_caps(shared, bot, day).map(|_| None),
+        Command::RaiseBudget { scope, id } => crate::budget::raise(shared, scope, &id).await.map(|_| None),
+        Command::UndoBudget { id } => crate::budget::undo(shared, &id).await.map(|_| None),
+        Command::Clock { utc_offset_min } => {
+            crate::budget::set_clock(shared, utc_offset_min);
+            Ok(None)
+        }
         Command::OpenWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Open).await.map(|_| None),
         Command::DiscardWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Discard).await.map(|_| None),
         Command::ForgetWorktree { session_id } => leftover_command(shared, &session_id, Leftover::Forget).await.map(|_| None),
@@ -1069,6 +1093,26 @@ async fn set_model(shared: &Shared, id: &str, model: &str) -> Result<(), String>
 /// model and with a first message (`prompt`). The restarted Claude gets a
 /// fresh environment, which is how a program installed meanwhile is found.
 pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, prompt: Option<String>) -> Result<(), String> {
+    restart_with(shared, id, prompt, model.clone(), move |req| {
+        let Some(model) = model else { return Ok(None) };
+        req.model = Some(model);
+        // Keep the advisor if it still pairs with the new main model.
+        crate::crews::fit_model(req)
+    })
+    .await
+    .map(|_| ())
+}
+
+/// `restart_session` with the new launch request left to `edit` (which returns
+/// a note for the user, if any). `model_set` is the main model the bot now runs
+/// when `edit` changes it. Returns the request as it was before the edit.
+pub async fn restart_with(
+    shared: &Shared,
+    id: &str,
+    prompt: Option<String>,
+    model_set: Option<String>,
+    edit: impl FnOnce(&mut SpawnRequest) -> Result<Option<String>, String>,
+) -> Result<SpawnRequest, String> {
     let (term, session_id, host, dir, busy, has_conversation) = {
         let colony = shared.colony.read().await;
         let a = colony.agents.get(id).ok_or("no such session")?;
@@ -1109,26 +1153,22 @@ pub async fn restart_session(shared: &Shared, id: &str, model: Option<String>, p
     req.prompt = prompt;
     req.auto = false;
     req.name = None;
-    let mut dropped = None;
-    if model.is_some() {
-        req.model = model.clone();
-        // Keep the advisor if it still pairs with the new main model.
-        dropped = crate::crews::fit_model(&mut req)?;
-    }
+    let before = req.clone();
+    let dropped = edit(&mut req)?;
     shared.pty.kill(&term)?;
     if !shared.pty.closed(&term, Duration::from_secs(10)).await {
         return Err("the session didn't stop; try again".into());
     }
     let spawned = shared.pty.spawn(req).await?;
     let host = shared.colony.read().await.agents.get(id).map(|a| a.host.clone()).unwrap_or(HostId::Windows);
-    if let Some(model) = &model {
+    if let Some(model) = &model_set {
         let _ = shared.events.send(Envelope { ts: now_ms(), host, session_id, cwd: None, event: DomainEvent::ModelSet { model: model.clone() } }).await;
     }
     if let Some(note) = dropped {
         notice(shared, note);
     }
-    log(format!("restarted session{} in terminal {}", model.map(|m| format!(" on {m}")).unwrap_or_default(), spawned.term_id));
-    Ok(())
+    log(format!("restarted session{} in terminal {}", model_set.map(|m| format!(" on {m}")).unwrap_or_default(), spawned.term_id));
+    Ok(before)
 }
 
 /// Whether this daemon takes injected events. Off unless `COLONY_INGEST=1`, so

@@ -8,6 +8,7 @@ import { ContextWatch, contextRow, contextSettingRow, DEFAULT_PCT, showContextNo
 import { latencyChart } from "./latencychart";
 import { daySummary } from "./daysummary";
 import { crewBlock, crewTag } from "./crewhealth";
+import { botBudgetRow, budgetClick, budgetSettings, dayNote, toastActions, type NoticeAction } from "./budget";
 import { detail, playheadX, REPLAY_FRAMES, timelapse } from "./timelapse";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
 import { md } from "./markdown";
@@ -138,7 +139,7 @@ export class Hud {
   ) {
     daemon.onChange(() => this.schedule());
     daemon.onError((m) => this.toast(m));
-    daemon.onNotice((m) => this.toast(m));
+    daemon.onNotice((m, actions) => this.toast(m, actions));
     setInterval(() => this.tickDurations(), 1000);
     this.watchGating();
     this.strip.addEventListener("click", (e) => {
@@ -238,12 +239,13 @@ export class Hud {
     if (!this.daemon.input(a.terminal, seq)) this.toast("Not connected to colonyd.");
   }
 
-  toast(message: string): void {
+  toast(message: string, actions?: NoticeAction[]): void {
     const t = document.getElementById("toast")!;
     t.textContent = message;
+    toastActions(t, actions, (c) => this.daemon.sendCommand(c), () => (t.hidden = true));
     t.hidden = false;
     clearTimeout(Number(t.dataset.timer));
-    t.dataset.timer = String(setTimeout(() => (t.hidden = true), 6000));
+    t.dataset.timer = String(setTimeout(() => (t.hidden = true), actions?.length ? 20000 : 6000));
   }
 
   private decide(el: HTMLElement, requestId: string, choice: PermissionChoice): void {
@@ -484,7 +486,7 @@ export class Hud {
     const note = t.partial ? " · partial" : "";
     const split = modelLine(t.models);
     const why = "Estimate from list prices, since local midnight, all projects." + (t.partial ? " Some sessions ran a model without a known price: their tokens are counted but not their cost." : "") + (split ? ` By model: ${split}.` : "");
-    return `<button type="button" class="chip spend" data-show-cost title="${esc(why)} Click for cost by project.">${money(t.usd)} today${note} · ${compact(t.tokens)} tokens</button>`;
+    return `<button type="button" class="chip spend" data-show-cost title="${esc(why)} Click for cost by project.">${money(t.usd)} today${dayNote(t.usd, this.daemon.settings)}${note} · ${compact(t.tokens)} tokens</button>`;
   }
 
   /** Header chip: saved "allow always for project" rules. */
@@ -568,7 +570,7 @@ export class Hud {
         <p class="muted">Bots on the front porch need you: red ones are stuck, yellow ones want a permission or an answer.
         Bots holding a blue package at the review dock have finished a turn.</p>
         <p class="muted">Drag to pan, scroll to zoom, double-click a bot to zoom to its project, <kbd>0</kbd> to fit everything.</p>
-        ${daySummary(this.daemon.spend, this.daemon.latency, this.daemon.now(), this.daemon.agents.values())?.html ?? ""}
+        ${daySummary(this.daemon.spend, this.daemon.latency, this.daemon.now(), this.daemon.agents.values(), this.daemon.settings)?.html ?? ""}
         ${timelapse(this.daemon.replay, this.replayAt, this.replayTimer !== null, this.replayLoading)}
         ${costChart(this.daemon.spend, this.daemon.now())}
         ${latencyChart(this.daemon.latency, this.daemon.now())}
@@ -683,7 +685,7 @@ export class Hud {
       ${field("Objective", "objective", text(a.objective_full ?? a.objective), "short")}
       ${showReply ? field(a.state === "ready_to_review" ? "Result" : "Latest reply", "reply", `<div class="md">${this.mdCached(reply!)}</div>`) : ""}
       <div class="facts">
-        ${diffRow}${collisionRow}${subModel}${usageRow}${contextRow(a, this.daemon.settings.context_pct)}${modelUse}
+        ${diffRow}${collisionRow}${subModel}${usageRow}${contextRow(a, this.daemon.settings.context_pct)}${botBudgetRow(a.kind, a.cost_usd, this.daemon.settings)}${modelUse}
       </div>
       ${this.modelRows(a)}
       ${crewBlock(a, kids)}
@@ -705,7 +707,7 @@ export class Hud {
           ${fact("Tool calls", a.tool_calls ? String(a.tool_calls) : null)}
           ${fact("Session id", a.session_id, "mono")}
         </div>
-        ${main ? this.classifierRow() + contextSettingRow(this.daemon.settings.context_pct) : ""}
+        ${main ? this.classifierRow() + contextSettingRow(this.daemon.settings.context_pct) + budgetSettings(this.daemon.settings) : ""}
       </details>
       ${!a.hooks_seen && !a.terminal ? `<p class="muted small">Seen through the session registry only, so state is coarse. New sessions report full detail through hooks.</p>` : ""}
       ${
@@ -1037,6 +1039,7 @@ export class Hud {
     }
     if (el.dataset.compact && !this.daemon.compact(el.dataset.compact)) this.toast("Not connected to colonyd.");
     if (el.dataset.contextPct && !this.daemon.setContextPct(Number(el.dataset.contextPct))) this.toast("Not connected to colonyd.");
+    if (budgetClick(el, this.daemon.settings, (bot, day) => this.daemon.setBudgets(bot, day)) === false) this.toast("Not connected to colonyd.");
     if (el.dataset.classifier) {
       if (!this.daemon.setClassifier(el.dataset.classifier === "on")) this.toast("Not connected to colonyd.");
     }

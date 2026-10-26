@@ -801,6 +801,7 @@ impl Colony {
                 | DomainEvent::PauseCancelled
                 | DomainEvent::Paused
                 | DomainEvent::Restored
+                | DomainEvent::BudgetStep { .. }
         );
         if from_hooks {
             if let Some(at) = main.paused_at {
@@ -1132,6 +1133,7 @@ impl Colony {
                 }
             }
             DomainEvent::PauseCancelled => main.pause_pending = false,
+            DomainEvent::BudgetStep { text } => main.log(e.ts, ActivityKind::Problem, text.clone(), None, None),
             DomainEvent::Paused | DomainEvent::Restored => {
                 main.paused_at = Some(e.ts);
                 main.pause_pending = false;

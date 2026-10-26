@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod context;
+pub mod budget;
 pub mod crew;
 pub mod event;
 pub mod hook;

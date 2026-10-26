@@ -39,7 +39,7 @@ pub fn load_thresholds(path: &Path) -> Thresholds {
 }
 
 /// What the user can change from the map.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Ask a small model about unclear question-or-done endings. Off by default.
@@ -52,6 +52,14 @@ pub struct Settings {
     /// (and crew sessions are told); unset means the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_pct: Option<u32>,
+    /// Most one bot (with its subagents and advisor) should spend, in USD.
+    /// `None` is no limit; see `budget.rs`.
+    pub budget_bot_usd: Option<f64>,
+    /// Most all bots together should spend per local day, in USD.
+    pub budget_day_usd: Option<f64>,
+    /// The map's offset from UTC in minutes, as it last reported it: the day cap
+    /// counts from local midnight, which only the map's clock knows.
+    pub utc_offset_min: Option<i32>,
 }
 
 impl Settings {
@@ -81,7 +89,13 @@ impl Settings {
 
     /// What the map is told: whether the classifier is on and whether it could run.
     pub fn public(&self) -> serde_json::Value {
-        json!({ "haiku_classifier": self.haiku_classifier, "haiku_key_present": self.api_key().is_some(), "context_pct": self.context_pct() })
+        json!({
+            "haiku_classifier": self.haiku_classifier,
+            "haiku_key_present": self.api_key().is_some(),
+            "context_pct": self.context_pct(),
+            "budget_bot_usd": self.budget_bot_usd,
+            "budget_day_usd": self.budget_day_usd,
+        })
     }
 }
 
@@ -261,10 +275,11 @@ mod tests {
         let dir = temp("set");
         let p = dir.join("settings.json");
         assert!(!Settings::load(&p).haiku_classifier);
-        Settings { haiku_classifier: true, anthropic_api_key: Some("k".into()), context_pct: None }.save(&p).unwrap();
+        Settings { haiku_classifier: true, anthropic_api_key: Some("k".into()), budget_bot_usd: Some(5.0), ..Default::default() }.save(&p).unwrap();
         let s = Settings::load(&p);
         assert!(s.haiku_classifier);
         assert_eq!(s.anthropic_api_key.as_deref(), Some("k"));
+        assert_eq!((s.budget_bot_usd, s.budget_day_usd), (Some(5.0), None));
         // The map never sees the key itself.
         assert!(!s.public().to_string().contains("\"k\""));
     }

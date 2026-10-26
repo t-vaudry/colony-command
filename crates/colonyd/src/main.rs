@@ -8,6 +8,7 @@
 
 mod api;
 mod approvals;
+mod budget;
 mod classifier;
 mod crews;
 mod diffstat;
@@ -229,6 +230,8 @@ async fn main() {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
+    // Spend caps: warnings, and stepping bots down when one is reached.
+    tokio::spawn(budget::run(shared.clone()));
     // Files and lines changed, for work ready to review.
     tokio::spawn(diffstat::run(shared.clone()));
     // A long tool call whose processes are still computing is not a stall.
