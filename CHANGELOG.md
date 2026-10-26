@@ -12,7 +12,7 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
   a pairing Claude Code would reject is refused before Start.
 - Crews: in sessions with an advisor, the hook nudges Claude to consult Opus when the
   same error happens twice, before a plan locks, and once before it finishes a turn
-  that changed files (nudges only, nothing is ever denied).
+  that changed files. These are nudges: the first ExitPlanMode of a turn is bounced once, nothing is blocked for good.
 
 ## [0.1.5] - 2026-10-21
 
