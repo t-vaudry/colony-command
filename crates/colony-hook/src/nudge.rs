@@ -4,7 +4,8 @@
 //! and never a gate:
 //!
 //! - the same tool error twice (`PostToolUseFailure`): `additionalContext`, once per error;
-//! - a plan about to lock (`PreToolUse` of `ExitPlanMode`): `additionalContext`, once per turn;
+//! - a plan about to lock (`PreToolUse` of `ExitPlanMode`): the first call each turn is denied
+//!   with a reason asking for the advisor first; the second passes;
 //! - work about to be called done (`Stop`, files changed this turn): one `decision: block`.
 //!
 //! The hooks run in separate processes, so what they need to remember lives in a small state
@@ -27,7 +28,7 @@ pub const STATE_MAX_FILES: usize = 300;
 pub const STATE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
 pub const TWICE: &str = "This error has now happened twice in this session. Before trying again, consult the advisor (Opus) on why it keeps failing and what to change.";
-pub const PLAN: &str = "Before this plan locks, consult the advisor on it if you have not already this turn, then exit plan mode.";
+pub const PLAN: &str = "Before this plan locks, consult the advisor on it, then call ExitPlanMode again. If you already did this turn, just call it again.";
 pub const DONE_AUDIT: &str = "Files changed this turn and nothing has audited them. Before finishing, run the swarm-audit subagent on a snapshot of the change (`git stash create` prints a commit to diff against; it does not touch the stash stack) and get the advisor's sign-off. If the change is trivial, just finish.";
 pub const DONE: &str = "Files changed this turn. Before finishing, get the advisor's sign-off on the work. If the change is trivial, just finish.";
 
@@ -71,6 +72,13 @@ impl State {
 pub fn nudge(colony_home: &Path, v: &Value, swarm: bool) -> Option<String> {
     let event = v.get("hook_event_name")?.as_str()?;
     let tool = v.get("tool_name").and_then(Value::as_str).unwrap_or("");
+    // Tool calls made inside a subagent (a swarm agent) carry the parent's session_id and an
+    // `agent_id`. They must neither be nudged (Opus use stays low) nor touch the main session's
+    // state. `agent_type` is no good for this: `--agent` sessions have it on the main thread.
+    let in_subagent = v.get("agent_id").and_then(Value::as_str).is_some_and(|a| !a.is_empty());
+    if in_subagent && !matches!(event, "SubagentStart" | "SubagentStop") {
+        return None;
+    }
     // Skip the state file for the events that can't matter (most tool calls).
     let relevant = match event {
         "UserPromptSubmit" | "PostToolUseFailure" | "SubagentStart" | "SubagentStop" | "Stop" => true,
@@ -129,7 +137,15 @@ pub fn nudge(colony_home: &Path, v: &Value, swarm: bool) -> Option<String> {
         "PreToolUse" => {
             if !s.plan_nudged {
                 s.plan_nudged = true;
-                out = Some(context("PreToolUse", PLAN));
+                // additionalContext on PreToolUse lands next to the tool result, after the plan
+                // is already approved, so bounce the first call instead: the reason is shown to
+                // Claude, the turn goes on, and the second call passes.
+                out = Some(
+                    json!({"hookSpecificOutput": {
+                        "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": PLAN
+                    }})
+                    .to_string(),
+                );
             }
         }
         "Stop" => {

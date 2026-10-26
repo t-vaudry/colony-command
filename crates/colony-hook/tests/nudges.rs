@@ -82,16 +82,16 @@ fn exit_code_only_errors_are_told_apart_by_command() {
 }
 
 #[test]
-fn a_plan_is_nudged_once_per_turn_and_never_denied() {
+fn a_plan_is_bounced_once_per_turn() {
     let home = tmp("plan");
     let plan = ev("PreToolUse", r#","tool_name":"ExitPlanMode","tool_input":{"plan":"x"}"#);
     let out = json(&hook(&home, ADV, &plan));
     assert_eq!(out["hookSpecificOutput"]["hookEventName"], "PreToolUse");
-    assert_eq!(out["hookSpecificOutput"]["additionalContext"], nudge::PLAN);
-    assert!(out["hookSpecificOutput"].get("permissionDecision").is_none());
-    assert_eq!(hook(&home, ADV, &plan), "", "once");
+    assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(out["hookSpecificOutput"]["permissionDecisionReason"], nudge::PLAN);
+    assert_eq!(hook(&home, ADV, &plan), "", "the second call passes untouched");
     hook(&home, ADV, &ev("UserPromptSubmit", r#","prompt":"go""#));
-    assert!(hook(&home, ADV, &plan).contains("consult the advisor"), "next turn nudges again");
+    assert!(hook(&home, ADV, &plan).contains("deny"), "next turn bounces again");
     // Other tools are left alone.
     assert_eq!(hook(&home, ADV, &ev("PreToolUse", r#","tool_name":"Edit","tool_input":{}"#)), "");
 }
@@ -144,6 +144,23 @@ fn an_audit_after_the_last_change_lets_the_stop_through() {
     hook(&home, CREW, &edit());
     hook(&home, CREW, &ev("SubagentStop", r#","agent_id":"a1","agent_type":"Explore""#));
     assert!(hook(&home, CREW, &ev("Stop", "")).contains("block"));
+}
+
+#[test]
+fn tool_events_inside_subagents_are_ignored() {
+    let home = tmp("subagent");
+    let sub = |event: &str, extra: &str| ev(event, &format!(r#","agent_id":"a1","agent_type":"swarm-grep"{extra}"#));
+    let sub_fail = sub("PostToolUseFailure", r#","tool_name":"Bash","tool_input":{"command":"x"},"error":"boom""#);
+    for _ in 0..3 {
+        assert_eq!(hook(&home, CREW, &sub_fail), "", "a swarm agent is never told to consult the advisor");
+    }
+    assert_eq!(hook(&home, CREW, &sub("PreToolUse", r#","tool_name":"ExitPlanMode","tool_input":{}"#)), "");
+    hook(&home, CREW, &sub("PostToolUse", r#","tool_name":"Edit","tool_input":{}"#));
+    assert_eq!(hook(&home, CREW, &ev("Stop", "")), "", "a subagent's edit is not the main session's change");
+    assert!(!home.join("advisor").exists(), "no state touched");
+    // The main session's own events are unaffected by what the swarm did.
+    assert_eq!(hook(&home, CREW, &fail("boom")), "");
+    assert!(hook(&home, CREW, &fail("boom")).contains("twice"));
 }
 
 #[test]
