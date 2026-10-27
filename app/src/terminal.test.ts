@@ -13,6 +13,7 @@ vi.mock("@xterm/xterm", () => ({
     onResize() {}
     open() {}
     focus() {}
+    refresh() {}
     write() {}
     reset() {
       calls.push("reset");

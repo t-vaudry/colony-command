@@ -79,7 +79,8 @@ export class TerminalPane {
       this.opened = true;
     }
     if (wasHidden) this.onLayout();
-    if (this.attached !== term) {
+    const switched = this.attached !== term;
+    if (switched) {
       this.attached = term;
       this.term.reset();
       // Fit to the pane before the replay arrives, so the scrollback is
@@ -91,7 +92,7 @@ export class TerminalPane {
       this.refit();
     }
     this.term.focus();
-    this.settle(term);
+    this.settle(term, switched);
   }
 
   /**
@@ -108,7 +109,7 @@ export class TerminalPane {
    * and the first font measurement), fit again, repaint, and make the session
    * redraw itself at the final size by briefly nudging it one column narrower.
    */
-  private settle(term: string): void {
+  private settle(term: string, nudge = true): void {
     const gen = ++this.settleGen;
     const run = (delay: number, nudge: boolean) =>
       setTimeout(() => {
@@ -121,7 +122,7 @@ export class TerminalPane {
         this.syncSize(term);
       }, delay);
     requestAnimationFrame(() => requestAnimationFrame(() => run(0, false)));
-    run(250, true);
+    if (nudge) run(250, true);
   }
 
   hide(): void {
