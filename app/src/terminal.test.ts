@@ -27,6 +27,7 @@ vi.mock("@xterm/addon-fit", () => ({
     }
   },
 }));
+vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
 vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 import { TerminalPane } from "./terminal";

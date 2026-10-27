@@ -140,7 +140,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![daemon_info, daemon_notice, daemon_incomplete, daemon_restart, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install])
+        .invoke_handler(tauri::generate_handler![links::open_link, daemon_info, daemon_notice, daemon_incomplete, daemon_restart, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install])
         .run(tauri::generate_context!())
         .expect("Colony Command failed to start");
 }

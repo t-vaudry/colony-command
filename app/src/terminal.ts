@@ -4,8 +4,16 @@
 
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import type { Daemon } from "./daemon";
+
+/** Hand a link to the default browser. xterm's own handler would confirm, then open a blank window. */
+export function openLink(uri: string): void {
+  const invoke = (window as unknown as { __TAURI__?: { core?: { invoke: (cmd: string, args: object) => Promise<void> } } }).__TAURI__?.core?.invoke;
+  if (invoke) void invoke("open_link", { url: uri });
+  else window.open(uri, "_blank", "noopener");
+}
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -31,9 +39,11 @@ export class TerminalPane {
       fontSize: 12.5,
       cursorBlink: true,
       scrollback: 5000,
+      linkHandler: { activate: (_e, uri) => openLink(uri) },
       theme: this.theme(),
     });
     this.term.loadAddon(this.fit);
+    this.term.loadAddon(new WebLinksAddon((_e, uri) => openLink(uri)));
     this.term.onData((data) => {
       if (this.attached) this.daemon.input(this.attached, data);
     });
