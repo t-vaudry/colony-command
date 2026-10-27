@@ -20,6 +20,7 @@ export class TerminalPane {
   private title = document.getElementById("term-title")!;
   private host = document.getElementById("term-host")!;
   private opened = false;
+  private settleGen = 0;
 
   constructor(
     private daemon: Daemon,
@@ -85,15 +86,48 @@ export class TerminalPane {
       // written at the final size instead of being reflowed (garbled) after.
       this.refit();
       this.daemon.attach(term);
+      this.syncSize(term);
     } else {
       this.refit();
     }
     this.term.focus();
+    this.settle(term);
+  }
+
+  /**
+   * Tell the session its real size. xterm only reports a change, so after a
+   * reset or a re-show the PTY can still be at whatever the last viewer used
+   * while this pane thinks nothing changed; that mismatch is the garbled view.
+   */
+  private syncSize(term: string): void {
+    if (this.term.cols > 0 && this.term.rows > 0) this.daemon.resize(term, this.term.cols, this.term.rows);
+  }
+
+  /**
+   * Once the pane has really been laid out (the show above races the layout
+   * and the first font measurement), fit again, repaint, and make the session
+   * redraw itself at the final size by briefly nudging it one column narrower.
+   */
+  private settle(term: string): void {
+    const gen = ++this.settleGen;
+    const run = (delay: number, nudge: boolean) =>
+      setTimeout(() => {
+        if (gen !== this.settleGen || this.attached !== term || this.pane.hidden) return;
+        this.refit();
+        this.term.refresh(0, this.term.rows - 1);
+        if (!nudge) return;
+        const { cols, rows } = this.term;
+        if (cols > 1) this.daemon.resize(term, cols - 1, rows);
+        this.syncSize(term);
+      }, delay);
+    requestAnimationFrame(() => requestAnimationFrame(() => run(0, false)));
+    run(250, true);
   }
 
   hide(): void {
     if (this.pane.hidden) return;
     this.pane.hidden = true;
+    this.settleGen++;
     if (this.attached) this.daemon.detach();
     this.attached = null;
     this.onLayout();
@@ -101,7 +135,10 @@ export class TerminalPane {
 
   /** The daemon reconnected: the server forgot what this map was watching. */
   reattach(): void {
-    if (this.attached) this.daemon.attach(this.attached);
+    if (!this.attached) return;
+    this.daemon.attach(this.attached);
+    this.syncSize(this.attached);
+    this.settle(this.attached);
   }
 
   private refit(): void {
