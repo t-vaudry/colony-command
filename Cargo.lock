@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "colony-app"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "colony-core",
  "colony-setup",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "colony-core"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "colony-hook"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "colony-core",
  "colony-source",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "colony-probe"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "colony-core",
  "colony-source",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "colony-ptyd"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "base64 0.22.1",
  "colony-core",
@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "colony-replay"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "colony-core",
  "colony-source",
@@ -664,7 +664,7 @@ dependencies = [
 
 [[package]]
 name = "colony-setup"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "serde",
  "serde_json",
@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "colony-source"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "colony-core",
  "serde_json",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "colony-synth"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "colony-core",
  "colony-source",
@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "colonyd"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "axum",
  "base64 0.22.1",

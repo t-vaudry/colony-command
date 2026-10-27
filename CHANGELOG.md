@@ -5,6 +5,8 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-27
+
 - Rename a bot from its panel's More menu; its subagents follow the new name
 
 ## [0.1.9] - 2026-10-26
