@@ -38,6 +38,14 @@ fn is_app(url: &Url) -> bool {
     }
 }
 
+/// For links the page itself handles (the terminal pane), which never navigate.
+#[tauri::command]
+pub fn open_link(app: AppHandle, url: String) {
+    if let Ok(url) = Url::parse(&url) {
+        open(&app, &url);
+    }
+}
+
 fn open(app: &AppHandle, url: &Url) {
     // Only web links: a page shouldn't be able to launch file: or app: handlers.
     if matches!(url.scheme(), "http" | "https" | "mailto") {
