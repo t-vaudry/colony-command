@@ -636,8 +636,12 @@ export class Hud {
     // Short facts sit in a two-column grid; long text gets a box that scrolls.
     const fact = (k: string, v: string | null | undefined, cls = "") =>
       v ? `<div class="fact"><span class="k">${k}</span><span class="${cls}">${esc(v)}</span></div>` : "";
-    const field = (k: string, key: string, html: string, cls = "") =>
-      html ? `<div class="field"><span class="k">${k}</span><div class="scrollbox ${cls}" data-scroll="${esc(a.id)}:${key}" tabindex="0">${html}</div></div>` : "";
+    const field = (k: string, key: string, html: string, cls = "", popout = false) =>
+      html ? `<div class="field">${
+        popout
+          ? `<div class="field-head"><span class="k">${k}</span><button type="button" class="popout" data-popout="${esc(key)}" title="Open in a larger window" aria-label="Pop out ${esc(k)}">Pop out</button></div>`
+          : `<span class="k">${k}</span>`
+      }<div class="scrollbox ${cls}" data-scroll="${esc(a.id)}:${key}" tabindex="0">${html}</div></div>` : "";
     const text = (s: string | null | undefined) => (s ? esc(s) : "");
 
     const target = a.current_tool?.target?.replace(/\s+/g, " ");
@@ -728,7 +732,7 @@ export class Hud {
       }
       ${nowRow}
       ${field("Objective", "objective", text(a.objective_full ?? a.objective), "short")}
-      ${showReply ? field(a.state === "ready_to_review" ? "Result" : "Latest reply", "reply", `<div class="md">${this.mdCached(reply!)}</div>`) : ""}
+      ${showReply ? field(a.state === "ready_to_review" ? "Result" : "Latest reply", "reply", `<div class="md">${this.mdCached(reply!)}</div>`, "", true) : ""}
       <div class="facts">
         ${diffRow}${collisionRow}${subModel}${usageRow}${contextRow(a, this.daemon.settings.context_pct)}${botBudgetRow(a.kind, a.id, a.cost_usd, this.daemon.settings)}${modelUse}
       </div>
@@ -899,9 +903,21 @@ export class Hud {
     if (s && Number(s.value) !== at) s.value = String(at);
   }
 
+  /** Show the reply in a large dialog, for when the side panel is too small to read it. */
+  private popOut(): void {
+    const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
+    const reply = a && (a.last_message_full ?? a.last_message);
+    if (!a || !reply) return;
+    const dlg = document.getElementById("popout") as HTMLDialogElement;
+    document.getElementById("popout-title")!.textContent = `${a.name} · ${a.state === "ready_to_review" ? "Result" : "Latest reply"}`;
+    setHtml(document.getElementById("popout-body")!, `<div class="md">${this.mdCached(reply)}</div>`);
+    if (!dlg.open) dlg.showModal();
+  }
+
   private async action(e: Event): Promise<void> {
     const el = (e.target as HTMLElement).closest<HTMLElement>("button");
     if (!el) return;
+    if (el.dataset.popout) this.popOut();
     if (el.dataset.replay) this.loadReplay(Number(el.dataset.replay));
     if (el.dataset.replayPlay) this.toggleReplay();
     if (el.dataset.select) this.actions.select(el.dataset.select);
