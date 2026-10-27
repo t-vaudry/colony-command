@@ -1548,3 +1548,49 @@ textarea.resume-reply {
 #toast button {
   margin-left: 8px;
 }
+
+/* Pop out a long field into a large dialog. */
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.popout {
+  padding: 1px 8px;
+  font-size: 11px;
+}
+#popout {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0;
+  width: min(860px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+}
+#popout::backdrop {
+  background: rgba(10, 14, 12, 0.45);
+}
+#popout form {
+  display: grid;
+  gap: 12px;
+  padding: 18px 22px;
+}
+.popout-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.popout-head h2 {
+  margin: 0;
+  font-size: 15px;
+}
+#popout-body {
+  max-height: calc(100vh - 140px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+  font-size: 15px;
+}
