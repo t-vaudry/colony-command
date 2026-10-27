@@ -5,6 +5,8 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-10-27
+
 - Removed built-in dictation (and its CMake/LLVM build requirement). Every text box is a plain input, so external dictation tools such as Wispr Flow can fill them
 
 ## [0.1.10] - 2026-10-27
