@@ -75,6 +75,9 @@ pub struct SpawnRequest {
     /// on one repository don't share a checkout. Handled before `spawn`.
     #[serde(default)]
     pub isolate: bool,
+    /// A workflow (`colony_core::workflow`) for the session to follow, by name.
+    #[serde(default)]
+    pub workflow: Option<String>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -233,6 +236,22 @@ impl PtyHost {
             }
         }
         claude_args.extend(crew.args());
+        let workflow = match req.workflow.as_deref().filter(|w| !w.is_empty()) {
+            Some(id) => match crate::workflows::resolve(&req.host, &req.dir, id) {
+                Ok(w) => {
+                    crate::workflows::append_prompt(&mut claude_args, &w.prompt());
+                    Some(w)
+                }
+                // A resume must not fail because the file went away; the
+                // conversation already knows its phases.
+                Err(e) if req.resume.is_some() => {
+                    log(format!("resuming without workflow {id}: {e}"));
+                    None
+                }
+                Err(e) => return Err(e),
+            },
+            None => None,
+        };
         match req.chrome {
             Some(true) => claude_args.push("--chrome".into()),
             Some(false) => claude_args.push("--no-chrome".into()),
@@ -263,7 +282,7 @@ impl PtyHost {
         // Each `"` and `\` costs a backslash when the command line is built.
         let line_len: usize = args.iter().chain([&program]).map(|a| a.len() + 3 + a.matches(['"', '\\']).count()).sum();
         if line_len > MAX_COMMAND_LINE {
-            return Err("the crew's settings make the launch command too long for Windows".into());
+            return Err("the crew's and workflow's settings make the launch command too long for Windows".into());
         }
         if req.auto && !crate::resume::still_wanted(&session_id) {
             return Err("that session was dismissed or ended; not restarting it".into());
@@ -285,6 +304,13 @@ impl PtyHost {
                     cwd: None,
                     event: DomainEvent::CrewSet { id: id.clone(), label, model: crew.model.clone(), advisor: crew.advisor.clone(), swarm_model: crew.swarm_model.clone() },
                 })
+                .await;
+        }
+        // And the workflow, so the reducer can follow its phases.
+        if let Some(workflow) = workflow {
+            let _ = self
+                .events
+                .send(Envelope { ts: now_ms(), host: req.host.clone(), session_id: session_id.clone(), cwd: None, event: DomainEvent::WorkflowSet { workflow } })
                 .await;
         }
         self.requests.lock().unwrap().insert(term_id.clone(), req);

@@ -363,6 +363,7 @@ mod tests {
             advisor: None,
             swarm: None,
             isolate: false,
+            workflow: None,
             cols: 120,
             rows: 32,
             auto: false,

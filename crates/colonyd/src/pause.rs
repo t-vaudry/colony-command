@@ -39,6 +39,9 @@ pub struct Paused {
     /// The bot's crew and per-bot overrides, so Resume brings back the same models.
     #[serde(default)]
     pub pick: colony_core::crew::CrewPick,
+    /// The workflow it follows, by name, to bring back on Resume.
+    #[serde(default)]
+    pub workflow: Option<String>,
     /// Stopped by a restart rather than paused by the user (see `roster`):
     /// kept until dismissed.
     #[serde(default)]
@@ -145,6 +148,7 @@ async fn pause_now(shared: &Shared, id: &str) -> Result<(), String> {
             permission_mode: req.as_ref().and_then(|r| r.permission_mode.clone()),
             chrome: req.as_ref().and_then(|r| r.chrome),
             pick: req.as_ref().map(|r| r.pick()).unwrap_or_default(),
+            workflow: req.as_ref().and_then(|r| r.workflow.clone()),
             interrupted: false,
         },
     );
@@ -190,6 +194,7 @@ pub async fn resume(shared: &Shared, id: &str) -> Result<(), String> {
         advisor: record.as_ref().and_then(|r| r.pick.advisor.clone()),
         swarm: record.as_ref().and_then(|r| r.pick.swarm.clone()),
         isolate: false,
+        workflow: record.as_ref().and_then(|r| r.workflow.clone()),
         cols: crate::pty::default_cols(),
         rows: crate::pty::default_rows(),
         auto: false,

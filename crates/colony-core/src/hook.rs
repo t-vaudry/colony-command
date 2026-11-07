@@ -58,7 +58,7 @@ impl HookPayload {
     /// which building a bot walks to and for one-line summaries.
     pub fn tool_target(&self) -> Option<String> {
         let input = self.tool_input.as_ref()?.as_object()?;
-        for key in ["file_path", "notebook_path", "path", "url", "pattern", "command", "description", "query"] {
+        for key in ["file_path", "notebook_path", "path", "url", "pattern", "command", "description", "query", "skill"] {
             if let Some(v) = input.get(key).and_then(Value::as_str) {
                 return Some(v.to_string());
             }

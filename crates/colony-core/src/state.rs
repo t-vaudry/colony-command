@@ -157,6 +157,66 @@ pub struct CrewInfo {
     pub swarm_model: Option<String>,
 }
 
+/// One stretch of a workflow session spent in a phase.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhaseVisit {
+    pub skill: String,
+    pub started_at: u64,
+    /// Set when the next phase starts.
+    #[serde(default)]
+    pub ended_at: Option<u64>,
+    /// Subagents started during the visit.
+    #[serde(default)]
+    pub subagents: u32,
+}
+
+/// The workflow a session was started with and the path it has taken through it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowInfo {
+    pub workflow: crate::workflow::Workflow,
+    #[serde(default)]
+    pub visits: Vec<PhaseVisit>,
+    /// The phase running now: the skill of the last visit.
+    #[serde(default)]
+    pub active: Option<String>,
+}
+
+/// Visits kept per session; the oldest are dropped.
+const MAX_VISITS: usize = 200;
+
+impl WorkflowInfo {
+    pub fn new(workflow: crate::workflow::Workflow) -> Self {
+        Self { workflow, visits: Vec::new(), active: None }
+    }
+
+    /// A Skill call: enter its phase if it is one. Calling the active phase's
+    /// skill again is not a new visit. Returns whether the path changed.
+    pub fn skill_called(&mut self, skill: &str, ts: u64) -> bool {
+        let Some(name) = self.workflow.phase_for(skill).map(|p| p.skill.clone()) else { return false };
+        if self.active.as_deref() == Some(name.as_str()) {
+            return false;
+        }
+        if let Some(last) = self.visits.last_mut() {
+            last.ended_at.get_or_insert(ts);
+        }
+        self.visits.push(PhaseVisit { skill: name.clone(), started_at: ts, ended_at: None, subagents: 0 });
+        if self.visits.len() > MAX_VISITS {
+            self.visits.remove(0);
+        }
+        self.active = Some(name);
+        true
+    }
+
+    /// A subagent started: count it in the running phase. Returns that phase.
+    pub fn subagent_started(&mut self) -> Option<String> {
+        let active = self.active.clone()?;
+        if let Some(v) = self.visits.last_mut() {
+            v.subagents += 1;
+        }
+        Some(active)
+    }
+}
+
 /// A name and how many times it happened.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Count {
@@ -483,6 +543,12 @@ pub struct Agent {
     /// The crew Colony started this session with, when it did.
     #[serde(default)]
     pub crew: Option<CrewInfo>,
+    /// The workflow Colony started this session with, and where it has got to.
+    #[serde(default)]
+    pub workflow: Option<WorkflowInfo>,
+    /// For a subagent: the workflow phase that was running when it started.
+    #[serde(default)]
+    pub phase: Option<String>,
     /// Delegation, advisor and nudge counts of a main session.
     #[serde(default)]
     pub crew_health: CrewHealth,
@@ -582,6 +648,8 @@ impl Agent {
             consults: 0,
             last_consult_at: None,
             crew: None,
+            workflow: None,
+            phase: None,
             crew_health: CrewHealth::default(),
             turns: 0,
             max_turns: None,
@@ -796,6 +864,7 @@ impl Colony {
                 | DomainEvent::PermissionSettled { .. }
                 | DomainEvent::AuthResolved
                 | DomainEvent::CrewSet { .. }
+                | DomainEvent::WorkflowSet { .. }
                 | DomainEvent::NudgeSent { .. }
                 | DomainEvent::PauseRequested
                 | DomainEvent::PauseCancelled
@@ -911,6 +980,13 @@ impl Colony {
             DomainEvent::CrewSet { id, label, model, advisor, swarm_model } => {
                 main.crew = Some(CrewInfo { id: id.clone(), label: label.clone(), model: model.clone(), advisor: advisor.clone(), swarm_model: swarm_model.clone() });
             }
+            DomainEvent::WorkflowSet { workflow } => {
+                // A resume announces it again: keep the path already walked.
+                match main.workflow.as_mut() {
+                    Some(w) if w.workflow.id == workflow.id => w.workflow = workflow.clone(),
+                    _ => main.workflow = Some(WorkflowInfo::new(workflow.clone())),
+                }
+            }
             DomainEvent::NudgeSent { kind } => main.crew_health.nudge_sent(kind, e.ts),
             DomainEvent::ToolStarted { agent_id, tool, target, tool_use_id, background } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
@@ -952,6 +1028,12 @@ impl Colony {
                 }
                 let id = agent_id.as_deref().map_or_else(|| sid.clone(), |a| sub_id(&sid, a));
                 self.track_work(e, &id, tool, target.as_deref(), &mut changed);
+                // The main session calling a phase's skill moves the workflow on.
+                if agent_id.is_none() && tool == "Skill" {
+                    if let (Some(skill), Some(wf)) = (target.as_deref(), self.agents.get_mut(&sid).and_then(|m| m.workflow.as_mut())) {
+                        wf.skill_called(skill, e.ts);
+                    }
+                }
             }
             DomainEvent::ToolFinished { agent_id, tool, tool_use_id, ok, error } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);
@@ -1039,7 +1121,9 @@ impl Colony {
                 _ => {}
             },
             DomainEvent::SubagentStarted { agent_id, agent_type } => {
+                let phase = self.agents.get_mut(&sid).and_then(|m| m.workflow.as_mut()).and_then(|w| w.subagent_started());
                 let a = self.target(e, Some(agent_id), &mut changed);
+                a.phase = phase;
                 if let Some(t) = agent_type {
                     let ordinal = a.name.rsplit(' ').next().and_then(|n| n.parse().ok()).unwrap_or(1);
                     let parent_name = a.name.split(" · ").next().unwrap_or("").to_string();
