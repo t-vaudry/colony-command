@@ -249,8 +249,11 @@ impl Workflow {
             "\nWork in phases. A phase is either a skill, which you run with the Skill tool, \
              or a custom phase, which has its own instruction: when you start one, first run the \
              command given for it (it only prints a marker), then do what it says. \
-             Choose the next phase from what the work needs: skip a phase that doesn't apply, \
-             repeat one, go back, or finish when the work is done. \
+             Choose the next phase from what the work needs. Every phase listed is expected: \
+             run each one in turn, even when the change is small, and do not stop or report the \
+             work as finished until the last phase has run. Skip a phase only when it truly cannot \
+             apply (for example, nothing to test), and then say which one you are skipping and why. \
+             You may also repeat a phase or go back. \
              Say in a sentence which phase you are starting and why.\nPhases, in their usual order:",
         );
         for (i, p) in self.phases.iter().enumerate() {
@@ -407,6 +410,7 @@ mod tests {
         assert!(p.contains("- build (usually followed by review or plan)"));
         assert!(p.contains("- review"));
         assert!(p.contains("Choose the next phase"));
+        assert!(p.contains("until the last phase has run"));
     }
 
     #[test]

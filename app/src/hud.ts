@@ -605,7 +605,7 @@ export class Hud {
     const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
     this.renderCompose(a);
     this.refreshWorkflowPopout(a);
-    document.getElementById("inspector")!.classList.toggle("wide", needsWide(a));
+    document.getElementById("inspector")!.classList.toggle("wide", needsWide(a) || (a?.kind === "main" && !!a.workflow?.workflow.phases.length));
     if (!a) {
       const idle = this.idleSessions().length;
       setHtml(this.panel, `<div class="k">Inspector</div><h2>Click a bot</h2>
