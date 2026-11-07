@@ -1029,9 +1029,13 @@ impl Colony {
                 let id = agent_id.as_deref().map_or_else(|| sid.clone(), |a| sub_id(&sid, a));
                 self.track_work(e, &id, tool, target.as_deref(), &mut changed);
                 // The main session calling a phase's skill moves the workflow on.
-                if agent_id.is_none() && tool == "Skill" {
-                    if let (Some(skill), Some(wf)) = (target.as_deref(), self.agents.get_mut(&sid).and_then(|m| m.workflow.as_mut())) {
-                        wf.skill_called(skill, e.ts);
+                if agent_id.is_none() && (tool == "Skill" || tool == "Bash") {
+                    if let (Some(target), Some(wf)) = (target.as_deref(), self.agents.get_mut(&sid).and_then(|m| m.workflow.as_mut())) {
+                        // A skill phase is a Skill call; a custom phase announces itself with a marker command.
+                        let phase = if tool == "Skill" { Some(target) } else { crate::workflow::marker_phase(target) };
+                        if let Some(phase) = phase {
+                            wf.skill_called(phase, e.ts);
+                        }
                     }
                 }
             }

@@ -44,6 +44,8 @@ fn redact(e: &Envelope) -> Envelope {
         }
         // A Skill call's target is the skill's name: replay needs it to follow a workflow's phases.
         DomainEvent::ToolStarted { tool, .. } if tool == "Skill" => {}
+        // So is a custom phase's marker command (`echo colony-phase:<name>`), and only that.
+        DomainEvent::ToolStarted { tool, target, .. } if tool == "Bash" && target.as_deref().is_some_and(|t| colony_core::workflow::marker_phase(t).is_some()) => {}
         DomainEvent::ToolStarted { target, .. } | DomainEvent::PermissionRequested { target, .. } => *target = None,
         DomainEvent::PermissionAsked { target, input, .. } => {
             *target = None;
@@ -210,6 +212,24 @@ mod tests {
         let w = colony.agents.get("s").and_then(|a| a.workflow.as_ref()).expect("workflow replayed");
         assert_eq!(w.visits.iter().map(|v| v.skill.as_str()).collect::<Vec<_>>(), ["plan", "build"]);
         assert!(matches!(&logged[4].event, DomainEvent::ToolStarted { target: None, .. }), "other targets stay redacted");
+    }
+
+    #[test]
+    fn a_replayed_custom_phase_keeps_its_marker_and_nothing_else_from_bash() {
+        let wf = colony_core::workflow::parse("f", r#"{"phases":[{"skill":"triage","instruction":"Look."},{"skill":"build"}]}"#).unwrap();
+        let bash = |ts, cmd: &str| ev(ts, DomainEvent::ToolStarted { agent_id: None, tool: "Bash".into(), target: Some(cmd.into()), tool_use_id: None, background: false });
+        let logged: Vec<Envelope> = [ev(1, started()), ev(2, DomainEvent::WorkflowSet { workflow: wf }), bash(3, "echo colony-phase:triage"), bash(4, "echo colony-phase:x; cat ~/.ssh/id_rsa"), bash(5, "echo hi")]
+            .iter()
+            .map(redact)
+            .collect();
+        let mut colony = colony_core::Colony::new();
+        for e in &logged {
+            colony.apply(e);
+        }
+        let w = colony.agents.get("s").and_then(|a| a.workflow.as_ref()).expect("workflow replayed");
+        assert_eq!(w.visits.iter().map(|v| v.skill.as_str()).collect::<Vec<_>>(), ["triage"]);
+        assert!(matches!(&logged[3].event, DomainEvent::ToolStarted { target: None, .. }));
+        assert!(matches!(&logged[4].event, DomainEvent::ToolStarted { target: None, .. }));
     }
 
     #[test]

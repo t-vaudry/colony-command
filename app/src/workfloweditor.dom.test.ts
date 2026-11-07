@@ -57,7 +57,7 @@ describe("workflow editor dialog", () => {
     el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0].scope).toBe("project");
-    expect(saved[0].workflow).toEqual({ id: "ship-it", label: "Ship it", description: "", phases: [{ skill: "plan", when: "", next: ["ship"] }, { skill: "ship", when: "", next: [] }] });
+    expect(saved[0].workflow).toEqual({ id: "ship-it", label: "Ship it", description: "", phases: [{ skill: "plan", instruction: "", when: "", next: ["ship"] }, { skill: "ship", instruction: "", when: "", next: [] }], loops: [] });
     await vi.waitFor(() => expect(onSaved).toHaveBeenCalledWith("ship-it"));
     expect(el("wf-editor").hasAttribute("open")).toBe(false);
   });
@@ -110,6 +110,57 @@ describe("workflow editor dialog", () => {
     await vi.waitFor(() => expect(deleted).toEqual([{ scope: "project", id: "feature" }]));
     await vi.waitFor(() => expect(onSaved).toHaveBeenCalledWith(null));
     vi.unstubAllGlobals();
+  });
+
+  it("builds investigate, triage, a develop-test-review loop, then publish", async () => {
+    editor.open("win", "C:/p", listing, "", onSaved);
+    type(el("wf-label"), "Bug fix");
+    const phase = (i: number, f: string) => document.querySelector<HTMLInputElement>(`[data-i="${i}"][data-f="${f}"]`)!;
+    const names = ["investigate", "triage", "develop", "test", "review", "publish"];
+    names.forEach((n, i) => {
+      if (i > 0) el("wf-add").click();
+      phase(i, "skill").dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      type(phase(i, "skill"), n);
+    });
+    // triage is a custom phase with its own instruction.
+    const kind = document.querySelector<HTMLSelectElement>('[data-i="1"][data-f="kind"]')!;
+    kind.value = "custom";
+    kind.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(phase(1, "skill").placeholder).toMatch(/Phase name/);
+    expect(document.querySelector('[data-i="1"][data-f="skill"]')!.getAttribute("list")).toBeNull();
+    expect(document.querySelector('[data-i="2"][data-f="skill"]')!.getAttribute("list")).toBe("wf-skills");
+    type(document.querySelector<HTMLTextAreaElement>('[data-i="1"][data-f="instruction"]') as unknown as HTMLInputElement, "Decide how bad it is.");
+    // A loop over develop to review.
+    el("wf-add-loop").click();
+    const choose = (f: string, v: string) => {
+      const sel = document.querySelector<HTMLSelectElement>(`[data-l="0"][data-f="${f}"]`)!;
+      sel.value = v;
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    choose("from", "develop");
+    choose("to", "review");
+    type(document.querySelector<HTMLInputElement>('[data-l="0"][data-f="until"]')!, "the review finds nothing");
+    type(document.querySelector<HTMLInputElement>('[data-l="0"][data-f="max"]')!, "4");
+    el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    const w = saved[0].workflow;
+    expect(w.phases.map((p) => p.skill)).toEqual(names);
+    expect(w.phases.map((p) => p.instruction)).toEqual(["", "Decide how bad it is.", "", "", "", ""]);
+    expect(w.loops).toEqual([{ from: "develop", to: "review", until: "the review finds nothing", max: 4 }]);
+  });
+
+  it("refuses a loop that ends before it starts, and drops loops with a phase that's removed", () => {
+    const l: WorkflowListing = {
+      ...listing,
+      workflows: [{ id: "b", label: "B", description: "", phases: [{ skill: "a", when: "", next: [] }, { skill: "b", when: "", next: [] }, { skill: "c", when: "", next: [] }], loops: [{ from: "c", to: "b", until: "", max: 3 }] }],
+      from_project: [],
+    };
+    editor.open("win", "C:/p", l, "b", onSaved);
+    el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(el("wf-error").textContent).toMatch(/ends before it starts/);
+    expect(saved).toEqual([]);
+    document.querySelector<HTMLButtonElement>('[data-act="remove-loop"]')!.click();
+    expect(document.querySelectorAll(".wf-loop-row")).toHaveLength(0);
   });
 
   it("explains a draft that can't be saved, without calling the daemon", () => {

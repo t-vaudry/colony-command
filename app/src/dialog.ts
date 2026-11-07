@@ -303,9 +303,11 @@ export class NewSessionDialog {
     const lines: string[] = [];
     if (w) {
       if (w.description) lines.push(w.description);
-      lines.push(`Phases: ${w.phases.map((p) => p.skill).join(", ")}. Claude picks the next phase as the work needs it.`);
+      lines.push(`Phases: ${w.phases.map((p) => (p.instruction ? `${p.skill} (custom)` : p.skill)).join(", ")}. Claude picks the next phase as the work needs it.`);
+      for (const l of w.loops ?? []) lines.push(`Repeats ${l.from} to ${l.to}${l.until ? ` until ${l.until}` : ""}, up to ${l.max} rounds.`);
       const have = new Set((list?.skills ?? []).map((s) => s.name));
-      const missing = w.phases.filter((p) => !have.has(p.skill) && !p.skill.includes(":")).map((p) => p.skill);
+      // A custom phase has an instruction instead of a skill.
+      const missing = w.phases.filter((p) => !p.instruction && !have.has(p.skill) && !p.skill.includes(":")).map((p) => p.skill);
       if (missing.length) lines.push(`No skill found for: ${missing.join(", ")}.`);
       if (list?.from_project.includes(w.id)) lines.push("This workflow's text comes from the project folder.");
     } else if (list && list.workflows.length === 0) {

@@ -89,6 +89,29 @@ fn subagents_are_filed_under_the_running_phase() {
 }
 
 #[test]
+fn a_custom_phase_starts_with_its_marker_command() {
+    let mut r = Run::new(false);
+    let w = workflow::parse(
+        "bug",
+        r#"{"phases":[{"skill":"triage","instruction":"Decide how bad it is."},{"skill":"build"}],"loops":[{"from":"triage","to":"build"}]}"#,
+    )
+    .unwrap();
+    r.t += 1_000;
+    r.colony.apply(&Envelope { ts: r.t, host: HostId::Windows, session_id: SID.into(), cwd: None, event: DomainEvent::WorkflowSet { workflow: w } });
+    let bash = |r: &mut Run, command: &str| r.hook(json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}}));
+    bash(&mut r, "echo hello");
+    bash(&mut r, "cargo test");
+    assert!(r.info().visits.is_empty());
+    bash(&mut r, "echo colony-phase:triage");
+    r.start("a1");
+    r.skill("build");
+    bash(&mut r, "echo colony-phase:triage");
+    let path: Vec<_> = r.info().visits.iter().map(|v| v.skill.as_str()).collect();
+    assert_eq!(path, ["triage", "build", "triage"]);
+    assert_eq!(r.info().visits[0].subagents, 1);
+}
+
+#[test]
 fn a_session_without_a_workflow_ignores_skill_calls() {
     let mut r = Run::new(false);
     r.skill("plan");

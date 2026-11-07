@@ -1,5 +1,6 @@
 //! Dynamic workflows: a session works through phases, each phase a Claude Code
-//! skill, and the session itself picks the next phase from what the work needs.
+//! skill or a custom instruction, and the session itself picks the next phase
+//! from what the work needs. A run of phases can be a loop.
 //!
 //! A workflow is a JSON file (`<id>.json`) in a workflows folder:
 //!
@@ -7,12 +8,17 @@
 //! { "label": "Feature", "description": "Plan, build, review.",
 //!   "phases": [ { "skill": "plan", "when": "the change isn't clear yet", "next": ["build"] },
 //!               { "skill": "build", "next": ["review"] },
-//!               { "skill": "review" } ] }
+//!               { "skill": "review" } ],
+//!   "loops": [ { "from": "build", "to": "review", "until": "the review finds nothing", "max": 3 } ] }
 //! ```
 //!
+//! A phase with an `instruction` is a custom phase: `skill` is then just its
+//! name, and the session does what the instruction says instead of running a
+//! skill. It marks the start of one by running `echo colony-phase:<name>`.
+//!
 //! Colony doesn't enforce the graph. It tells the session about it (see
-//! [`Workflow::prompt`]) and watches the Skill tool calls to see which phase is
-//! running (see the reducer in `state`).
+//! [`Workflow::prompt`]) and watches the Skill tool calls and those markers to
+//! see which phase is running (see the reducer in `state`).
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -20,17 +26,44 @@ use std::path::{Path, PathBuf};
 /// Largest workflow file read; a bigger one is a mistake.
 const MAX_FILE: u64 = 64 * 1024;
 const MAX_PHASES: usize = 40;
+const MAX_LOOPS: usize = 10;
+/// Rounds a loop may be given.
+const MAX_ROUNDS: u32 = 20;
+const DEFAULT_ROUNDS: u32 = 3;
+/// What a session runs to say a custom phase has started: `echo colony-phase:<name>`.
+pub const MARKER: &str = "colony-phase:";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Phase {
-    /// The skill's name, as in `.claude/skills/<skill>/SKILL.md`.
+    /// The skill's name, as in `.claude/skills/<skill>/SKILL.md`; for a custom
+    /// phase (one with an `instruction`) just the phase's name.
     pub skill: String,
+    /// What to do in a custom phase, instead of running a skill.
+    #[serde(default)]
+    pub instruction: String,
     /// When this phase is the right one, in a sentence.
     #[serde(default)]
     pub when: String,
     /// Phases that usually follow. A hint for the session, not a rule.
     #[serde(default)]
     pub next: Vec<String>,
+}
+
+/// A run of phases (`from` to `to`, in the order listed) the session repeats.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Loop {
+    pub from: String,
+    pub to: String,
+    /// When to stop going round, in a sentence.
+    #[serde(default)]
+    pub until: String,
+    /// Most rounds to go.
+    #[serde(default = "default_rounds")]
+    pub max: u32,
+}
+
+fn default_rounds() -> u32 {
+    DEFAULT_ROUNDS
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,6 +76,8 @@ pub struct Workflow {
     #[serde(default)]
     pub description: String,
     pub phases: Vec<Phase>,
+    #[serde(default)]
+    pub loops: Vec<Loop>,
 }
 
 /// A skill name is a folder name: letters, digits, `-`, `_`, `.`, and `:` for plugins.
@@ -73,6 +108,10 @@ pub fn parse(id: &str, json: &str) -> Result<Workflow, String> {
     w.description = one_line(&w.description, 400);
     for p in &mut w.phases {
         p.when = one_line(&p.when, 200);
+        p.instruction = one_line(&p.instruction, 600);
+    }
+    for l in &mut w.loops {
+        l.until = one_line(&l.until, 200);
     }
     if w.label.trim().is_empty() {
         w.label = id.to_string();
@@ -103,7 +142,50 @@ impl Workflow {
                 }
             }
         }
+        self.check_loops()
+    }
+
+    fn index_of(&self, name: &str) -> Option<usize> {
+        self.phases.iter().position(|p| p.skill == name)
+    }
+
+    fn check_loops(&self) -> Result<(), String> {
+        let id = &self.id;
+        if self.loops.len() > MAX_LOOPS {
+            return Err(format!("workflow {id}: more than {MAX_LOOPS} loops"));
+        }
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        for l in &self.loops {
+            let (Some(a), Some(b)) = (self.index_of(&l.from), self.index_of(&l.to)) else {
+                return Err(format!("workflow {id}: loop {:?} to {:?} names a phase that isn't one", l.from, l.to));
+            };
+            if a > b {
+                return Err(format!("workflow {id}: loop from {:?} ends before it starts ({:?} is earlier in the list)", l.from, l.to));
+            }
+            if l.max == 0 || l.max > MAX_ROUNDS {
+                return Err(format!("workflow {id}: a loop goes round between 1 and {MAX_ROUNDS} times"));
+            }
+            // Loops nest or stand apart; they don't cross, and two can't be the same run.
+            for &(c, d) in &spans {
+                let apart = b < c || d < a;
+                let inside = (c <= a && b <= d) || (a <= c && d <= b);
+                if !apart && (!inside || (a, b) == (c, d)) {
+                    return Err(format!("workflow {id}: loop {:?} to {:?} crosses or repeats another loop", l.from, l.to));
+                }
+            }
+            spans.push((a, b));
+        }
         Ok(())
+    }
+
+    /// Phase `i`'s usual followers: its `next`, else the phase listed after it.
+    pub fn followers(&self, i: usize) -> Vec<&str> {
+        let p = &self.phases[i];
+        if !p.next.is_empty() {
+            p.next.iter().map(String::as_str).collect()
+        } else {
+            self.phases.get(i + 1).map(|q| vec![q.skill.as_str()]).unwrap_or_default()
+        }
     }
 
     /// The phase a Skill tool call names, if it's one of this workflow's.
@@ -122,22 +204,45 @@ impl Workflow {
             s.push_str(self.description.trim());
         }
         s.push_str(
-            "\nWork in phases. Each phase is a skill: run it with the Skill tool. \
+            "\nWork in phases. A phase is either a skill, which you run with the Skill tool, \
+             or a custom phase, which has its own instruction: when you start one, first run the \
+             command given for it (it only prints a marker), then do what it says. \
              Choose the next phase from what the work needs: skip a phase that doesn't apply, \
              repeat one, go back, or finish when the work is done. \
-             Say in a sentence which phase you are starting and why.\nPhases:",
+             Say in a sentence which phase you are starting and why.\nPhases, in their usual order:",
         );
-        for p in &self.phases {
+        for (i, p) in self.phases.iter().enumerate() {
             s.push_str(&format!("\n- {}", p.skill));
+            if !p.instruction.is_empty() {
+                s.push_str(&format!(" (custom phase; start it by running `echo {MARKER}{}`): {}", p.skill, p.instruction));
+            }
             if !p.when.trim().is_empty() {
-                s.push_str(&format!(": use when {}", p.when.trim().trim_end_matches('.')));
+                s.push_str(&format!("{} use when {}", if p.instruction.is_empty() { ":" } else { ";" }, p.when.trim().trim_end_matches('.')));
             }
-            if !p.next.is_empty() {
-                s.push_str(&format!(" (usually followed by {})", p.next.join(" or ")));
+            let next = self.followers(i);
+            if !next.is_empty() {
+                s.push_str(&format!(" (usually followed by {})", next.join(" or ")));
             }
+        }
+        for l in &self.loops {
+            s.push_str(&format!("\nLoop: {} to {} repeat as a run", l.from, l.to));
+            if l.until.is_empty() {
+                s.push_str(&format!(". After {}, go round again from {} if the work needs it", l.to, l.from));
+            } else {
+                s.push_str(&format!(". After {}, check whether {}: if not, go round again from {}", l.to, l.until.trim_end_matches('.'), l.from));
+            }
+            s.push_str(&format!(", at most {} rounds in all; then carry on with the phase after {}.", l.max, l.to));
         }
         s
     }
+}
+
+/// The phase name in a custom phase's marker command (`echo colony-phase:triage`).
+pub fn marker_phase(command: &str) -> Option<&str> {
+    let rest = command.trim().strip_prefix("echo")?.trim_start();
+    let name = rest.trim_matches(|c| c == '"' || c == '\'').strip_prefix(MARKER)?;
+    let name = name.trim();
+    (!name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))).then_some(name)
 }
 
 fn read_json(path: &Path) -> Result<String, String> {
@@ -262,6 +367,51 @@ mod tests {
         let w = parse("x", &format!(r#"{{"description":"{long}","phases":[{{"skill":"a","when":"{long}"}}]}}"#)).unwrap();
         assert_eq!(w.description.len(), 400);
         assert_eq!(w.phases[0].when.len(), 200);
+    }
+
+    #[test]
+    fn custom_phases_and_loops_reach_the_prompt() {
+        let w = parse(
+            "bug",
+            r#"{"phases":[{"skill":"investigate"},{"skill":"triage","instruction":"Decide how bad it is.\nWrite it down.","when":"the cause is known"},
+                          {"skill":"develop"},{"skill":"test"},{"skill":"review"},{"skill":"publish"}],
+                "loops":[{"from":"develop","to":"review","until":"the review finds nothing\nmore","max":4}]}"#,
+        )
+        .unwrap();
+        let p = w.prompt();
+        assert!(p.contains("- triage (custom phase; start it by running `echo colony-phase:triage`): Decide how bad it is. Write it down.; use when the cause is known (usually followed by develop)"));
+        assert!(p.contains("- investigate (usually followed by triage)"));
+        assert!(p.contains("- publish\nLoop"));
+        assert!(p.contains("Loop: develop to review repeat as a run. After review, check whether the review finds nothing more: if not, go round again from develop, at most 4 rounds in all; then carry on with the phase after review."));
+        assert_eq!(w.followers(5), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn loops_are_checked() {
+        let base = |loops: &str| format!(r#"{{"phases":[{{"skill":"a"}},{{"skill":"b"}},{{"skill":"c"}},{{"skill":"d"}}],"loops":{loops}}}"#);
+        assert!(parse("x", &base(r#"[{"from":"a","to":"b"}]"#)).is_ok());
+        assert_eq!(parse("x", &base(r#"[{"from":"a","to":"b"}]"#)).unwrap().loops[0].max, 3);
+        // Nested and separate loops are fine.
+        assert!(parse("x", &base(r#"[{"from":"a","to":"d"},{"from":"b","to":"c"},{"from":"a","to":"a"}]"#)).is_ok());
+        assert!(parse("x", &base(r#"[{"from":"a","to":"b"},{"from":"c","to":"d"}]"#)).is_ok());
+        assert!(parse("x", &base(r#"[{"from":"c","to":"a"}]"#)).unwrap_err().contains("ends before it starts"));
+        assert!(parse("x", &base(r#"[{"from":"a","to":"z"}]"#)).unwrap_err().contains("isn't one"));
+        assert!(parse("x", &base(r#"[{"from":"a","to":"c"},{"from":"b","to":"d"}]"#)).unwrap_err().contains("crosses or repeats"));
+        assert!(parse("x", &base(r#"[{"from":"a","to":"b"},{"from":"a","to":"b"}]"#)).unwrap_err().contains("crosses or repeats"));
+        assert!(parse("x", &base(r#"[{"from":"a","to":"b","max":0}]"#)).unwrap_err().contains("between 1 and"));
+        assert!(parse("x", &base(r#"[{"from":"a","to":"b","max":99}]"#)).is_err());
+    }
+
+    #[test]
+    fn finds_the_phase_in_a_marker_command() {
+        assert_eq!(marker_phase("echo colony-phase:triage"), Some("triage"));
+        assert_eq!(marker_phase("  echo   \"colony-phase:triage\" "), Some("triage"));
+        assert_eq!(marker_phase("echo 'colony-phase:deep-dive'"), Some("deep-dive"));
+        assert_eq!(marker_phase("echo colony-phase:"), None);
+        assert_eq!(marker_phase("echo hello"), None);
+        assert_eq!(marker_phase("ls colony-phase:x"), None);
+        assert_eq!(marker_phase("echo colony-phase:a b"), None);
+        assert_eq!(marker_phase("echo colony-phase:x; rm -rf /"), None);
     }
 
     #[test]

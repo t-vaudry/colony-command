@@ -278,9 +278,22 @@ export interface CrewCheck {
 }
 
 export interface WorkflowPhase {
+  /** The skill's name; for a custom phase (one with an instruction) just the phase's name. */
   skill: string;
+  /** What to do in a custom phase, instead of running a skill. */
+  instruction?: string;
   when: string;
   next: string[];
+}
+
+/** A run of phases, `from` to `to` in the order listed, that the session repeats. */
+export interface WorkflowLoop {
+  from: string;
+  to: string;
+  /** When to stop going round. */
+  until: string;
+  /** Most rounds. */
+  max: number;
 }
 
 export interface Workflow {
@@ -288,6 +301,7 @@ export interface Workflow {
   label: string;
   description: string;
   phases: WorkflowPhase[];
+  loops?: WorkflowLoop[];
 }
 
 export interface PhaseVisit {
