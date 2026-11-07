@@ -108,6 +108,7 @@
           <select id="ns-workflow"></select>
         </label>
         <p id="ns-workflow-note" class="muted small" hidden></p>
+        <p class="small"><button type="button" id="ns-workflow-edit" class="linklike">Edit workflows…</button></p>
         <label class="check" title="Customize changes aren't saved to the default. Colony remembers this on this computer; nothing is written to the folder">
           <input id="ns-folder-default" type="checkbox" />
           <span id="ns-folder-default-text">Make this crew the default for this folder</span>
@@ -187,6 +188,43 @@
         <div class="actions">
           <button type="submit" class="primary" id="ns-start">Start</button>
           <button type="button" id="ns-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="wf-editor">
+      <form id="wf-form">
+        <h2>Workflows</h2>
+        <p class="muted small">A workflow is a list of phases, each a skill. The session picks the next phase as the work needs it; "usually followed by" is a hint to it, not a rule.</p>
+        <label>
+          <span class="k">Edit</span>
+          <select id="wf-pick"></select>
+        </label>
+        <label>
+          <span class="k">Name</span>
+          <input id="wf-label" type="text" placeholder="Feature work" />
+        </label>
+        <label>
+          <span class="k">What it's for (optional)</span>
+          <input id="wf-description" type="text" placeholder="Plan, build and review a change." />
+        </label>
+        <label>
+          <span class="k">Save for</span>
+          <select id="wf-scope">
+            <option value="project">This project (kept in .colony/workflows, can be committed)</option>
+            <option value="user">Me, in every project</option>
+          </select>
+        </label>
+        <div>
+          <span class="k">Phases</span>
+          <div id="wf-phases"></div>
+          <datalist id="wf-skills"></datalist>
+          <button type="button" id="wf-add">Add phase</button>
+        </div>
+        <p id="wf-error" class="error" role="alert"></p>
+        <div class="actions">
+          <button type="submit" class="primary" id="wf-save">Save</button>
+          <button type="button" id="wf-delete" class="danger" hidden>Delete</button>
+          <button type="button" id="wf-cancel">Cancel</button>
         </div>
       </form>
     </dialog>

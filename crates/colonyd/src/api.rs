@@ -151,6 +151,24 @@ enum Command {
         host: colony_core::HostId,
         dir: String,
     },
+    /// Write a workflow to the project (`scope` "project") or for the user ("user").
+    SaveWorkflow {
+        #[serde(default)]
+        req: u64,
+        host: colony_core::HostId,
+        dir: String,
+        scope: String,
+        workflow: colony_core::workflow::Workflow,
+    },
+    /// Remove a saved workflow.
+    DeleteWorkflow {
+        #[serde(default)]
+        req: u64,
+        host: colony_core::HostId,
+        dir: String,
+        scope: String,
+        id: String,
+    },
     /// Save a crew: a new one, or an edited copy of a built-in.
     SaveCrew { crew: colony_core::crew::Crew },
     /// Remove a saved crew, or reset a built-in crew to how Colony ships it.
@@ -315,6 +333,15 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         Command::ListWorkflows { req, host, dir } => {
             let l = crate::workflows::listing(&host, &dir);
             Ok(Some(json!({ "type": "workflows", "req": req, "workflows": l.workflows, "from_project": l.from_project, "problems": l.problems, "skills": l.skills }).to_string()))
+        }
+        // Answered in the message: an error reply would be taken for a failed spawn.
+        Command::SaveWorkflow { req, host, dir, scope, workflow } => {
+            let error = crate::workflows::save(&host, &dir, &scope, &workflow).err();
+            Ok(Some(json!({ "type": "workflow_saved", "req": req, "error": error }).to_string()))
+        }
+        Command::DeleteWorkflow { req, host, dir, scope, id } => {
+            let error = crate::workflows::delete(&host, &dir, &scope, &id).err();
+            Ok(Some(json!({ "type": "workflow_saved", "req": req, "error": error }).to_string()))
         }
         Command::SaveCrew { crew } => crate::crews::save(crew).map(|all| {
             let _ = shared.deltas.send(json!({ "type": "crews", "items": all }).to_string());
