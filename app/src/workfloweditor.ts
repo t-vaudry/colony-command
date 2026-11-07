@@ -20,19 +20,22 @@ export interface Draft {
   id: string;
   label: string;
   description: string;
+  /** Where the workflow is saved from now on. */
   scope: Scope;
+  /** The folder an existing workflow was loaded from (what Delete removes); null for a new one. */
+  origin: Scope | null;
   phases: DraftPhase[];
 }
 
 const SKILL_CHARS = /^[A-Za-z0-9._:-]{1,64}$/;
 
 export function blank(scope: Scope): Draft {
-  return { id: "", label: "", description: "", scope, phases: [{ skill: "", when: "", next: [] }] };
+  return { id: "", label: "", description: "", scope, origin: null, phases: [{ skill: "", when: "", next: [] }] };
 }
 
 /** An existing workflow as a draft; `fromProject` says where it was found. */
 export function draftOf(w: Workflow, fromProject: boolean): Draft {
-  return { id: w.id, label: w.label, description: w.description, scope: fromProject ? "project" : "user", phases: w.phases.map((p) => ({ skill: p.skill, when: p.when, next: [...p.next] })) };
+  return { id: w.id, label: w.label, description: w.description, scope: fromProject ? "project" : "user", origin: fromProject ? "project" : "user", phases: w.phases.map((p) => ({ skill: p.skill, when: p.when, next: [...p.next] })) };
 }
 
 /** "Feature work!" -> "feature-work": the file name a new workflow gets. */
@@ -72,8 +75,8 @@ export function toWorkflow(d: Draft): Workflow {
 }
 
 /** Rename a phase's skill, keeping the phases that lead to it pointing at it. */
-export function renameSkill(d: Draft, i: number, to: string): void {
-  const from = d.phases[i].skill.trim();
+export function renameSkill(d: Draft, i: number, to: string, was: string = d.phases[i].skill): void {
+  const from = was.trim();
   d.phases[i].skill = to;
   const now = to.trim();
   if (!from || from === now) return;
@@ -127,6 +130,8 @@ export class WorkflowEditor {
   private save = document.getElementById("wf-save") as HTMLButtonElement;
   private del = document.getElementById("wf-delete") as HTMLButtonElement;
   private draft: Draft = blank("user");
+  /** The skill name in the field being edited when it gained focus: links are moved once, from it to the final name. */
+  private skillWas: { i: number; name: string } | null = null;
   private listing: WorkflowListing = { workflows: [], from_project: [], problems: [], skills: [] };
   private host = "";
   private dir = "";
@@ -145,6 +150,10 @@ export class WorkflowEditor {
       this.draft.phases.push({ skill: "", when: "", next: [] });
       this.drawPhases();
       this.phases.querySelector<HTMLInputElement>(`[data-i="${this.draft.phases.length - 1}"][data-f="skill"]`)?.focus();
+    });
+    this.phases.addEventListener("focusin", (e) => {
+      const t = e.target as HTMLInputElement;
+      if (t.dataset.f === "skill") this.skillWas = { i: Number(t.dataset.i), name: this.draft.phases[Number(t.dataset.i)]?.skill ?? "" };
     });
     this.phases.addEventListener("input", (e) => this.edit(e.target as HTMLInputElement, false));
     this.phases.addEventListener("change", (e) => this.edit(e.target as HTMLInputElement, true));
@@ -250,9 +259,16 @@ export class WorkflowEditor {
     if (!p || !f) return;
     if (f === "when") p.when = el.value;
     else if (f === "skill") {
-      // Only the warnings and choices follow the name, and only once it's settled; the rows stay put.
-      renameSkill(this.draft, i, el.value);
-      if (committed) this.drawExtras();
+      // Typing only sets the name. Links move once it's settled, from the name the field started with,
+      // so passing through another phase's name on the way doesn't take them there.
+      if (!committed) p.skill = el.value;
+      else {
+        const was = this.skillWas?.i === i ? this.skillWas.name : p.skill;
+        p.skill = was;
+        renameSkill(this.draft, i, el.value, was);
+        this.skillWas = { i, name: el.value };
+        this.drawExtras();
+      }
     } else if (f === "next" && committed) {
       p.next = el.checked ? [...new Set([...p.next, el.value])] : p.next.filter((n) => n !== el.value);
     }
@@ -282,7 +298,7 @@ export class WorkflowEditor {
 
   private async remove(): Promise<void> {
     if (!this.draft.id || !confirm(`Delete the workflow "${this.draft.label}"? Sessions already running it are not affected.`)) return;
-    const err = await this.daemon.deleteWorkflow(this.host, this.dir, this.draft.scope, this.draft.id);
+    const err = await this.daemon.deleteWorkflow(this.host, this.dir, this.draft.origin ?? this.draft.scope, this.draft.id);
     if (err) {
       this.error.textContent = err;
       return;

@@ -24,6 +24,7 @@ const type = (input: HTMLInputElement, value: string) => {
 
 describe("workflow editor dialog", () => {
   let saved: { scope: string; workflow: Workflow }[];
+  let deleted: { scope: string; id: string }[];
   let editor: WorkflowEditor;
   let onSaved: ReturnType<typeof vi.fn>;
   beforeEach(() => {
@@ -32,7 +33,11 @@ describe("workflow editor dialog", () => {
     HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
     HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
     saved = [];
-    const daemon = { saveWorkflow: async (_h: string, _d: string, scope: string, workflow: Workflow) => (saved.push({ scope, workflow }), null), deleteWorkflow: async () => null } as unknown as Daemon;
+    deleted = [];
+    const daemon = {
+      saveWorkflow: async (_h: string, _d: string, scope: string, workflow: Workflow) => (saved.push({ scope, workflow }), null),
+      deleteWorkflow: async (_h: string, _d: string, scope: string, id: string) => (deleted.push({ scope, id }), null),
+    } as unknown as Daemon;
     editor = new WorkflowEditor(daemon);
     onSaved = vi.fn();
   });
@@ -76,6 +81,35 @@ describe("workflow editor dialog", () => {
     el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
     expect(el("wf-error").textContent).toMatch(/already a workflow/);
     expect(saved).toEqual([]);
+  });
+
+  it("renames a phase once, from the name it started with, however the typing passes other names", () => {
+    const l: WorkflowListing = { ...listing, workflows: [{ id: "t", label: "T", description: "", phases: [{ skill: "x", when: "", next: ["xy"] }, { skill: "xy", when: "", next: [] }] }], from_project: [] };
+    editor.open("win", "C:/p", l, "t", onSaved);
+    const second = document.querySelector<HTMLInputElement>('[data-i="1"][data-f="skill"]')!;
+    second.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    for (const v of ["x", "xz"]) {
+      second.value = v;
+      second.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    second.dispatchEvent(new Event("change", { bubbles: true }));
+    el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    return vi.waitFor(() => {
+      expect(saved).toHaveLength(1);
+      expect(saved[0].workflow.phases.map((p) => [p.skill, p.next])).toEqual([["x", ["xz"]], ["xz", []]]);
+    });
+  });
+
+  it("deletes from the folder the workflow was loaded from, whatever Save for says now", async () => {
+    editor.open("win", "C:/p", listing, "feature", onSaved);
+    const scope = el<HTMLSelectElement>("wf-scope");
+    scope.value = "user";
+    scope.dispatchEvent(new Event("change", { bubbles: true }));
+    vi.stubGlobal("confirm", () => true);
+    el("wf-delete").click();
+    await vi.waitFor(() => expect(deleted).toEqual([{ scope: "project", id: "feature" }]));
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledWith(null));
+    vi.unstubAllGlobals();
   });
 
   it("explains a draft that can't be saved, without calling the daemon", () => {

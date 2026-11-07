@@ -7,6 +7,7 @@ const draft = (extra: Partial<Draft> = {}): Draft => ({
   label: "Feature",
   description: "",
   scope: "user",
+  origin: null,
   phases: [
     { skill: "plan", when: "", next: ["build"] },
     { skill: "build", when: "", next: ["review", "plan"] },
@@ -98,6 +99,7 @@ describe("workflow editor", () => {
     const w: Workflow = { id: "f", label: "F", description: "d", phases: [{ skill: "a", when: "w", next: ["a"] }] };
     const d = draftOf(w, true);
     expect(d.scope).toBe("project");
+    expect(d.origin).toBe("project");
     expect(draftOf(w, false).scope).toBe("user");
     d.phases[0].next.push("z");
     expect(w.phases[0].next).toEqual(["a"]);
