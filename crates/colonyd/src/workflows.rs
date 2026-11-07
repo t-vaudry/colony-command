@@ -79,10 +79,11 @@ pub fn save(host: &HostId, dir: &str, scope: &str, w: &Workflow) -> Result<(), S
     let text = serde_json::to_string_pretty(&body).map_err(|e| e.to_string())?;
     let path = folder.join(format!("{}.json", checked.id));
     let tmp = folder.join(format!("{}.json.tmp", checked.id));
-    std::fs::create_dir_all(&folder)
-        .and_then(|_| std::fs::write(&tmp, text))
-        .and_then(|_| std::fs::rename(&tmp, &path))
-        .map_err(|e| format!("could not save {}: {e}", path.display()))
+    let written = std::fs::create_dir_all(&folder).and_then(|_| std::fs::write(&tmp, text)).and_then(|_| std::fs::rename(&tmp, &path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written.map_err(|e| format!("could not save {}: {e}", path.display()))
 }
 
 /// Remove workflow `id` from the place it was saved.

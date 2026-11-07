@@ -57,6 +57,27 @@ describe("workflow editor dialog", () => {
     expect(el("wf-editor").hasAttribute("open")).toBe(false);
   });
 
+  it("doesn't save on Enter, and keeps its buttons when a skill name is settled", async () => {
+    editor.open("win", "C:/p", listing, "feature", onSaved);
+    const skill = document.querySelector<HTMLInputElement>('[data-i="0"][data-f="skill"]')!;
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    skill.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(true);
+    const remove = document.querySelector('[data-act="remove"]');
+    type(skill, "ship");
+    expect(document.querySelector('[data-act="remove"]')).toBe(remove);
+    expect(saved).toEqual([]);
+  });
+
+  it("won't replace an existing workflow by naming a new one the same", async () => {
+    editor.open("win", "C:/p", listing, "", onSaved);
+    type(el("wf-label"), "Feature");
+    type(document.querySelector<HTMLInputElement>('[data-i="0"][data-f="skill"]')!, "plan");
+    el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(el("wf-error").textContent).toMatch(/already a workflow/);
+    expect(saved).toEqual([]);
+  });
+
   it("explains a draft that can't be saved, without calling the daemon", () => {
     editor.open("wsl:Ubuntu", "/home/p", listing, "", onSaved);
     expect(el<HTMLSelectElement>("wf-scope").value).toBe("user");

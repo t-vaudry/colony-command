@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { blank, draftOf, movePhase, problem, removePhase, renameSkill, slug, toWorkflow, unusedSkills, type Draft } from "./workfloweditor";
-import type { Workflow } from "./types";
+import { blank, clash, draftOf, movePhase, problem, removePhase, renameSkill, slug, toWorkflow, unusedSkills, type Draft } from "./workfloweditor";
+import type { Workflow, WorkflowListing } from "./types";
 
 const draft = (extra: Partial<Draft> = {}): Draft => ({
   id: "",
@@ -55,6 +55,26 @@ describe("workflow editor", () => {
     const e = draft({ phases: [{ skill: "", when: "", next: [] }, { skill: "x", when: "", next: [""] }] });
     renameSkill(e, 0, "y");
     expect(e.phases[1].next).toEqual([""]);
+  });
+
+  it("leaves links alone while another phase has the same skill", () => {
+    const d = draft({ phases: [{ skill: "a", when: "", next: ["b"] }, { skill: "b", when: "", next: [] }, { skill: "b", when: "", next: [] }] });
+    renameSkill(d, 1, "c");
+    expect(d.phases[0].next).toEqual(["b"]);
+    const dup = draft({ phases: [{ skill: "a", when: "", next: ["b"] }, { skill: "b", when: "", next: [] }, { skill: "b", when: "", next: [] }] });
+    removePhase(dup, 2);
+    expect(dup.phases[0].next).toEqual(["b"]);
+    const e = draft({ phases: [{ skill: "a", when: "", next: ["b"] }, { skill: "b ", when: "", next: [] }] });
+    renameSkill(e, 1, "c ");
+    expect(e.phases[0].next).toEqual(["c"]);
+  });
+
+  it("warns before a new workflow replaces one, or one saved for the user is hidden by the project's", () => {
+    const l: WorkflowListing = { workflows: [{ id: "feature", label: "Feature", description: "", phases: [] }], from_project: ["feature"], problems: [], skills: [] };
+    expect(clash(draft({ label: "Feature" }), l)).toMatch(/already a workflow called "Feature"/);
+    expect(clash(draft({ label: "Other" }), l)).toBeNull();
+    expect(clash(draft({ id: "feature", label: "Feature", scope: "project" }), l)).toBeNull();
+    expect(clash(draft({ id: "feature", label: "Feature", scope: "user" }), l)).toMatch(/project has its own/);
   });
 
   it("removes a phase and every way to it", () => {

@@ -73,16 +73,34 @@ export function toWorkflow(d: Draft): Workflow {
 
 /** Rename a phase's skill, keeping the phases that lead to it pointing at it. */
 export function renameSkill(d: Draft, i: number, to: string): void {
-  const from = d.phases[i].skill;
+  const from = d.phases[i].skill.trim();
   d.phases[i].skill = to;
-  if (!from || from === to) return;
-  for (const p of d.phases) p.next = p.next.map((n) => (n === from ? to : n));
+  const now = to.trim();
+  if (!from || from === now) return;
+  // Another phase still has the old name: the links were to that one.
+  if (d.phases.some((q, j) => j !== i && q.skill.trim() === from)) return;
+  for (const p of d.phases) p.next = p.next.map((n) => (n === from ? now : n));
 }
 
 /** Remove phase `i` and every way to it. */
 export function removePhase(d: Draft, i: number): void {
   const [gone] = d.phases.splice(i, 1);
-  for (const p of d.phases) p.next = p.next.filter((n) => n !== gone.skill);
+  const name = gone.skill.trim();
+  // Another phase with the same skill keeps the links.
+  if (d.phases.some((q) => q.skill.trim() === name)) return;
+  for (const p of d.phases) p.next = p.next.filter((n) => n !== name);
+}
+
+/** Why saving this draft would do something unintended given what already exists; null when nothing. */
+export function clash(d: Draft, l: WorkflowListing): string | null {
+  const id = d.id || slug(d.label);
+  if (!d.id && l.workflows.some((w) => w.id === id)) {
+    return `There is already a workflow called "${l.workflows.find((w) => w.id === id)!.label}". Pick it in the Edit list to change it, or give this one another name.`;
+  }
+  if (d.scope === "user" && l.from_project.includes(id)) {
+    return "This project has its own workflow with this name, and it would win over one saved for you. Save it for this project, or rename it.";
+  }
+  return null;
 }
 
 export function movePhase(d: Draft, i: number, by: -1 | 1): void {
@@ -139,6 +157,11 @@ export class WorkflowEditor {
       else removePhase(this.draft, i);
       this.drawPhases();
     });
+    // Enter in a field moves on; saving is the Save button's job.
+    this.phases.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") e.preventDefault();
+    });
+    for (const input of [this.label, this.description]) input.addEventListener("keydown", (e) => e.key === "Enter" && e.preventDefault());
     document.getElementById("wf-cancel")!.addEventListener("click", () => this.dlg.close());
     document.getElementById("wf-form")!.addEventListener("submit", (e) => {
       e.preventDefault();
@@ -180,19 +203,9 @@ export class WorkflowEditor {
 
   /** The phase rows: skill, when to use it, which phases can follow, and order controls. */
   private drawPhases(): void {
-    // Suggest installed skills that no phase uses yet.
-    this.skillList.innerHTML = unusedSkills(this.draft, this.listing.skills)
-      .map((s) => `<option value="${esc(s.name)}">${esc(`${s.source}${s.description ? ` · ${s.description}` : ""}`)}</option>`)
-      .join("");
-    const installed = new Set(this.listing.skills.map((s) => s.name));
     const d = this.draft;
     this.phases.innerHTML = d.phases
       .map((p, i) => {
-        const others = d.phases.map((q) => q.skill.trim()).filter(Boolean);
-        const chips = [...new Set(others)]
-          .map((n) => `<label class="wf-chip"><input type="checkbox" data-i="${i}" data-f="next" value="${esc(n)}"${p.next.includes(n) ? " checked" : ""} />${esc(n)}</label>`)
-          .join("");
-        const missing = p.skill.trim() && !installed.has(p.skill.trim()) && !p.skill.includes(":");
         return `<div class="wf-row">
           <div class="wf-row-top">
             <span class="wf-num">${i + 1}</span>
@@ -201,12 +214,33 @@ export class WorkflowEditor {
             <button type="button" data-act="down" data-i="${i}" title="Move down" aria-label="Move phase ${i + 1} down"${i === d.phases.length - 1 ? " disabled" : ""}>↓</button>
             <button type="button" data-act="remove" data-i="${i}" title="Remove phase" aria-label="Remove phase ${i + 1}">✕</button>
           </div>
-          ${missing ? `<p class="small warn">No skill named "${esc(p.skill.trim())}" is installed for this project or you.</p>` : ""}
+          <div data-slot="warn" data-i="${i}"></div>
           <input type="text" data-i="${i}" data-f="when" value="${esc(p.when)}" placeholder="Use when… (e.g. the change isn't clear yet)" aria-label="When to use phase ${i + 1}" />
-          <div class="wf-next small"><span class="muted">Usually followed by</span>${chips || `<span class="muted"> (add more phases)</span>`}</div>
+          <div class="wf-next small" data-slot="next" data-i="${i}"></div>
         </div>`;
       })
       .join("");
+    this.drawExtras();
+  }
+
+  /** The parts of each row that follow the skill names: warnings and "followed by" choices. Redrawn in place, so a click on a button next to a field just edited isn't lost. */
+  private drawExtras(): void {
+    const installed = new Set(this.listing.skills.map((s) => s.name));
+    const d = this.draft;
+    const names = [...new Set(d.phases.map((q) => q.skill.trim()).filter(Boolean))];
+    this.skillList.innerHTML = unusedSkills(d, this.listing.skills)
+      .map((s) => `<option value="${esc(s.name)}">${esc(`${s.source}${s.description ? ` · ${s.description}` : ""}`)}</option>`)
+      .join("");
+    d.phases.forEach((p, i) => {
+      const skill = p.skill.trim();
+      const warn = this.phases.querySelector<HTMLElement>(`[data-slot="warn"][data-i="${i}"]`);
+      const next = this.phases.querySelector<HTMLElement>(`[data-slot="next"][data-i="${i}"]`);
+      if (warn) warn.innerHTML = skill && !installed.has(skill) && !skill.includes(":") ? `<p class="small warn">No skill named "${esc(skill)}" is installed for this project or you.</p>` : "";
+      if (next) {
+        const chips = names.map((n) => `<label class="wf-chip"><input type="checkbox" data-i="${i}" data-f="next" value="${esc(n)}"${p.next.includes(n) ? " checked" : ""} />${esc(n)}</label>`).join("");
+        next.innerHTML = `<span class="muted">Usually followed by</span>${chips || `<span class="muted"> (add more phases)</span>`}`;
+      }
+    });
   }
 
   private edit(el: HTMLInputElement, committed: boolean): void {
@@ -216,16 +250,16 @@ export class WorkflowEditor {
     if (!p || !f) return;
     if (f === "when") p.when = el.value;
     else if (f === "skill") {
-      // Typing doesn't redraw (it would drop focus); leaving the field does, to refresh the choices.
+      // Only the warnings and choices follow the name, and only once it's settled; the rows stay put.
       renameSkill(this.draft, i, el.value);
-      if (committed) this.drawPhases();
+      if (committed) this.drawExtras();
     } else if (f === "next" && committed) {
       p.next = el.checked ? [...new Set([...p.next, el.value])] : p.next.filter((n) => n !== el.value);
     }
   }
 
   private async submit(): Promise<void> {
-    const why = problem(this.draft);
+    const why = problem(this.draft) ?? clash(this.draft, this.listing);
     if (why) {
       this.error.textContent = why;
       return;

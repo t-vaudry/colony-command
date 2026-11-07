@@ -4,6 +4,8 @@
 
 /** How long the New session dialog waits for the workflow list before going on without it. */
 const WORKFLOW_LIST_WAIT_MS = 4000;
+/** Saving writes a file; give it longer before reporting no answer. */
+const WORKFLOW_SAVE_WAIT_MS = 10000;
 
 import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest, type Workflow, type WorkflowListing } from "./types";
 import type { NoticeAction } from "./budget";
@@ -468,8 +470,8 @@ export class Daemon {
         return;
       }
       setTimeout(() => {
-        if (this.workflowSaves.delete(req)) resolve("No answer from Colony's background service.");
-      }, WORKFLOW_LIST_WAIT_MS);
+        if (this.workflowSaves.delete(req)) resolve("No answer from Colony's background service. Check the workflow list before trying again.");
+      }, WORKFLOW_SAVE_WAIT_MS);
     });
   }
 
