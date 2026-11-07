@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { followers, layout, loopRound, pathLine, phaseLine, runningByPhase, taken, workflowBlock } from "./workflowview";
+import { exits, followers, layout, loopRound, pathLine, phaseLine, runningByPhase, taken, workflowBlock } from "./workflowview";
 import type { Agent, Workflow, WorkflowInfo } from "./types";
 
 const wf: Workflow = {
@@ -70,13 +70,13 @@ describe("workflow loops and custom phases", () => {
 });
 
 describe("workflow view", () => {
-  it("puts phases in columns by distance from the first, unreached ones after", () => {
+  it("puts phases in columns by the longest way from the first, unreached ones after", () => {
     const n = Object.fromEntries(layout(wf).map((x) => [x.skill, x.col]));
     expect(n).toEqual({ plan: 0, build: 1, review: 2, docs: 3 });
   });
 
   it("stacks phases that share a column", () => {
-    const w: Workflow = { ...wf, phases: [{ skill: "a", when: "", next: ["b", "c"] }, { skill: "b", when: "", next: [] }, { skill: "c", when: "", next: [] }] };
+    const w: Workflow = { ...wf, phases: [{ skill: "a", when: "", next: ["b", "c"] }, { skill: "b", when: "", next: ["a"] }, { skill: "c", when: "", next: ["a"] }] };
     const [, b, c] = layout(w);
     expect(b.col).toBe(c.col);
     expect(c.y).toBeGreaterThan(b.y);
@@ -141,5 +141,98 @@ describe("workflow view", () => {
     expect(phaseLine(agent({ kind: "subagent", phase: "build" }))).toBe("Started in phase build");
     expect(phaseLine(agent({ kind: "subagent" }))).toBe("");
     expect(phaseLine(agent({ phase: "build" }))).toBe("");
+  });
+});
+
+describe("workflow branches", () => {
+  const phase = (skill: string, extra: Partial<Workflow["phases"][number]> = {}) => ({ skill, when: "", next: [], ...extra });
+  const iff: Workflow = {
+    id: "bug",
+    label: "Bug",
+    description: "",
+    phases: [
+      phase("triage", {
+        branches: [
+          { to: "bisect", condition: "it is a regression" },
+          { to: "develop", condition: "the cause is clear and easy to fix" },
+          { to: "publish", condition: "" },
+        ],
+      }),
+      phase("bisect", { next: ["develop"] }),
+      phase("develop"),
+      phase("publish"),
+    ],
+  };
+  const at = (visits: string[]): WorkflowInfo => ({ workflow: iff, visits: visits.map((s) => visit(s)), active: visits.at(-1) ?? null });
+
+  it("says what is written on each arrow: the condition, cut short, or otherwise", () => {
+    expect(exits(iff, 0)).toEqual([
+      { to: "bisect", label: "it is a regress…", full: "it is a regression" },
+      { to: "develop", label: "the cause is cl…", full: "the cause is clear and easy to fix" },
+      { to: "publish", label: "otherwise", full: "otherwise" },
+    ]);
+    expect(followers(iff, 0)).toEqual(["bisect", "develop", "publish"]);
+    // Without a condition anywhere there is nothing to write, and a phase without branches is as before.
+    const plain: Workflow = { ...iff, phases: [phase("a", { branches: [{ to: "b", condition: "" }] }), phase("b")] };
+    expect(exits(plain, 0)).toEqual([{ to: "b", label: "", full: "" }]);
+    expect(exits(iff, 1)).toEqual([{ to: "develop", label: "", full: "" }]);
+    expect(exits(iff, 2)).toEqual([{ to: "publish", label: "", full: "" }]);
+  });
+
+  it("fans the paths out into rows and rejoins them", () => {
+    const n = Object.fromEntries(layout(iff, 104).map((x) => [x.skill, x]));
+    // develop is reached from triage directly and after bisect: it sits after both, and publish after it.
+    expect([n.triage.col, n.bisect.col, n.develop.col, n.publish.col]).toEqual([0, 1, 2, 3]);
+    expect(n.bisect.x).toBe(92 + 104);
+    // Two paths out of a phase that end in different places stand in rows of one column.
+    const fork: Workflow = { ...iff, phases: [phase("a", { branches: [{ to: "b", condition: "x" }, { to: "c", condition: "" }] }), phase("b", { next: ["d"] }), phase("c", { next: ["d"] }), phase("d")] };
+    const m = Object.fromEntries(layout(fork, 104).map((x) => [x.skill, x]));
+    expect([m.a.col, m.b.col, m.c.col, m.d.col]).toEqual([0, 1, 1, 2]);
+    expect(m.c.y).toBeGreaterThan(m.b.y);
+  });
+
+  it("writes the conditions on the arrows, in full on hover, and marks the one taken", () => {
+    const html = workflowBlock(agent({ workflow: at(["triage", "bisect"]) }), []);
+    expect(html.match(/class="wf-elabel"/g)).toHaveLength(3);
+    expect(html).toContain("it is a regress…");
+    expect(html).toContain("<title>the cause is clear and easy to fix</title>");
+    expect(html).toContain(">otherwise</text>");
+    expect(html.match(/wf-edge taken/g)).toHaveLength(1);
+  });
+
+  it("labels an arrow that goes back, and escapes what is written on it", () => {
+    const back: Workflow = { ...iff, phases: [phase("a", { branches: [{ to: "a", condition: "<b>not yet</b>" }, { to: "b", condition: "" }] }), phase("b")] };
+    const html = workflowBlock(agent({ workflow: { workflow: back, visits: [], active: null } }), []);
+    expect(html).toContain("wf-edge back");
+    expect(html).toContain("&#60;b&#62;not yet&#60;/b&#62;");
+    expect(html).not.toContain("<b>not");
+  });
+
+  it("keeps the tight spacing when no arrow has a condition", () => {
+    const html = workflowBlock(agent({ workflow: info(["plan"]) }), []);
+    expect(html).not.toContain("wf-elabel");
+    expect(layout(wf)[1].x).toBe(92 + 34);
+  });
+});
+
+describe("arrows that skip columns", () => {
+  it("arc over the phases between instead of running through them", () => {
+    const skip: Workflow = {
+      id: "s",
+      label: "S",
+      description: "",
+      phases: [
+        { skill: "a", when: "", next: ["b", "c"] },
+        { skill: "b", when: "", next: ["c"] },
+        { skill: "c", when: "", next: [] },
+      ],
+    };
+    const html = workflowBlock(agent({ workflow: { workflow: skip, visits: [], active: null } }), []);
+    // a -> c skips b: its curve rises above the top row (a negative y in the path).
+    expect(html).toMatch(/d="M92 15 C116 -\d+ \d+ -\d+ \d+ 15"/);
+    // The room for it is above the graph: the svg is taller than for a plain chain.
+    const height = (h: string) => Number(/<svg[^>]* height="(\d+)"/.exec(h)![1]);
+    const plain = workflowBlock(agent({ workflow: { workflow: { ...skip, phases: [{ ...skip.phases[0], next: ["b"] }, skip.phases[1], skip.phases[2]] }, visits: [], active: null } }), []);
+    expect(height(html)).toBeGreaterThan(height(plain));
   });
 });

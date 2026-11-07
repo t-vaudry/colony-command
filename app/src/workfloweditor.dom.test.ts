@@ -57,7 +57,7 @@ describe("workflow editor dialog", () => {
     el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0].scope).toBe("project");
-    expect(saved[0].workflow).toEqual({ id: "ship-it", label: "Ship it", description: "", phases: [{ skill: "plan", instruction: "", when: "", next: ["ship"] }, { skill: "ship", instruction: "", when: "", next: [] }], loops: [] });
+    expect(saved[0].workflow).toEqual({ id: "ship-it", label: "Ship it", description: "", phases: [{ skill: "plan", instruction: "", when: "", next: ["ship"], branches: [] }, { skill: "ship", instruction: "", when: "", next: [], branches: [] }], loops: [] });
     await vi.waitFor(() => expect(onSaved).toHaveBeenCalledWith("ship-it"));
     expect(el("wf-editor").hasAttribute("open")).toBe(false);
   });
@@ -147,6 +147,46 @@ describe("workflow editor dialog", () => {
     expect(w.phases.map((p) => p.skill)).toEqual(names);
     expect(w.phases.map((p) => p.instruction)).toEqual(["", "Decide how bad it is.", "", "", "", ""]);
     expect(w.loops).toEqual([{ from: "develop", to: "review", until: "the review finds nothing", max: 4 }]);
+  });
+
+  it("branches a phase on conditions, with an otherwise", async () => {
+    editor.open("win", "C:/p", listing, "", onSaved);
+    type(el("wf-label"), "Triage");
+    const phase = (i: number, f: string) => document.querySelector<HTMLInputElement>(`[data-i="${i}"][data-f="${f}"]`)!;
+    ["triage", "bisect", "develop"].forEach((n, i) => {
+      if (i > 0) el("wf-add").click();
+      phase(i, "skill").dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+      type(phase(i, "skill"), n);
+    });
+    // Tick a plain follower first: a single one becomes the otherwise when branching starts.
+    const chip = document.querySelector<HTMLInputElement>('[data-i="0"][data-f="next"][value="develop"]')!;
+    chip.checked = true;
+    chip.dispatchEvent(new Event("change", { bubbles: true }));
+    document.querySelector<HTMLButtonElement>('[data-i="0"][data-act="add-branch"]')!.click();
+    expect(document.querySelector('[data-i="0"][data-f="next"]')).toBeNull();
+    expect(phase(0, "otherwise")).not.toBeNull();
+    expect((phase(0, "otherwise") as unknown as HTMLSelectElement).value).toBe("develop");
+    type(phase(0, "bcond"), "it is a regression");
+    const to = document.querySelector<HTMLSelectElement>('[data-i="0"][data-f="bto"]')!;
+    to.value = "bisect";
+    to.dispatchEvent(new Event("change", { bubbles: true }));
+    el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0].workflow.phases[0].branches).toEqual([
+      { to: "bisect", condition: "it is a regression" },
+      { to: "develop", condition: "" },
+    ]);
+    expect(saved[0].workflow.phases[0].next).toEqual([]);
+  });
+
+  it("won't save a condition with nowhere to go, and removing the conditions brings the plain followers back", () => {
+    editor.open("win", "C:/p", listing, "feature", onSaved);
+    document.querySelector<HTMLButtonElement>('[data-i="0"][data-act="add-branch"]')!.click();
+    el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(el("wf-error").textContent).toMatch(/a branch has no condition/);
+    expect(saved).toEqual([]);
+    document.querySelector<HTMLButtonElement>('[data-i="0"][data-act="remove-branch"]')!.click();
+    expect(document.querySelector('[data-i="0"][data-f="next"]')).not.toBeNull();
   });
 
   it("refuses a loop that ends before it starts, and drops loops with a phase that's removed", () => {
