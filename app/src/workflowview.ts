@@ -80,11 +80,11 @@ export function runningByPhase(kids: Agent[]): Map<string, number> {
   return out;
 }
 
-/** Marker ids differ per drawing: several graphs can be in the page at once. */
-let drawn = 0;
+/** Marker ids are per session: graphs of several sessions can be in the page, and the same one must redraw identically. */
 
-function graph(info: WorkflowInfo, kids: Agent[]): string {
-  const ids = { arrow: `wf-arrow-${++drawn}` };
+
+function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
+  const ids = { arrow: `wf-arrow-${owner.replace(/[^A-Za-z0-9_-]/g, "-")}` };
   const w = info.workflow;
   const nodes = layout(w);
   const at = new Map(nodes.map((n) => [n.skill, n]));
@@ -135,7 +135,7 @@ function graph(info: WorkflowInfo, kids: Agent[]): string {
     return `<g class="wf-node${state}"><title>${esc(n.skill)}${n_visits ? ` · visited ${n_visits}×` : ""}</title><rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="6"/><text class="wf-name" x="${n.x + NODE_W / 2}" y="${n.y + (busy ? 13 : 19)}" text-anchor="middle">${esc(label)}</text>${count}${dots}</g>`;
   });
 
-  return `<svg class="wf-graph" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Workflow phases">
+  return `<svg class="wf-graph" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Workflow phases">
     <defs>
       <marker id="${ids.arrow}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head"/></marker>
       <marker id="${ids.arrow}-on" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head on"/></marker>
@@ -153,7 +153,7 @@ export function workflowBlock(a: Agent, kids: Agent[]): string {
   return `<div class="fact workflow-block">
     <span class="k">Workflow · ${esc(info.workflow.label)}</span>
     <div class="wf-status muted small">${status}${info.visits.length > 1 ? ` · ${info.visits.length} phases so far` : ""}</div>
-    ${graph(info, kids)}
+    <div class="wf-scroll">${graph(a.id, info, kids)}</div>
     ${path ? `<div class="wf-path small">${esc(path)}</div>` : ""}
   </div>`;
 }

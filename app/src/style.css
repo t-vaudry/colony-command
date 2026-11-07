@@ -1511,9 +1511,12 @@ details.menu[open] > summary {
 .workflow-block .wf-status {
   margin: 2px 0 6px;
 }
+.wf-scroll {
+  overflow-x: auto;
+}
 .wf-graph {
   display: block;
-  max-height: 220px;
+  max-width: none;
 }
 .wf-node rect {
   fill: var(--surface);

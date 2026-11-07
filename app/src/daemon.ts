@@ -35,7 +35,7 @@ export interface DaemonSettings {
 }
 
 type Message =
-  | { type: "snapshot"; version?: string; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
+  | { type: "snapshot"; version?: string; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; workflows?: boolean; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
   | { type: "crews"; items: Crew[] }
   | { type: "crew_folders"; items: Record<string, string> }
   | { type: "folder_crew"; req: number; crew: string | null }
@@ -106,6 +106,8 @@ export class Daemon {
   version: string | undefined;
   /** Whether the snapshot carried crews: a daemon without them can't start a crew session. */
   crewsKnown = false;
+  /** Whether the daemon lists workflows: an older one answers the command with an error. */
+  workflowsKnown = false;
   /** The daemon rejected a command this map sends. */
   private protocolError = false;
   private appVer: string | null = null;
@@ -215,6 +217,7 @@ export class Daemon {
         this.hosts = m.hosts ?? this.hosts;
         this.version = m.version;
         this.crewsKnown = m.crews !== undefined;
+        this.workflowsKnown = m.workflows === true;
         this.crews = m.crews ?? this.crews;
         this.crewFolders = m.crew_folders ?? this.crewFolders;
         this.spend = new Map(Object.entries(m.spend ?? {}));
@@ -422,6 +425,8 @@ export class Daemon {
   /** The workflows and skills a session in `dir` could use; null when the daemon can't be asked. */
   listWorkflows(host: string, dir: string): Promise<WorkflowListing | null> {
     return new Promise((resolve) => {
+      // Never send what an older daemon would answer with an error.
+      if (!this.workflowsKnown) return resolve(null);
       const req = ++this.crewCheckSeq;
       this.workflowLists.set(req, resolve);
       if (!this.send({ type: "list_workflows", req, host, dir })) {

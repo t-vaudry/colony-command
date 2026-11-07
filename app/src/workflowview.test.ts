@@ -66,13 +66,23 @@ describe("workflow view", () => {
     expect(html).not.toContain("a<b");
   });
 
-  it("draws a phase that leads to itself, and gives each graph its own arrow ids", () => {
+  it("draws a phase that leads to itself", () => {
     const w: Workflow = { id: "x", label: "X", description: "", phases: [{ skill: "a", when: "", next: ["a"] }] };
-    const draw = () => workflowBlock(agent({ workflow: { workflow: w, visits: [], active: null } }), []);
-    const first = draw();
-    expect(first).toContain("wf-edge back");
-    const id = (h: string) => /<marker id="(wf-arrow-\d+)"/.exec(h)![1];
-    expect(id(draw())).not.toBe(id(first));
+    expect(workflowBlock(agent({ workflow: { workflow: w, visits: [], active: null } }), [])).toContain("wf-edge back");
+  });
+
+  it("redraws a session identically, so the panel isn't rewritten for nothing, and keeps sessions' arrow ids apart", () => {
+    const draw = (id: string) => workflowBlock(agent({ id, workflow: info(["plan"]) }), []);
+    expect(draw("s1")).toBe(draw("s1"));
+    const marker = (h: string) => /<marker id="([^"]+)"/.exec(h)![1];
+    expect(marker(draw("s1"))).not.toBe(marker(draw("s2")));
+    expect(marker(draw("a b<c"))).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
+  it("draws at its natural size inside a scrolling box, so labels stay readable", () => {
+    const html = workflowBlock(agent({ workflow: info(["plan"]) }), []);
+    expect(html).toContain('class="wf-scroll"');
+    expect(html).toMatch(/<svg class="wf-graph"[^>]* width="\d+" height="\d+"/);
   });
 
   it("names the phase a subagent started in", () => {

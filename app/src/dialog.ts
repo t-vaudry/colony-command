@@ -253,10 +253,14 @@ export class NewSessionDialog {
   private async loadWorkflows(dir: string, host: string): Promise<void> {
     if (this.resume) return;
     const seq = ++this.workflowSeq;
+    // Same workflow again if the new list has it; the last folder's others must not stay pickable meanwhile.
+    const keep = this.workflow.value;
+    this.workflowList = null;
+    this.workflow.innerHTML = "";
+    this.workflow.add(new Option("None", ""));
     const list = dir && host ? await this.daemon.listWorkflows(host, dir) : null;
     if (seq !== this.workflowSeq) return;
     this.workflowList = list;
-    const keep = this.workflow.value;
     this.workflow.innerHTML = "";
     this.workflow.add(new Option(list ? "None" : "None (needs the updated background service)", ""));
     for (const w of list?.workflows ?? []) {

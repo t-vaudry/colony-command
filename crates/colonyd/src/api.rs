@@ -82,7 +82,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "version": env!("CARGO_PKG_VERSION"), "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "crew_folders": crate::crews::folders(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
+    json!({ "type": "snapshot", "version": env!("CARGO_PKG_VERSION"), "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "workflows": true, "crew_folders": crate::crews::folders(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
