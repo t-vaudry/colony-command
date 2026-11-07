@@ -237,11 +237,19 @@ impl PtyHost {
         }
         claude_args.extend(crew.args());
         let workflow = match req.workflow.as_deref().filter(|w| !w.is_empty()) {
-            Some(id) => {
-                let w = crate::workflows::resolve(&req.host, &req.dir, id)?;
-                crate::workflows::append_prompt(&mut claude_args, &w.prompt());
-                Some(w)
-            }
+            Some(id) => match crate::workflows::resolve(&req.host, &req.dir, id) {
+                Ok(w) => {
+                    crate::workflows::append_prompt(&mut claude_args, &w.prompt());
+                    Some(w)
+                }
+                // A resume must not fail because the file went away; the
+                // conversation already knows its phases.
+                Err(e) if req.resume.is_some() => {
+                    log(format!("resuming without workflow {id}: {e}"));
+                    None
+                }
+                Err(e) => return Err(e),
+            },
             None => None,
         };
         match req.chrome {
@@ -274,7 +282,7 @@ impl PtyHost {
         // Each `"` and `\` costs a backslash when the command line is built.
         let line_len: usize = args.iter().chain([&program]).map(|a| a.len() + 3 + a.matches(['"', '\\']).count()).sum();
         if line_len > MAX_COMMAND_LINE {
-            return Err("the crew's settings make the launch command too long for Windows".into());
+            return Err("the crew's and workflow's settings make the launch command too long for Windows".into());
         }
         if req.auto && !crate::resume::still_wanted(&session_id) {
             return Err("that session was dismissed or ended; not restarting it".into());
