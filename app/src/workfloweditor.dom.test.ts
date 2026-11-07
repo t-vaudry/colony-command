@@ -57,7 +57,7 @@ describe("workflow editor dialog", () => {
     el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
     await vi.waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0].scope).toBe("project");
-    expect(saved[0].workflow).toEqual({ id: "ship-it", label: "Ship it", description: "", phases: [{ skill: "plan", instruction: "", when: "", next: ["ship"], branches: [] }, { skill: "ship", instruction: "", when: "", next: [], branches: [] }], loops: [] });
+    expect(saved[0].workflow).toEqual({ id: "ship-it", label: "Ship it", description: "", phases: [{ skill: "plan", instruction: "", when: "", skip_when: "", next: ["ship"], branches: [] }, { skill: "ship", instruction: "", when: "", skip_when: "", next: [], branches: [] }], loops: [] });
     await vi.waitFor(() => expect(onSaved).toHaveBeenCalledWith("ship-it"));
     expect(el("wf-editor").hasAttribute("open")).toBe(false);
   });

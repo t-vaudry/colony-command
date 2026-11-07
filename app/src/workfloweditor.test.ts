@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { blank, branching, clash, draftOf, loopProblem, movePhase, problem, removePhase, renameSkill, slug, toWorkflow, unusedSkills, type Draft, type DraftPhase } from "./workfloweditor";
 import type { Workflow, WorkflowListing } from "./types";
 
-const ph = (skill: string, next: string[] = [], extra: Partial<DraftPhase> = {}): DraftPhase => ({ skill, custom: false, instruction: "", when: "", next, branches: [], otherwise: "", ...extra });
+const ph = (skill: string, next: string[] = [], extra: Partial<DraftPhase> = {}): DraftPhase => ({ skill, custom: false, instruction: "", when: "", skipWhen: "", next, branches: [], otherwise: "", ...extra });
 
 const draft = (extra: Partial<Draft> = {}): Draft => ({
   id: "",
@@ -76,6 +76,14 @@ describe("workflow editor", () => {
         ph("publish"),
       ],
     });
+
+  it("keeps when a phase may be skipped, and reads it back", () => {
+    const d = draft({ label: "Skippy", phases: [ph("plan", ["build"], { skipWhen: "  the change is one line " }), ph("build")] });
+    const w = toWorkflow(d);
+    expect(w.phases[0].skip_when).toBe("the change is one line");
+    expect(w.phases[1].skip_when).toBe("");
+    expect(draftOf(w, false).phases[0].skipWhen).toBe("the change is one line");
+  });
 
   it("checks that every branch has a condition and somewhere to go", () => {
     expect(problem(forked())).toBeNull();

@@ -264,16 +264,17 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
   const boxes = nodes.map((n, i) => {
     const n_visits = visits.get(n.skill) ?? 0;
     const custom = !!w.phases[i].instruction;
-    const state = (info.active === n.skill ? " active" : n_visits ? " done" : "") + (custom ? " custom" : "");
+    const optional = !!w.phases[i].skip_when;
+    const state = (info.active === n.skill ? " active" : n_visits ? " done" : "") + (custom ? " custom" : "") + (optional ? " optional" : "");
     const count = n_visits > 1 ? `<text class="wf-count" x="${n.x + NODE_W - 5}" y="${n.y + 11}" text-anchor="end">×${n_visits}</text>` : "";
     const kind = custom ? `<text class="wf-kind" x="${n.x + 6}" y="${n.y + 11}">✎</text>` : "";
     const busy = running.get(n.skill);
     const dots = busy ? `<text class="wf-subs" x="${n.x + NODE_W / 2}" y="${n.y + NODE_H - 5}" text-anchor="middle">${busy} subagent${busy === 1 ? "" : "s"}</text>` : "";
     const label = n.skill.length > 14 ? `${n.skill.slice(0, 13)}…` : n.skill;
-    return `<g class="wf-node${state}"><title>${esc(n.skill)}${custom ? " (custom phase)" : ""}${n_visits ? ` · visited ${n_visits}×` : ""}</title><rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="6"/><text class="wf-name" x="${n.x + NODE_W / 2}" y="${n.y + (busy ? 13 : 19)}" text-anchor="middle">${esc(label)}</text>${kind}${count}${dots}</g>`;
+    return `<g class="wf-node${state}"><title>${esc(n.skill)}${custom ? " (custom phase)" : ""}${optional ? ` (optional: skipped if ${w.phases[i].skip_when})` : ""}${n_visits ? ` · visited ${n_visits}×` : ""}</title><rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="6"/><text class="wf-name" x="${n.x + NODE_W / 2}" y="${n.y + (busy ? 13 : 19)}" text-anchor="middle">${esc(label)}</text>${kind}${count}${dots}</g>`;
   });
 
-  return `<svg class="wf-graph" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Workflow phases">
+  return `<svg class="wf-graph" style="--nat:${width}px" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Workflow phases">
     <defs>
       <marker id="${ids.arrow}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head"/></marker>
       <marker id="${ids.arrow}-on" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head on"/></marker>
@@ -289,11 +290,20 @@ export function workflowBlock(a: Agent, kids: Agent[]): string {
   const path = pathLine(info);
   const status = info.active ? `In <b>${esc(info.active)}</b>` : "No phase started yet";
   return `<div class="fact workflow-block">
-    <span class="k">Workflow · ${esc(info.workflow.label)}</span>
+    <div class="field-head"><span class="k">Workflow · ${esc(info.workflow.label)}</span><button type="button" class="popout" data-popout="workflow" title="Open the graph in a larger window" aria-label="Pop out workflow graph">Pop out</button></div>
     <div class="wf-status muted small">${status}${info.visits.length > 1 ? ` · ${info.visits.length} phases so far` : ""}</div>
     <div class="wf-scroll">${graph(a.id, info, kids)}</div>
     ${path ? `<div class="wf-path small">${esc(path)}</div>` : ""}
   </div>`;
+}
+
+/** The graph with its status and path, for the large dialog. Empty when there is no workflow. */
+export function workflowPopout(a: Agent, kids: Agent[]): string {
+  const info = a.workflow;
+  if (a.kind !== "main" || !info || info.workflow.phases.length === 0) return "";
+  const path = pathLine(info);
+  const status = info.active ? `In <b>${esc(info.active)}</b>` : "No phase started yet";
+  return `<div class="wf-status muted small">${status}</div><div class="wf-scroll wf-big">${graph(`${a.id}-big`, info, kids)}</div>${path ? `<div class="wf-path small">${esc(path)}</div>` : ""}`;
 }
 
 /** A subagent's phase, for its panel: "Started in phase build", or "". */

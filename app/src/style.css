@@ -1521,9 +1521,25 @@ details.menu[open] > summary {
 .wf-scroll {
   overflow-x: auto;
 }
+/* The large dialog: the graph gets the whole width and is scaled up to fill it. */
+#popout.wide {
+  width: calc(100vw - 32px);
+}
+.wf-big {
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+}
+.wf-big .wf-graph {
+  max-width: none;
+  min-width: 600px;
+}
 .wf-graph {
   display: block;
-  max-width: none;
+  /* Fill the panel: grow a small graph up to 1.6x, shrink a wide one to 75% before scrolling. */
+  width: 100%;
+  height: auto;
+  min-width: calc(var(--nat, 400px) * 0.75);
+  max-width: calc(var(--nat, 400px) * 1.6);
 }
 .wf-node rect {
   fill: var(--surface);
@@ -1716,6 +1732,9 @@ details.menu[open] > summary {
 }
 .wf-edge.loop-back {
   stroke: var(--accent);
+  opacity: 0.7;
+}
+.wf-node.optional:not(.done):not(.active) {
   opacity: 0.7;
 }
 .wf-node.custom rect {
