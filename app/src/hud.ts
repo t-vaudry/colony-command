@@ -8,7 +8,7 @@ import { ContextWatch, contextRow, contextSettingRow, DEFAULT_PCT, showContextNo
 import { latencyChart } from "./latencychart";
 import { daySummary } from "./daysummary";
 import { crewBlock, crewTag } from "./crewhealth";
-import { phaseLine, workflowBlock } from "./workflowview";
+import { phaseLine, workflowBlock, workflowPopout } from "./workflowview";
 import { botBudgetRow, budgetClick, budgetSettings, dayNote, toastActions, type NoticeAction } from "./budget";
 import { detail, playheadX, REPLAY_FRAMES, timelapse } from "./timelapse";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
@@ -604,6 +604,7 @@ export class Hud {
     }
     const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
     this.renderCompose(a);
+    this.refreshWorkflowPopout(a);
     document.getElementById("inspector")!.classList.toggle("wide", needsWide(a));
     if (!a) {
       const idle = this.idleSessions().length;
@@ -907,8 +908,18 @@ export class Hud {
   }
 
   /** Show the reply in a large dialog, for when the side panel is too small to read it. */
-  private popOut(): void {
+  private popOut(what = ""): void {
     const a = this.selected ? this.daemon.agents.get(this.selected) : undefined;
+    if (what === "workflow") {
+      if (!a) return;
+      const dlg = document.getElementById("popout") as HTMLDialogElement;
+      dlg.classList.add("wide");
+      document.getElementById("popout-title")!.textContent = `${a.name} · Workflow`;
+      this.refreshWorkflowPopout(a);
+      if (!dlg.open) dlg.showModal();
+      return;
+    }
+    document.getElementById("popout")?.classList.remove("wide");
     const reply = a && (a.last_message_full ?? a.last_message);
     if (!a || !reply) return;
     const dlg = document.getElementById("popout") as HTMLDialogElement;
@@ -917,10 +928,18 @@ export class Hud {
     if (!dlg.open) dlg.showModal();
   }
 
+  /** Keep the workflow dialog current while it is open. */
+  private refreshWorkflowPopout(a: Agent | undefined): void {
+    const dlg = document.getElementById("popout") as HTMLDialogElement | null;
+    if (!dlg?.open || !dlg.classList.contains("wide") || !a) return;
+    const kids = [...this.daemon.agents.values()].filter((k) => k.parent_id === a.id);
+    setHtml(document.getElementById("popout-body")!, workflowPopout(a, kids));
+  }
+
   private async action(e: Event): Promise<void> {
     const el = (e.target as HTMLElement).closest<HTMLElement>("button");
     if (!el) return;
-    if (el.dataset.popout) this.popOut();
+    if (el.dataset.popout) this.popOut(el.dataset.popout === "workflow" ? "workflow" : "");
     if (el.dataset.replay) this.loadReplay(Number(el.dataset.replay));
     if (el.dataset.replayPlay) this.toggleReplay();
     if (el.dataset.select) this.actions.select(el.dataset.select);

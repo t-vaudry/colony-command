@@ -289,11 +289,20 @@ export function workflowBlock(a: Agent, kids: Agent[]): string {
   const path = pathLine(info);
   const status = info.active ? `In <b>${esc(info.active)}</b>` : "No phase started yet";
   return `<div class="fact workflow-block">
-    <span class="k">Workflow · ${esc(info.workflow.label)}</span>
+    <div class="field-head"><span class="k">Workflow · ${esc(info.workflow.label)}</span><button type="button" class="popout" data-popout="workflow" title="Open the graph in a larger window" aria-label="Pop out workflow graph">Pop out</button></div>
     <div class="wf-status muted small">${status}${info.visits.length > 1 ? ` · ${info.visits.length} phases so far` : ""}</div>
     <div class="wf-scroll">${graph(a.id, info, kids)}</div>
     ${path ? `<div class="wf-path small">${esc(path)}</div>` : ""}
   </div>`;
+}
+
+/** The graph with its status and path, for the large dialog. Empty when there is no workflow. */
+export function workflowPopout(a: Agent, kids: Agent[]): string {
+  const info = a.workflow;
+  if (a.kind !== "main" || !info || info.workflow.phases.length === 0) return "";
+  const path = pathLine(info);
+  const status = info.active ? `In <b>${esc(info.active)}</b>` : "No phase started yet";
+  return `<div class="wf-status muted small">${status}</div><div class="wf-scroll wf-big">${graph(`${a.id}-big`, info, kids)}</div>${path ? `<div class="wf-path small">${esc(path)}</div>` : ""}`;
 }
 
 /** A subagent's phase, for its panel: "Started in phase build", or "". */

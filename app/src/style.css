@@ -1521,6 +1521,19 @@ details.menu[open] > summary {
 .wf-scroll {
   overflow-x: auto;
 }
+/* The large dialog: the graph gets the whole width and is scaled up to fill it. */
+#popout.wide {
+  width: calc(100vw - 32px);
+}
+.wf-big {
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+}
+.wf-big .wf-graph {
+  width: 100%;
+  height: auto;
+  min-width: 600px;
+}
 .wf-graph {
   display: block;
   max-width: none;
