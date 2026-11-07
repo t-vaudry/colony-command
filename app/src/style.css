@@ -1635,6 +1635,27 @@ details.menu[open] > summary {
   padding: 7px 9px;
   resize: vertical;
 }
+.wf-branch-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  flex-basis: 100%;
+  padding-left: 1.4em;
+}
+.wf-branch-row select {
+  width: auto;
+  max-width: 12em;
+}
+.wf-branch-row input[type="text"] {
+  flex: 1 1 10em;
+  width: auto;
+  min-width: 8em;
+}
+#wf-form .wf-branch-row button,
+#wf-form .wf-next > button {
+  padding: 3px 8px;
+}
 #wf-loops {
   display: grid;
   gap: 8px;
@@ -1684,6 +1705,14 @@ details.menu[open] > summary {
 }
 .wf-loop.active .wf-loop-label {
   fill: var(--accent);
+}
+.wf-elabel text {
+  font: 10px var(--f-body);
+  fill: var(--ink);
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
 }
 .wf-edge.loop-back {
   stroke: var(--accent);

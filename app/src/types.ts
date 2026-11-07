@@ -277,6 +277,12 @@ export interface CrewCheck {
   warnings: string[];
 }
 
+/** One way out of a phase: go to `to` if `condition` holds; no condition is the "otherwise". */
+export interface WorkflowBranch {
+  to: string;
+  condition: string;
+}
+
 export interface WorkflowPhase {
   /** The skill's name; for a custom phase (one with an instruction) just the phase's name. */
   skill: string;
@@ -284,6 +290,8 @@ export interface WorkflowPhase {
   instruction?: string;
   when: string;
   next: string[];
+  /** Ways out by condition, instead of `next`. */
+  branches?: WorkflowBranch[];
 }
 
 /** A run of phases, `from` to `to` in the order listed, that the session repeats. */

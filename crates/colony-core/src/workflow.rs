@@ -12,6 +12,10 @@
 //!   "loops": [ { "from": "build", "to": "review", "until": "the review finds nothing", "max": 3 } ] }
 //! ```
 //!
+//! A phase can leave by conditions instead of a plain `next`:
+//! `"branches": [ { "to": "bisect", "condition": "it is a regression" }, { "to": "develop" } ]`.
+//! A branch with no condition is the "otherwise"; paths rejoin by naming the same phase.
+//!
 //! A phase with an `instruction` is a custom phase: `skill` is then just its
 //! name, and the session does what the instruction says instead of running a
 //! skill. It marks the start of one by running `echo colony-phase:<name>`.
@@ -27,6 +31,7 @@ use std::path::{Path, PathBuf};
 const MAX_FILE: u64 = 64 * 1024;
 const MAX_PHASES: usize = 40;
 const MAX_LOOPS: usize = 10;
+const MAX_BRANCHES: usize = 8;
 /// Rounds a loop may be given.
 const MAX_ROUNDS: u32 = 20;
 const DEFAULT_ROUNDS: u32 = 3;
@@ -47,6 +52,18 @@ pub struct Phase {
     /// Phases that usually follow. A hint for the session, not a rule.
     #[serde(default)]
     pub next: Vec<String>,
+    /// Ways out by condition, instead of `next`: the session takes the one that holds.
+    #[serde(default)]
+    pub branches: Vec<Branch>,
+}
+
+/// One way out of a phase: go to `to` if `condition` holds. With no condition it is
+/// the "otherwise".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Branch {
+    pub to: String,
+    #[serde(default)]
+    pub condition: String,
 }
 
 /// A run of phases (`from` to `to`, in the order listed) the session repeats.
@@ -109,6 +126,9 @@ pub fn parse(id: &str, json: &str) -> Result<Workflow, String> {
     for p in &mut w.phases {
         p.when = one_line(&p.when, 200);
         p.instruction = one_line(&p.instruction, 600);
+        for b in &mut p.branches {
+            b.condition = one_line(&b.condition, 200);
+        }
     }
     for l in &mut w.loops {
         l.until = one_line(&l.until, 200);
@@ -140,6 +160,20 @@ impl Workflow {
                 if !self.phases.iter().any(|q| &q.skill == n) {
                     return Err(format!("workflow {id}: phase {:?} lists next phase {n:?}, which isn't a phase", p.skill));
                 }
+            }
+            if p.branches.len() > MAX_BRANCHES {
+                return Err(format!("workflow {id}: phase {:?} has more than {MAX_BRANCHES} branches", p.skill));
+            }
+            for b in &p.branches {
+                if !self.phases.iter().any(|q| q.skill == b.to) {
+                    return Err(format!("workflow {id}: phase {:?} has a branch to {:?}, which isn't a phase", p.skill, b.to));
+                }
+            }
+            if p.branches.iter().filter(|b| b.condition.is_empty()).count() > 1 {
+                return Err(format!("workflow {id}: phase {:?} has more than one \"otherwise\" branch (a branch with no condition)", p.skill));
+            }
+            if !p.branches.is_empty() && !p.next.is_empty() {
+                return Err(format!("workflow {id}: phase {:?} has both next and branches; use branches only", p.skill));
             }
         }
         self.check_loops()
@@ -178,10 +212,18 @@ impl Workflow {
         Ok(())
     }
 
-    /// Phase `i`'s usual followers: its `next`, else the phase listed after it.
+    /// Phase `i`'s usual followers: where its branches go, else its `next`, else the phase listed after it.
     pub fn followers(&self, i: usize) -> Vec<&str> {
         let p = &self.phases[i];
-        if !p.next.is_empty() {
+        if !p.branches.is_empty() {
+            let mut out: Vec<&str> = Vec::new();
+            for b in &p.branches {
+                if !out.contains(&b.to.as_str()) {
+                    out.push(&b.to);
+                }
+            }
+            out
+        } else if !p.next.is_empty() {
             p.next.iter().map(String::as_str).collect()
         } else {
             self.phases.get(i + 1).map(|q| vec![q.skill.as_str()]).unwrap_or_default()
@@ -219,9 +261,18 @@ impl Workflow {
             if !p.when.trim().is_empty() {
                 s.push_str(&format!("{} use when {}", if p.instruction.is_empty() { ":" } else { ";" }, p.when.trim().trim_end_matches('.')));
             }
-            let next = self.followers(i);
-            if !next.is_empty() {
-                s.push_str(&format!(" (usually followed by {})", next.join(" or ")));
+            if !p.branches.is_empty() {
+                // Conditions first, in the order given; the otherwise last.
+                let mut exits: Vec<String> = p.branches.iter().filter(|b| !b.condition.is_empty()).map(|b| format!("if {}, go to {}", b.condition.trim_end_matches('.'), b.to)).collect();
+                if let Some(b) = p.branches.iter().find(|b| b.condition.is_empty()) {
+                    exits.push(if exits.is_empty() { format!("go to {}", b.to) } else { format!("otherwise go to {}", b.to) });
+                }
+                s.push_str(&format!(" -- then: {}", exits.join("; ")));
+            } else {
+                let next = self.followers(i);
+                if !next.is_empty() {
+                    s.push_str(&format!(" (usually followed by {})", next.join(" or ")));
+                }
             }
         }
         for l in &self.loops {
@@ -384,6 +435,30 @@ mod tests {
         assert!(p.contains("- publish\nLoop"));
         assert!(p.contains("Loop: develop to review repeat as a run. After review, check whether the review finds nothing more: if not, go round again from develop, at most 4 rounds in all; then carry on with the phase after review."));
         assert_eq!(w.followers(5), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn branches_reach_the_prompt_and_are_checked() {
+        let json = |extra: &str| format!(r#"{{"phases":[{{"skill":"triage"{extra}}},{{"skill":"bisect"}},{{"skill":"develop"}},{{"skill":"publish"}}]}}"#);
+        let w = parse(
+            "bug",
+            &json(r#","branches":[{"to":"bisect","condition":"it is a regression\nfrom last week"},{"to":"develop","condition":"the cause is clear."},{"to":"publish"}]"#),
+        )
+        .unwrap();
+        let p = w.prompt();
+        assert!(p.contains("- triage -- then: if it is a regression from last week, go to bisect; if the cause is clear, go to develop; otherwise go to publish"), "{p}");
+        assert!(p.contains("- bisect (usually followed by develop)"));
+        assert_eq!(w.followers(0), ["bisect", "develop", "publish"]);
+        // A lone unconditional branch is just where it goes.
+        let one = parse("bug", &json(r#","branches":[{"to":"develop"}]"#)).unwrap();
+        assert!(one.prompt().contains("- triage -- then: go to develop"));
+        assert!(parse("x", &json(r#","branches":[{"to":"nope","condition":"c"}]"#)).unwrap_err().contains("isn't a phase"));
+        assert!(parse("x", &json(r#","branches":[{"to":"bisect"},{"to":"develop"}]"#)).unwrap_err().contains("more than one"));
+        assert!(parse("x", &json(r#","next":["bisect"],"branches":[{"to":"develop","condition":"c"}]"#)).unwrap_err().contains("both next and branches"));
+        let many: Vec<String> = (0..9).map(|i| format!(r#"{{"to":"bisect","condition":"c{i}"}}"#)).collect();
+        assert!(parse("x", &json(&format!(r#","branches":[{}]"#, many.join(",")))).unwrap_err().contains("more than 8"));
+        // Branches rejoin by naming the same phase, and may go back or loop on themselves.
+        assert!(parse("x", &json(r#","branches":[{"to":"triage","condition":"not enough yet"},{"to":"develop"}]"#)).is_ok());
     }
 
     #[test]

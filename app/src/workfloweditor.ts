@@ -10,6 +10,12 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 
 export type Scope = "project" | "user";
 
+/** "If `condition`, go to `to`." */
+export interface DraftBranch {
+  condition: string;
+  to: string;
+}
+
 export interface DraftPhase {
   /** The skill's name; for a custom phase just its name. */
   skill: string;
@@ -18,6 +24,10 @@ export interface DraftPhase {
   instruction: string;
   when: string;
   next: string[];
+  /** Ways out by condition; with these (or an `otherwise`) `next` is not used. */
+  branches: DraftBranch[];
+  /** Where it goes when no condition holds; "" for nowhere in particular. */
+  otherwise: string;
 }
 
 export interface DraftLoop {
@@ -44,7 +54,10 @@ const SKILL_CHARS = /^[A-Za-z0-9._:-]{1,64}$/;
 const DEFAULT_ROUNDS = 3;
 const MAX_ROUNDS = 20;
 
-export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", next: [] });
+export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", next: [], branches: [], otherwise: "" });
+
+/** Whether a phase leaves by conditions rather than a plain list of followers. */
+export const branching = (p: DraftPhase): boolean => p.branches.length > 0 || p.otherwise !== "";
 
 export function blank(scope: Scope): Draft {
   return { id: "", label: "", description: "", scope, origin: null, phases: [newPhase()], loops: [] };
@@ -59,7 +72,15 @@ export function draftOf(w: Workflow, fromProject: boolean): Draft {
     description: w.description,
     scope: where,
     origin: where,
-    phases: w.phases.map((p) => ({ skill: p.skill, custom: !!p.instruction, instruction: p.instruction ?? "", when: p.when, next: [...p.next] })),
+    phases: w.phases.map((p) => ({
+      skill: p.skill,
+      custom: !!p.instruction,
+      instruction: p.instruction ?? "",
+      when: p.when,
+      next: [...p.next],
+      branches: (p.branches ?? []).filter((b) => b.condition).map((b) => ({ condition: b.condition, to: b.to })),
+      otherwise: (p.branches ?? []).find((b) => !b.condition)?.to ?? "",
+    })),
     loops: (w.loops ?? []).map((l) => ({ ...l })),
   };
 }
@@ -115,6 +136,16 @@ export function problem(d: Draft): string | null {
     if (seen.has(name)) return `"${name}" is a phase twice. A phase can be followed by itself or by an earlier one instead.`;
     seen.add(name);
   }
+  const have = new Set(names(d));
+  for (const p of d.phases) {
+    const name = p.skill.trim();
+    for (const b of p.branches) {
+      if (!b.condition.trim()) return `Phase "${name}": a branch has no condition. Write when it applies, or remove it.`;
+      if (!b.to) return `Phase "${name}": the branch "if ${b.condition.trim()}" doesn't say where it goes.`;
+      if (!have.has(b.to)) return `Phase "${name}": the branch "if ${b.condition.trim()}" goes to "${b.to}", which isn't a phase.`;
+    }
+    if (p.otherwise && !have.has(p.otherwise)) return `Phase "${name}": "otherwise" goes to "${p.otherwise}", which isn't a phase.`;
+  }
   return loopProblem(d);
 }
 
@@ -125,7 +156,11 @@ export function toWorkflow(d: Draft): Workflow {
     id: d.id || slug(d.label),
     label: d.label.trim(),
     description: d.description.trim(),
-    phases: d.phases.map((p) => ({ skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), next: p.next.filter((n) => have.has(n)) })),
+    phases: d.phases.map((p) => {
+      // Conditions in the order written, then the otherwise.
+      const branches = [...p.branches.filter((b) => b.condition.trim() && have.has(b.to)).map((b) => ({ to: b.to, condition: b.condition.trim() })), ...(p.otherwise && have.has(p.otherwise) ? [{ to: p.otherwise, condition: "" }] : [])];
+      return { skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), next: branches.length ? [] : p.next.filter((n) => have.has(n)), branches };
+    }),
     loops: d.loops.filter((l) => have.has(l.from.trim()) && have.has(l.to.trim())).map((l) => ({ from: l.from.trim(), to: l.to.trim(), until: l.until.trim(), max: l.max })),
   };
 }
@@ -138,7 +173,11 @@ export function renameSkill(d: Draft, i: number, to: string, was: string = d.pha
   if (!from || from === now) return;
   // Another phase still has the old name: the links were to that one.
   if (d.phases.some((q, j) => j !== i && q.skill.trim() === from)) return;
-  for (const p of d.phases) p.next = p.next.map((n) => (n === from ? now : n));
+  for (const p of d.phases) {
+    p.next = p.next.map((n) => (n === from ? now : n));
+    for (const b of p.branches) if (b.to === from) b.to = now;
+    if (p.otherwise === from) p.otherwise = now;
+  }
   for (const l of d.loops) {
     if (l.from === from) l.from = now;
     if (l.to === from) l.to = now;
@@ -151,7 +190,12 @@ export function removePhase(d: Draft, i: number): void {
   const name = gone.skill.trim();
   // Another phase with the same name keeps the links.
   if (d.phases.some((q) => q.skill.trim() === name)) return;
-  for (const p of d.phases) p.next = p.next.filter((n) => n !== name);
+  for (const p of d.phases) {
+    p.next = p.next.filter((n) => n !== name);
+    // A condition with nowhere to go is dropped with the phase it led to.
+    p.branches = p.branches.filter((b) => b.to !== name);
+    if (p.otherwise === name) p.otherwise = "";
+  }
   d.loops = d.loops.filter((l) => l.from !== name && l.to !== name);
 }
 
@@ -229,9 +273,28 @@ export class WorkflowEditor {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-act]");
       if (!b) return;
       const i = Number(b.dataset.i);
-      if (b.dataset.act === "up") movePhase(this.draft, i, -1);
-      else if (b.dataset.act === "down") movePhase(this.draft, i, 1);
-      else removePhase(this.draft, i);
+      const p = this.draft.phases[i];
+      switch (b.dataset.act) {
+        case "up":
+          movePhase(this.draft, i, -1);
+          break;
+        case "down":
+          movePhase(this.draft, i, 1);
+          break;
+        case "add-branch":
+          // Going from plain followers to conditions: a single follower becomes the otherwise.
+          if (!branching(p) && p.next.length === 1) p.otherwise = p.next[0];
+          p.next = [];
+          p.branches.push({ condition: "", to: "" });
+          this.drawExtras();
+          return;
+        case "remove-branch":
+          p.branches.splice(Number(b.dataset.b), 1);
+          this.drawExtras();
+          return;
+        default:
+          removePhase(this.draft, i);
+      }
       this.drawPhases();
     });
     this.loops.addEventListener("input", (e) => this.editLoop(e.target as Field));
@@ -328,10 +391,18 @@ export class WorkflowEditor {
       const warn = this.phases.querySelector<HTMLElement>(`[data-slot="warn"][data-i="${i}"]`);
       const next = this.phases.querySelector<HTMLElement>(`[data-slot="next"][data-i="${i}"]`);
       if (warn) warn.innerHTML = !p.custom && name && !installed.has(name) && !name.includes(":") ? `<p class="small warn">No skill named "${esc(name)}" is installed for this project or you.</p>` : "";
-      if (next) {
+      if (next && branching(p)) {
+        const options = (chosen: string, none: string) => `<option value="">${none}</option>${all.map((n) => `<option value="${esc(n)}"${n === chosen ? " selected" : ""}>${esc(n)}</option>`).join("")}`;
+        const rows = p.branches
+          .map(
+            (b, k) => `<div class="wf-branch-row"><span>if</span><input type="text" data-i="${i}" data-b="${k}" data-f="bcond" value="${esc(b.condition)}" placeholder="it is a regression" aria-label="Condition ${k + 1} of phase ${i + 1}" /><span>go to</span><select data-i="${i}" data-b="${k}" data-f="bto" aria-label="Where condition ${k + 1} of phase ${i + 1} goes">${options(b.to, "Choose…")}</select><button type="button" data-act="remove-branch" data-i="${i}" data-b="${k}" title="Remove condition" aria-label="Remove condition ${k + 1} of phase ${i + 1}">✕</button></div>`,
+          )
+          .join("");
+        next.innerHTML = `<span class="muted">Then</span>${rows}<div class="wf-branch-row"><span>otherwise go to</span><select data-i="${i}" data-f="otherwise" aria-label="Where phase ${i + 1} goes otherwise">${options(p.otherwise, "Nowhere in particular")}</select><button type="button" data-act="add-branch" data-i="${i}">Add condition</button></div>`;
+      } else if (next) {
         const chips = all.map((n) => `<label class="wf-chip"><input type="checkbox" data-i="${i}" data-f="next" value="${esc(n)}"${p.next.includes(n) ? " checked" : ""} />${esc(n)}</label>`).join("");
         const rest = p.next.length || i === d.phases.length - 1 ? "" : `<span class="muted"> · none ticked: the next phase in the list</span>`;
-        next.innerHTML = `<span class="muted">Usually followed by</span>${chips || `<span class="muted"> (add more phases)</span>`}${rest}`;
+        next.innerHTML = `<span class="muted">Usually followed by</span>${chips || `<span class="muted"> (add more phases)</span>`}${rest} <button type="button" data-act="add-branch" data-i="${i}" title="Go to different phases depending on what happened">Branch on a condition…</button>`;
       }
     });
     this.drawLoops();
@@ -375,6 +446,9 @@ export class WorkflowEditor {
     if (!p || !f) return;
     if (f === "when") p.when = el.value;
     else if (f === "instruction") p.instruction = el.value;
+    else if (f === "bcond") p.branches[Number(el.dataset.b)].condition = el.value;
+    else if (f === "bto") p.branches[Number(el.dataset.b)].to = el.value;
+    else if (f === "otherwise") p.otherwise = el.value;
     else if (f === "kind") {
       if (committed) {
         p.custom = el.value === "custom";

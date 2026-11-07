@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { blank, clash, draftOf, loopProblem, movePhase, problem, removePhase, renameSkill, slug, toWorkflow, unusedSkills, type Draft, type DraftPhase } from "./workfloweditor";
+import { blank, branching, clash, draftOf, loopProblem, movePhase, problem, removePhase, renameSkill, slug, toWorkflow, unusedSkills, type Draft, type DraftPhase } from "./workfloweditor";
 import type { Workflow, WorkflowListing } from "./types";
 
-const ph = (skill: string, next: string[] = [], extra: Partial<DraftPhase> = {}): DraftPhase => ({ skill, custom: false, instruction: "", when: "", next, ...extra });
+const ph = (skill: string, next: string[] = [], extra: Partial<DraftPhase> = {}): DraftPhase => ({ skill, custom: false, instruction: "", when: "", next, branches: [], otherwise: "", ...extra });
 
 const draft = (extra: Partial<Draft> = {}): Draft => ({
   id: "",
@@ -63,6 +63,75 @@ describe("workflow editor", () => {
     expect(loopProblem(loops([lp("develop", "test"), lp("test", "review")]))).toMatch(/crosses or repeats/);
     expect(loopProblem(loops([lp("develop", "test"), lp("develop", "test")]))).toMatch(/crosses or repeats/);
     expect(problem(loops([lp("review", "develop")]))).toMatch(/ends before it starts/);
+  });
+
+  /** triage: if it is a regression go to bisect; if the cause is clear go to develop; otherwise publish. */
+  const forked = (): Draft =>
+    draft({
+      label: "Fork",
+      phases: [
+        ph("triage", [], { branches: [{ condition: "it is a regression", to: "bisect" }, { condition: "the cause is clear", to: "develop" }], otherwise: "publish" }),
+        ph("bisect", ["develop"]),
+        ph("develop"),
+        ph("publish"),
+      ],
+    });
+
+  it("checks that every branch has a condition and somewhere to go", () => {
+    expect(problem(forked())).toBeNull();
+    expect(branching(forked().phases[0])).toBe(true);
+    expect(branching(ph("a", ["b"]))).toBe(false);
+    expect(branching(ph("a", [], { otherwise: "b" }))).toBe(true);
+    const noCond = forked();
+    noCond.phases[0].branches[0].condition = "  ";
+    expect(problem(noCond)).toMatch(/a branch has no condition/);
+    const noTo = forked();
+    noTo.phases[0].branches[1].to = "";
+    expect(problem(noTo)).toMatch(/"if the cause is clear" doesn't say where it goes/);
+    const gone = forked();
+    gone.phases[0].branches[0].to = "elsewhere";
+    expect(problem(gone)).toMatch(/goes to "elsewhere", which isn't a phase/);
+    const badElse = forked();
+    badElse.phases[0].otherwise = "elsewhere";
+    expect(problem(badElse)).toMatch(/"otherwise" goes to "elsewhere"/);
+  });
+
+  it("writes conditions in the order given with the otherwise last, and leaves out plain followers", () => {
+    const d = forked();
+    d.phases[0].next = ["bisect"];
+    const w = toWorkflow(d);
+    expect(w.phases[0].branches).toEqual([
+      { to: "bisect", condition: "it is a regression" },
+      { to: "develop", condition: "the cause is clear" },
+      { to: "publish", condition: "" },
+    ]);
+    expect(w.phases[0].next).toEqual([]);
+    expect(w.phases[1].branches).toEqual([]);
+    expect(w.phases[1].next).toEqual(["develop"]);
+  });
+
+  it("follows renames and removals through branches", () => {
+    const d = forked();
+    renameSkill(d, 1, "git-bisect");
+    expect(d.phases[0].branches[0].to).toBe("git-bisect");
+    renameSkill(d, 3, "ship");
+    expect(d.phases[0].otherwise).toBe("ship");
+    removePhase(d, 2);
+    expect(d.phases[0].branches.map((b) => b.to)).toEqual(["git-bisect"]);
+    removePhase(d, 2);
+    expect(d.phases[0].otherwise).toBe("");
+    expect(branching(d.phases[0])).toBe(true);
+  });
+
+  it("reads branches back into conditions and an otherwise", () => {
+    const w = toWorkflow(forked());
+    const d = draftOf(w, false);
+    expect(d.phases[0].branches).toEqual([{ condition: "it is a regression", to: "bisect" }, { condition: "the cause is clear", to: "develop" }]);
+    expect(d.phases[0].otherwise).toBe("publish");
+    expect(toWorkflow(d)).toEqual({ ...w, id: "fork" });
+    // A workflow from before branches has none.
+    const old = draftOf({ id: "o", label: "O", description: "", phases: [{ skill: "a", when: "", next: ["a"] }] }, true);
+    expect(old.phases[0]).toMatchObject({ branches: [], otherwise: "", next: ["a"] });
   });
 
   it("builds the workflow, dropping what points at phases that are gone", () => {
