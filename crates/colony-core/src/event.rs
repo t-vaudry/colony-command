@@ -211,6 +211,9 @@ pub enum DomainEvent {
     /// colony-hook nudged the session (`ColonyNudge` record). `kind` is `twice`, `plan`,
     /// `done` or `context`; an unknown kind from a newer hook is kept as it came.
     NudgeSent { kind: String },
+    /// The workflow colonyd started this session with: its phases as launched,
+    /// so the reducer needs no files to follow them.
+    WorkflowSet { workflow: crate::workflow::Workflow },
 }
 
 const PREVIEW_CHARS: usize = 160;

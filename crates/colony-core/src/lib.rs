@@ -22,6 +22,7 @@ pub mod state;
 pub mod swarm;
 pub mod usage;
 pub mod workdir;
+pub mod workflow;
 
 pub use event::{DomainEvent, Envelope, HostId};
 pub use hook::HookPayload;

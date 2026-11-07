@@ -75,6 +75,9 @@ pub struct SpawnRequest {
     /// on one repository don't share a checkout. Handled before `spawn`.
     #[serde(default)]
     pub isolate: bool,
+    /// A workflow (`colony_core::workflow`) for the session to follow, by name.
+    #[serde(default)]
+    pub workflow: Option<String>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -233,6 +236,14 @@ impl PtyHost {
             }
         }
         claude_args.extend(crew.args());
+        let workflow = match req.workflow.as_deref().filter(|w| !w.is_empty()) {
+            Some(id) => {
+                let w = crate::workflows::resolve(&req.host, &req.dir, id)?;
+                crate::workflows::append_prompt(&mut claude_args, &w.prompt());
+                Some(w)
+            }
+            None => None,
+        };
         match req.chrome {
             Some(true) => claude_args.push("--chrome".into()),
             Some(false) => claude_args.push("--no-chrome".into()),
@@ -285,6 +296,13 @@ impl PtyHost {
                     cwd: None,
                     event: DomainEvent::CrewSet { id: id.clone(), label, model: crew.model.clone(), advisor: crew.advisor.clone(), swarm_model: crew.swarm_model.clone() },
                 })
+                .await;
+        }
+        // And the workflow, so the reducer can follow its phases.
+        if let Some(workflow) = workflow {
+            let _ = self
+                .events
+                .send(Envelope { ts: now_ms(), host: req.host.clone(), session_id: session_id.clone(), cwd: None, event: DomainEvent::WorkflowSet { workflow } })
                 .await;
         }
         self.requests.lock().unwrap().insert(term_id.clone(), req);

@@ -68,6 +68,7 @@ pub fn snapshot(colony: &Colony, request: impl Fn(&str) -> Option<crate::pty::Sp
                     permission_mode: req.as_ref().and_then(|r| r.permission_mode.clone()),
                     chrome: req.as_ref().and_then(|r| r.chrome),
                     pick: req.as_ref().map(|r| r.pick()).unwrap_or_default(),
+                    workflow: req.as_ref().and_then(|r| r.workflow.clone()),
                     interrupted: true,
                 },
             ))
@@ -90,6 +91,7 @@ pub fn plan(roster: Roster, records: &crate::resume::Records, worktrees: &[crate
             permission_mode: r.request.permission_mode.clone(),
             chrome: r.request.chrome,
             pick: r.request.pick(),
+            workflow: r.request.workflow.clone(),
             interrupted: true,
         });
     }
@@ -104,6 +106,7 @@ pub fn plan(roster: Roster, records: &crate::resume::Records, worktrees: &[crate
             permission_mode: None,
             chrome: None,
             pick: Default::default(),
+            workflow: None,
             interrupted: true,
         });
     }
@@ -176,7 +179,7 @@ mod tests {
     }
 
     fn entry(dir: &str) -> Paused {
-        Paused { host: HostId::Windows, dir: dir.into(), name: "Indigo".into(), at: 1, model: None, permission_mode: None, chrome: None, pick: Default::default(), interrupted: true }
+        Paused { host: HostId::Windows, dir: dir.into(), name: "Indigo".into(), at: 1, model: None, permission_mode: None, chrome: None, pick: Default::default(), workflow: None, interrupted: true }
     }
 
     fn started() -> DomainEvent {

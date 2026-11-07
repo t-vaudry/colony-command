@@ -23,6 +23,7 @@ mod quality;
 mod resume;
 mod roster;
 mod timelapse;
+mod workflows;
 mod worktree;
 #[cfg(windows)]
 mod wsl;
