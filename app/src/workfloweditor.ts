@@ -23,6 +23,8 @@ export interface DraftPhase {
   custom: boolean;
   instruction: string;
   when: string;
+  /** When the phase may be skipped; "" means it always runs. */
+  skipWhen: string;
   next: string[];
   /** Ways out by condition; with these (or an `otherwise`) `next` is not used. */
   branches: DraftBranch[];
@@ -54,7 +56,7 @@ const SKILL_CHARS = /^[A-Za-z0-9._:-]{1,64}$/;
 const DEFAULT_ROUNDS = 3;
 const MAX_ROUNDS = 20;
 
-export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", next: [], branches: [], otherwise: "" });
+export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", skipWhen: "", next: [], branches: [], otherwise: "" });
 
 /** Whether a phase leaves by conditions rather than a plain list of followers. */
 export const branching = (p: DraftPhase): boolean => p.branches.length > 0 || p.otherwise !== "";
@@ -77,6 +79,7 @@ export function draftOf(w: Workflow, fromProject: boolean): Draft {
       custom: !!p.instruction,
       instruction: p.instruction ?? "",
       when: p.when,
+      skipWhen: p.skip_when ?? "",
       next: [...p.next],
       branches: (p.branches ?? []).filter((b) => b.condition).map((b) => ({ condition: b.condition, to: b.to })),
       otherwise: (p.branches ?? []).find((b) => !b.condition)?.to ?? "",
@@ -159,7 +162,7 @@ export function toWorkflow(d: Draft): Workflow {
     phases: d.phases.map((p) => {
       // Conditions in the order written, then the otherwise.
       const branches = [...p.branches.filter((b) => b.condition.trim() && have.has(b.to)).map((b) => ({ to: b.to, condition: b.condition.trim() })), ...(p.otherwise && have.has(p.otherwise) ? [{ to: p.otherwise, condition: "" }] : [])];
-      return { skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), next: branches.length ? [] : p.next.filter((n) => have.has(n)), branches };
+      return { skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), skip_when: p.skipWhen.trim(), next: branches.length ? [] : p.next.filter((n) => have.has(n)), branches };
     }),
     loops: d.loops.filter((l) => have.has(l.from.trim()) && have.has(l.to.trim())).map((l) => ({ from: l.from.trim(), to: l.to.trim(), until: l.until.trim(), max: l.max })),
   };
@@ -371,6 +374,7 @@ export class WorkflowEditor {
           <div data-slot="warn" data-i="${i}"></div>
           ${p.custom ? `<textarea data-i="${i}" data-f="instruction" rows="3" placeholder="What should Claude do in this phase?" aria-label="Instruction for phase ${n}">${esc(p.instruction)}</textarea>` : ""}
           <input type="text" data-i="${i}" data-f="when" value="${esc(p.when)}" placeholder="Use when… (e.g. the change isn't clear yet)" aria-label="When to use phase ${n}" />
+          <input type="text" data-i="${i}" data-f="skipWhen" value="${esc(p.skipWhen)}" placeholder="Optional: skip when… (leave empty to always run)" aria-label="When phase ${n} may be skipped" />
           <div class="wf-next small" data-slot="next" data-i="${i}"></div>
         </div>`;
       })
@@ -445,6 +449,7 @@ export class WorkflowEditor {
     const p = this.draft.phases[i];
     if (!p || !f) return;
     if (f === "when") p.when = el.value;
+    else if (f === "skipWhen") p.skipWhen = el.value;
     else if (f === "instruction") p.instruction = el.value;
     else if (f === "bcond") p.branches[Number(el.dataset.b)].condition = el.value;
     else if (f === "bto") p.branches[Number(el.dataset.b)].to = el.value;

@@ -289,6 +289,8 @@ export interface WorkflowPhase {
   /** What to do in a custom phase, instead of running a skill. */
   instruction?: string;
   when: string;
+  /** When the phase may be skipped; empty (or absent) means it always runs. */
+  skip_when?: string;
   next: string[];
   /** Ways out by condition, instead of `next`. */
   branches?: WorkflowBranch[];

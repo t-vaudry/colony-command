@@ -1734,6 +1734,9 @@ details.menu[open] > summary {
   stroke: var(--accent);
   opacity: 0.7;
 }
+.wf-node.optional:not(.done):not(.active) {
+  opacity: 0.7;
+}
 .wf-node.custom rect {
   stroke-dasharray: 4 2;
 }

@@ -49,6 +49,9 @@ pub struct Phase {
     /// When this phase is the right one, in a sentence.
     #[serde(default)]
     pub when: String,
+    /// When this phase may be skipped, in a sentence; empty means it is always run.
+    #[serde(default)]
+    pub skip_when: String,
     /// Phases that usually follow. A hint for the session, not a rule.
     #[serde(default)]
     pub next: Vec<String>,
@@ -125,6 +128,7 @@ pub fn parse(id: &str, json: &str) -> Result<Workflow, String> {
     w.description = one_line(&w.description, 400);
     for p in &mut w.phases {
         p.when = one_line(&p.when, 200);
+        p.skip_when = one_line(&p.skip_when, 200);
         p.instruction = one_line(&p.instruction, 600);
         for b in &mut p.branches {
             b.condition = one_line(&b.condition, 200);
@@ -249,10 +253,10 @@ impl Workflow {
             "\nWork in phases. A phase is either a skill, which you run with the Skill tool, \
              or a custom phase, which has its own instruction: when you start one, first run the \
              command given for it (it only prints a marker), then do what it says. \
-             Choose the next phase from what the work needs. Every phase listed is expected: \
-             run each one in turn, even when the change is small, and do not stop or report the \
-             work as finished until the last phase has run. Skip a phase only when it truly cannot \
-             apply (for example, nothing to test), and then say which one you are skipping and why. \
+             Choose the next phase from what the work needs. A phase marked [required] must always run, even when the change is small. \
+             A phase marked [optional] may be skipped only when its stated condition holds; say \
+             that you are skipping it and why. Do not stop or report the work as finished until \
+             the last phase has run. \
              You may also repeat a phase or go back. \
              Say in a sentence which phase you are starting and why.\nPhases, in their usual order:",
         );
@@ -276,6 +280,11 @@ impl Workflow {
                 if !next.is_empty() {
                     s.push_str(&format!(" (usually followed by {})", next.join(" or ")));
                 }
+            }
+            if p.skip_when.trim().is_empty() {
+                s.push_str(" [required]");
+            } else {
+                s.push_str(&format!(" [optional: skip it if {}]", p.skip_when.trim().trim_end_matches('.')));
             }
         }
         for l in &self.loops {
@@ -406,11 +415,16 @@ mod tests {
         assert_eq!(w.id, "feature");
         let p = w.prompt();
         assert!(p.contains("\"Feature\" workflow"));
-        assert!(p.contains("- plan: use when the change isn't clear yet (usually followed by build)"));
+        assert!(p.contains("- plan: use when the change isn't clear yet (usually followed by build) [required]"));
         assert!(p.contains("- build (usually followed by review or plan)"));
         assert!(p.contains("- review"));
         assert!(p.contains("Choose the next phase"));
         assert!(p.contains("until the last phase has run"));
+        assert!(p.contains("[required]"));
+        let w = parse("x", r#"{"phases":[{"skill":"plan","skip_when":"the change is one line."},{"skill":"build"}]}"#).unwrap();
+        let p = w.prompt();
+        assert!(p.contains("- plan (usually followed by build) [optional: skip it if the change is one line]"));
+        assert!(p.contains("- build [required]"));
     }
 
     #[test]
