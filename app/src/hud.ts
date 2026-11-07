@@ -8,6 +8,7 @@ import { ContextWatch, contextRow, contextSettingRow, DEFAULT_PCT, showContextNo
 import { latencyChart } from "./latencychart";
 import { daySummary } from "./daysummary";
 import { crewBlock, crewTag } from "./crewhealth";
+import { phaseLine, workflowBlock } from "./workflowview";
 import { botBudgetRow, budgetClick, budgetSettings, dayNote, toastActions, type NoticeAction } from "./budget";
 import { detail, playheadX, REPLAY_FRAMES, timelapse } from "./timelapse";
 import { answersFrom, askCard, needsWide, questionsOf, type Pick } from "./ask";
@@ -738,6 +739,7 @@ export class Hud {
       </div>
       ${this.modelRows(a)}
       ${crewBlock(a, kids)}
+      ${workflowBlock(a, kids)}
       ${
         kids.length
           ? `<div class="fact"><span class="k">Subagents</span><div class="kids">${kids
@@ -753,6 +755,7 @@ export class Hud {
           ${fact("Where", `${hostLabel(a.host)} · ${originLabel(a)}${a.pid ? ` · pid ${a.pid}` : ""}`)}
           ${fact("Folder", a.cwd, "mono")}
           ${fact("Worktree", wt && `${wt} (branch colony/${wt})`, "mono")}
+          ${fact("Phase", phaseLine(a) || null)}
           ${fact("Tool calls", a.tool_calls ? String(a.tool_calls) : null)}
           ${fact("Session id", a.session_id, "mono")}
         </div>

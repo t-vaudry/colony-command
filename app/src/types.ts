@@ -37,6 +37,10 @@ export interface Agent {
   /** The registered process in Colony's terminal: this session's own copy. */
   terminal_pid: number | null;
   subagent_type: string | null;
+  /** The workflow the session was started with, and its path so far. Absent from older daemons. */
+  workflow?: WorkflowInfo | null;
+  /** For a subagent: the workflow phase running when it started. */
+  phase?: string | null;
   state: AgentState;
   state_since: number;
   reason: string | null;
@@ -273,6 +277,47 @@ export interface CrewCheck {
   warnings: string[];
 }
 
+export interface WorkflowPhase {
+  skill: string;
+  when: string;
+  next: string[];
+}
+
+export interface Workflow {
+  id: string;
+  label: string;
+  description: string;
+  phases: WorkflowPhase[];
+}
+
+export interface PhaseVisit {
+  skill: string;
+  started_at: number;
+  ended_at?: number | null;
+  subagents: number;
+}
+
+/** A session's workflow and the path it has taken through it. */
+export interface WorkflowInfo {
+  workflow: Workflow;
+  visits: PhaseVisit[];
+  active?: string | null;
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  source: "project" | "user";
+}
+
+export interface WorkflowListing {
+  workflows: Workflow[];
+  /** Ids that come from the project's own folder rather than the user's. */
+  from_project: string[];
+  problems: [string, string][];
+  skills: SkillInfo[];
+}
+
 export interface SpawnRequest {
   host: string;
   dir: string;
@@ -290,6 +335,8 @@ export interface SpawnRequest {
   swarm?: string;
   /** Start in its own git worktree and branch. */
   isolate?: boolean;
+  /** A workflow by name: the session works through its phases (skills). */
+  workflow?: string;
   cols?: number;
   rows?: number;
 }

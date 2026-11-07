@@ -2,7 +2,10 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest } from "./types";
+/** How long the New session dialog waits for the workflow list before going on without it. */
+const WORKFLOW_LIST_WAIT_MS = 4000;
+
+import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest, type WorkflowListing } from "./types";
 import type { NoticeAction } from "./budget";
 import { appVersion, isProtocolError, outdatedBanner } from "./outdated";
 
@@ -32,11 +35,12 @@ export interface DaemonSettings {
 }
 
 type Message =
-  | { type: "snapshot"; version?: string; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
+  | { type: "snapshot"; version?: string; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; workflows?: boolean; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
   | { type: "crews"; items: Crew[] }
   | { type: "crew_folders"; items: Record<string, string> }
   | { type: "folder_crew"; req: number; crew: string | null }
   | { type: "crew_check"; req: number; error: string | null; warnings: string[] }
+  | ({ type: "workflows"; req: number } & WorkflowListing)
   | { type: "settings"; settings: DaemonSettings }
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
@@ -102,6 +106,8 @@ export class Daemon {
   version: string | undefined;
   /** Whether the snapshot carried crews: a daemon without them can't start a crew session. */
   crewsKnown = false;
+  /** Whether the daemon lists workflows: an older one answers the command with an error. */
+  workflowsKnown = false;
   /** The daemon rejected a command this map sends. */
   private protocolError = false;
   private appVer: string | null = null;
@@ -137,6 +143,7 @@ export class Daemon {
   private crewChecks = new Map<number, (c: CrewCheck) => void>();
   private crewCheckSeq = 0;
   private folderCrews = new Map<number, (crew: string | null) => void>();
+  private workflowLists = new Map<number, (l: WorkflowListing | null) => void>();
   private pendingSpawns: { resolve: (v: { term: string; session_id: string }) => void; reject: (e: Error) => void }[] = [];
 
   onChange(fn: () => void): void {
@@ -210,6 +217,7 @@ export class Daemon {
         this.hosts = m.hosts ?? this.hosts;
         this.version = m.version;
         this.crewsKnown = m.crews !== undefined;
+        this.workflowsKnown = m.workflows === true;
         this.crews = m.crews ?? this.crews;
         this.crewFolders = m.crew_folders ?? this.crewFolders;
         this.spend = new Map(Object.entries(m.spend ?? {}));
@@ -243,6 +251,10 @@ export class Daemon {
       case "crew_folders":
         this.crewFolders = m.items;
         break;
+      case "workflows":
+        this.workflowLists.get(m.req)?.({ workflows: m.workflows, from_project: m.from_project ?? [], problems: m.problems, skills: m.skills });
+        this.workflowLists.delete(m.req);
+        return;
       case "folder_crew":
         this.folderCrews.get(m.req)?.(m.crew);
         this.folderCrews.delete(m.req);
@@ -407,6 +419,25 @@ export class Daemon {
         this.folderCrews.delete(req);
         resolve(null);
       }
+    });
+  }
+
+  /** The workflows and skills a session in `dir` could use; null when the daemon can't be asked. */
+  listWorkflows(host: string, dir: string): Promise<WorkflowListing | null> {
+    return new Promise((resolve) => {
+      // Never send what an older daemon would answer with an error.
+      if (!this.workflowsKnown) return resolve(null);
+      const req = ++this.crewCheckSeq;
+      this.workflowLists.set(req, resolve);
+      if (!this.send({ type: "list_workflows", req, host, dir })) {
+        this.workflowLists.delete(req);
+        resolve(null);
+        return;
+      }
+      // A daemon without workflows never answers (or answers without the id).
+      setTimeout(() => {
+        if (this.workflowLists.delete(req)) resolve(null);
+      }, WORKFLOW_LIST_WAIT_MS);
     });
   }
 
