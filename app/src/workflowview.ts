@@ -80,7 +80,11 @@ export function runningByPhase(kids: Agent[]): Map<string, number> {
   return out;
 }
 
+/** Marker ids differ per drawing: several graphs can be in the page at once. */
+let drawn = 0;
+
 function graph(info: WorkflowInfo, kids: Agent[]): string {
+  const ids = { arrow: `wf-arrow-${++drawn}` };
   const w = info.workflow;
   const nodes = layout(w);
   const at = new Map(nodes.map((n) => [n.skill, n]));
@@ -108,14 +112,15 @@ function graph(info: WorkflowInfo, kids: Agent[]): string {
         const x2 = b.x;
         const y2 = b.y + NODE_H / 2;
         const mx = (x1 + x2) / 2;
-        edges.push(`<path class="${cls}" d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2 - 3} ${y2}" marker-end="url(#wf-arrow${used ? "-on" : ""})"/>`);
+        edges.push(`<path class="${cls}" d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2 - 3} ${y2}" marker-end="url(#${ids.arrow}${used ? "-on" : ""})"/>`);
       } else {
-        // Back to an earlier phase, or sideways: loop underneath.
-        const x1 = a.x + NODE_W / 2;
-        const x2 = b.x + NODE_W / 2;
+        // Back to an earlier phase, sideways, or to itself: loop underneath.
+        const same = a === b;
+        const x1 = a.x + NODE_W / 2 + (same ? 14 : 0);
+        const x2 = b.x + NODE_W / 2 - (same ? 14 : 0);
         const y = Math.max(a.y, b.y) + NODE_H;
         const dip = y + BACK_ROOM - 4;
-        edges.push(`<path class="${cls} back" d="M${x1} ${y} C${x1} ${dip} ${x2} ${dip} ${x2} ${y + 3}" marker-end="url(#wf-arrow${used ? "-on" : ""})"/>`);
+        edges.push(`<path class="${cls} back" d="M${x1} ${y} C${x1 + (same ? 8 : 0)} ${dip} ${x2 - (same ? 8 : 0)} ${dip} ${x2} ${y + 3}" marker-end="url(#${ids.arrow}${used ? "-on" : ""})"/>`);
       }
     }
   }
@@ -132,8 +137,8 @@ function graph(info: WorkflowInfo, kids: Agent[]): string {
 
   return `<svg class="wf-graph" viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="Workflow phases">
     <defs>
-      <marker id="wf-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head"/></marker>
-      <marker id="wf-arrow-on" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head on"/></marker>
+      <marker id="${ids.arrow}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head"/></marker>
+      <marker id="${ids.arrow}-on" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head on"/></marker>
     </defs>
     ${edges.join("")}${boxes.join("")}
   </svg>`;
@@ -155,5 +160,6 @@ export function workflowBlock(a: Agent, kids: Agent[]): string {
 
 /** A subagent's phase, for its panel: "Started in phase build", or "". */
 export function phaseLine(a: Agent): string {
-  return a.kind === "subagent" && a.phase ? `Started in phase ${esc(a.phase)}` : "";
+  // Not escaped: `fact` in the panel escapes its value.
+  return a.kind === "subagent" && a.phase ? `Started in phase ${a.phase}` : "";
 }

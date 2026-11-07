@@ -66,6 +66,15 @@ describe("workflow view", () => {
     expect(html).not.toContain("a<b");
   });
 
+  it("draws a phase that leads to itself, and gives each graph its own arrow ids", () => {
+    const w: Workflow = { id: "x", label: "X", description: "", phases: [{ skill: "a", when: "", next: ["a"] }] };
+    const draw = () => workflowBlock(agent({ workflow: { workflow: w, visits: [], active: null } }), []);
+    const first = draw();
+    expect(first).toContain("wf-edge back");
+    const id = (h: string) => /<marker id="(wf-arrow-\d+)"/.exec(h)![1];
+    expect(id(draw())).not.toBe(id(first));
+  });
+
   it("names the phase a subagent started in", () => {
     expect(phaseLine(agent({ kind: "subagent", phase: "build" }))).toBe("Started in phase build");
     expect(phaseLine(agent({ kind: "subagent" }))).toBe("");

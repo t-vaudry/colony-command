@@ -2,6 +2,9 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
+/** How long the New session dialog waits for the workflow list before going on without it. */
+const WORKFLOW_LIST_WAIT_MS = 4000;
+
 import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest, type WorkflowListing } from "./types";
 import type { NoticeAction } from "./budget";
 import { appVersion, isProtocolError, outdatedBanner } from "./outdated";
@@ -424,7 +427,12 @@ export class Daemon {
       if (!this.send({ type: "list_workflows", req, host, dir })) {
         this.workflowLists.delete(req);
         resolve(null);
+        return;
       }
+      // A daemon without workflows never answers (or answers without the id).
+      setTimeout(() => {
+        if (this.workflowLists.delete(req)) resolve(null);
+      }, WORKFLOW_LIST_WAIT_MS);
     });
   }
 

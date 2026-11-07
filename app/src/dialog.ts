@@ -157,8 +157,12 @@ export class NewSessionDialog {
     this.isolate.closest("label")!.hidden = !!this.resume;
     // A resumed session keeps the workflow prompt it was started with.
     this.workflow.closest("label")!.hidden = !!this.resume;
+    // Drop the last open's list, and any answer still on its way.
+    this.workflowSeq++;
+    this.workflowList = null;
+    this.workflow.innerHTML = "";
+    this.workflow.add(new Option("None", ""));
     this.workflowNote.hidden = true;
-    this.workflow.value = "";
     this.error.textContent = "";
     this.name.value = "";
     this.prompt.value = "";
