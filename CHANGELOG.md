@@ -5,6 +5,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-11-07
+
+- Workflows: conditionals (if / otherwise) on arrows (#73)
+- Workflows: custom-instruction phases and loops (#72)
+
 ## [0.1.13] - 2026-11-07
 
 - Workflows: editor (the part of #70 that missed main) (#71)
