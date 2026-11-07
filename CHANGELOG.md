@@ -5,6 +5,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-07
+
+- Workflows: editor (the part of #70 that missed main) (#71)
+- Workflows: picker in the New session dialog and phase graph in the bot panel (#69)
+
 ## [0.1.12] - 2026-11-07
 
 - Dynamic workflows: skills as phases (core + daemon) (#68)
