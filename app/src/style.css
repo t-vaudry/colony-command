@@ -430,6 +430,8 @@ kbd {
 #reply,
 #new-session input,
 #new-session select,
+#wf-editor input[type="text"],
+#wf-editor select,
 #new-session textarea {
   width: 100%;
   font: inherit;
@@ -477,7 +479,8 @@ button.primary kbd {
 }
 
 /* New session dialog */
-#new-session {
+#new-session,
+#wf-editor {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--surface);
@@ -485,20 +488,24 @@ button.primary kbd {
   padding: 0;
   width: min(520px, calc(100vw - 32px));
 }
-#new-session::backdrop {
+#new-session::backdrop,
+#wf-editor::backdrop {
   background: rgba(10, 14, 12, 0.45);
 }
-#ns-form {
+#ns-form,
+#wf-form {
   display: grid;
   gap: 14px;
   padding: 20px 22px;
 }
-#ns-form h2 {
+#ns-form h2,
+#wf-form h2 {
   font-family: var(--f-display);
   font-size: 22px;
   margin: 0;
 }
-#ns-form label {
+#ns-form label,
+#wf-form label {
   display: grid;
   gap: 5px;
 }
@@ -1563,4 +1570,54 @@ details.menu[open] > summary {
   margin-top: 6px;
   color: var(--muted);
   overflow-wrap: anywhere;
+}
+
+/* Workflow editor */
+#wf-editor {
+  width: min(640px, calc(100vw - 32px));
+}
+#wf-form label[hidden] {
+  display: none;
+}
+#wf-phases {
+  display: grid;
+  gap: 10px;
+  margin: 6px 0 10px;
+}
+.wf-row {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.wf-row-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  gap: 6px;
+  align-items: center;
+}
+.wf-num {
+  font: 700 12px var(--f-body);
+  color: var(--muted);
+  min-width: 1.4em;
+  text-align: center;
+}
+.wf-row button {
+  padding: 4px 8px;
+}
+.wf-next {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+}
+#wf-form label.wf-chip {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+#wf-form label.wf-chip input {
+  width: auto;
 }

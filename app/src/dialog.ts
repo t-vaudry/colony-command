@@ -5,6 +5,7 @@
 import type { Daemon } from "./daemon";
 import { chooseCrew, folderDefaultAction, suggest, type Suggestion } from "./crewsuggest";
 import { prefs } from "./prefs";
+import { WorkflowEditor } from "./workfloweditor";
 import type { Agent, Crew, WorkflowListing } from "./types";
 
 export interface Prefill {
@@ -66,6 +67,7 @@ export class NewSessionDialog {
   private workflowNote = document.getElementById("ns-workflow-note")!;
   private workflowList: WorkflowListing | null = null;
   private workflowSeq = 0;
+  private editor: WorkflowEditor;
   private crewWhy = document.getElementById("ns-crew-why")!;
   private crewWhyText = document.getElementById("ns-crew-why-text")!;
   private crewWhyUndo = document.getElementById("ns-crew-why-undo") as HTMLButtonElement;
@@ -109,6 +111,8 @@ export class NewSessionDialog {
     });
     this.host.addEventListener("change", () => void this.lookupFolderCrew());
     this.workflow.addEventListener("change", () => this.showWorkflowNote());
+    this.editor = new WorkflowEditor(daemon);
+    document.getElementById("ns-workflow-edit")!.addEventListener("click", () => this.editWorkflows());
     this.folderDefault.addEventListener("change", () => {
       this.folderBoxTouched = true;
     });
@@ -247,6 +251,28 @@ export class NewSessionDialog {
     if (!this.folderBoxTouched) this.folderDefault.checked = false;
     this.applyCrew();
     void this.loadWorkflows(dir, host);
+  }
+
+  /** Open the editor for this folder's workflows; a saved one is picked here afterwards. */
+  private async editWorkflows(): Promise<void> {
+    const dir = this.chosenDir();
+    const host = this.host.value;
+    if (!dir || !host) {
+      this.error.textContent = "Choose a folder first.";
+      return;
+    }
+    const list = this.workflowList ?? (await this.daemon.listWorkflows(host, dir));
+    if (!list) {
+      this.error.textContent = "Workflows need the updated background service. Restart Colony.";
+      return;
+    }
+    this.error.textContent = "";
+    this.editor.open(host, dir, list, this.workflow.value, (id) => {
+      void this.loadWorkflows(dir, host).then(() => {
+        if (id && [...this.workflow.options].some((o) => o.value === id)) this.workflow.value = id;
+        this.showWorkflowNote();
+      });
+    });
   }
 
   /** Workflows a session in this folder could follow: the project's, then the user's. */

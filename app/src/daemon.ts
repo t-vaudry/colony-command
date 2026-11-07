@@ -4,8 +4,10 @@
 
 /** How long the New session dialog waits for the workflow list before going on without it. */
 const WORKFLOW_LIST_WAIT_MS = 4000;
+/** Saving writes a file; give it longer before reporting no answer. */
+const WORKFLOW_SAVE_WAIT_MS = 10000;
 
-import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest, type WorkflowListing } from "./types";
+import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest, type Workflow, type WorkflowListing } from "./types";
 import type { NoticeAction } from "./budget";
 import { appVersion, isProtocolError, outdatedBanner } from "./outdated";
 
@@ -41,6 +43,7 @@ type Message =
   | { type: "folder_crew"; req: number; crew: string | null }
   | { type: "crew_check"; req: number; error: string | null; warnings: string[] }
   | ({ type: "workflows"; req: number } & WorkflowListing)
+  | { type: "workflow_saved"; req: number; error: string | null }
   | { type: "settings"; settings: DaemonSettings }
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
@@ -144,6 +147,7 @@ export class Daemon {
   private crewCheckSeq = 0;
   private folderCrews = new Map<number, (crew: string | null) => void>();
   private workflowLists = new Map<number, (l: WorkflowListing | null) => void>();
+  private workflowSaves = new Map<number, (error: string | null) => void>();
   private pendingSpawns: { resolve: (v: { term: string; session_id: string }) => void; reject: (e: Error) => void }[] = [];
 
   onChange(fn: () => void): void {
@@ -254,6 +258,10 @@ export class Daemon {
       case "workflows":
         this.workflowLists.get(m.req)?.({ workflows: m.workflows, from_project: m.from_project ?? [], problems: m.problems, skills: m.skills });
         this.workflowLists.delete(m.req);
+        return;
+      case "workflow_saved":
+        this.workflowSaves.get(m.req)?.(m.error);
+        this.workflowSaves.delete(m.req);
         return;
       case "folder_crew":
         this.folderCrews.get(m.req)?.(m.crew);
@@ -438,6 +446,32 @@ export class Daemon {
       setTimeout(() => {
         if (this.workflowLists.delete(req)) resolve(null);
       }, WORKFLOW_LIST_WAIT_MS);
+    });
+  }
+
+  /** Save a workflow for the project (`scope` "project") or the user ("user"); resolves to an error text, or null when saved. */
+  saveWorkflow(host: string, dir: string, scope: "project" | "user", workflow: Workflow): Promise<string | null> {
+    return this.workflowChange({ type: "save_workflow", host, dir, scope, workflow });
+  }
+
+  /** Remove a saved workflow; resolves to an error text, or null when removed. */
+  deleteWorkflow(host: string, dir: string, scope: "project" | "user", id: string): Promise<string | null> {
+    return this.workflowChange({ type: "delete_workflow", host, dir, scope, id });
+  }
+
+  private workflowChange(command: { type: string } & Record<string, unknown>): Promise<string | null> {
+    return new Promise((resolve) => {
+      if (!this.workflowsKnown) return resolve("Colony's background service is out of date. Restart Colony to update it.");
+      const req = ++this.crewCheckSeq;
+      this.workflowSaves.set(req, resolve);
+      if (!this.send({ ...command, req })) {
+        this.workflowSaves.delete(req);
+        resolve("Lost the connection to Colony's background service.");
+        return;
+      }
+      setTimeout(() => {
+        if (this.workflowSaves.delete(req)) resolve("No answer from Colony's background service. Check the workflow list before trying again.");
+      }, WORKFLOW_SAVE_WAIT_MS);
     });
   }
 
