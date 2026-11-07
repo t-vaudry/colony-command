@@ -2,7 +2,7 @@
 // whenever the daemon restarts. Commands (ack, start a session, terminal
 // input) go back over the same socket.
 
-import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest } from "./types";
+import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest, type WorkflowListing } from "./types";
 import type { NoticeAction } from "./budget";
 import { appVersion, isProtocolError, outdatedBanner } from "./outdated";
 
@@ -37,6 +37,7 @@ type Message =
   | { type: "crew_folders"; items: Record<string, string> }
   | { type: "folder_crew"; req: number; crew: string | null }
   | { type: "crew_check"; req: number; error: string | null; warnings: string[] }
+  | ({ type: "workflows"; req: number } & WorkflowListing)
   | { type: "settings"; settings: DaemonSettings }
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
@@ -137,6 +138,7 @@ export class Daemon {
   private crewChecks = new Map<number, (c: CrewCheck) => void>();
   private crewCheckSeq = 0;
   private folderCrews = new Map<number, (crew: string | null) => void>();
+  private workflowLists = new Map<number, (l: WorkflowListing | null) => void>();
   private pendingSpawns: { resolve: (v: { term: string; session_id: string }) => void; reject: (e: Error) => void }[] = [];
 
   onChange(fn: () => void): void {
@@ -243,6 +245,10 @@ export class Daemon {
       case "crew_folders":
         this.crewFolders = m.items;
         break;
+      case "workflows":
+        this.workflowLists.get(m.req)?.({ workflows: m.workflows, from_project: m.from_project ?? [], problems: m.problems, skills: m.skills });
+        this.workflowLists.delete(m.req);
+        return;
       case "folder_crew":
         this.folderCrews.get(m.req)?.(m.crew);
         this.folderCrews.delete(m.req);
@@ -405,6 +411,18 @@ export class Daemon {
       this.folderCrews.set(req, resolve);
       if (!this.send({ type: "folder_crew", req, host, dir })) {
         this.folderCrews.delete(req);
+        resolve(null);
+      }
+    });
+  }
+
+  /** The workflows and skills a session in `dir` could use; null when the daemon can't be asked. */
+  listWorkflows(host: string, dir: string): Promise<WorkflowListing | null> {
+    return new Promise((resolve) => {
+      const req = ++this.crewCheckSeq;
+      this.workflowLists.set(req, resolve);
+      if (!this.send({ type: "list_workflows", req, host, dir })) {
+        this.workflowLists.delete(req);
         resolve(null);
       }
     });

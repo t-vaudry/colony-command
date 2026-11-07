@@ -5,7 +5,7 @@
 import type { Daemon } from "./daemon";
 import { chooseCrew, folderDefaultAction, suggest, type Suggestion } from "./crewsuggest";
 import { prefs } from "./prefs";
-import type { Agent, Crew } from "./types";
+import type { Agent, Crew, WorkflowListing } from "./types";
 
 export interface Prefill {
   dir?: string;
@@ -62,6 +62,10 @@ export class NewSessionDialog {
   private saveCrew = document.getElementById("ns-save-crew") as HTMLInputElement;
   private crewName = document.getElementById("ns-crew-name") as HTMLInputElement;
   private crewNote = document.getElementById("ns-crew-note")!;
+  private workflow = document.getElementById("ns-workflow") as HTMLSelectElement;
+  private workflowNote = document.getElementById("ns-workflow-note")!;
+  private workflowList: WorkflowListing | null = null;
+  private workflowSeq = 0;
   private crewWhy = document.getElementById("ns-crew-why")!;
   private crewWhyText = document.getElementById("ns-crew-why-text")!;
   private crewWhyUndo = document.getElementById("ns-crew-why-undo") as HTMLButtonElement;
@@ -104,6 +108,7 @@ export class NewSessionDialog {
       this.showCrewWhy("picked");
     });
     this.host.addEventListener("change", () => void this.lookupFolderCrew());
+    this.workflow.addEventListener("change", () => this.showWorkflowNote());
     this.folderDefault.addEventListener("change", () => {
       this.folderBoxTouched = true;
     });
@@ -150,6 +155,10 @@ export class NewSessionDialog {
     this.name.closest("label")!.hidden = !!this.resume;
     // A resumed session keeps the folder (and worktree) it already has.
     this.isolate.closest("label")!.hidden = !!this.resume;
+    // A resumed session keeps the workflow prompt it was started with.
+    this.workflow.closest("label")!.hidden = !!this.resume;
+    this.workflowNote.hidden = true;
+    this.workflow.value = "";
     this.error.textContent = "";
     this.name.value = "";
     this.prompt.value = "";
@@ -233,6 +242,44 @@ export class NewSessionDialog {
     this.folderDefaultText.textContent = `Make this crew the default for ${dir ? dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dir : "this folder"}`;
     if (!this.folderBoxTouched) this.folderDefault.checked = false;
     this.applyCrew();
+    void this.loadWorkflows(dir, host);
+  }
+
+  /** Workflows a session in this folder could follow: the project's, then the user's. */
+  private async loadWorkflows(dir: string, host: string): Promise<void> {
+    if (this.resume) return;
+    const seq = ++this.workflowSeq;
+    const list = dir && host ? await this.daemon.listWorkflows(host, dir) : null;
+    if (seq !== this.workflowSeq) return;
+    this.workflowList = list;
+    const keep = this.workflow.value;
+    this.workflow.innerHTML = "";
+    this.workflow.add(new Option(list ? "None" : "None (needs the updated background service)", ""));
+    for (const w of list?.workflows ?? []) {
+      this.workflow.add(new Option(list!.from_project.includes(w.id) ? `${w.label} (this project)` : w.label, w.id));
+    }
+    if (keep && list?.workflows.some((w) => w.id === keep)) this.workflow.value = keep;
+    this.showWorkflowNote();
+  }
+
+  /** What the chosen workflow is: its phases in order, and any skill that isn't installed. */
+  private showWorkflowNote(): void {
+    const list = this.workflowList;
+    const w = list?.workflows.find((x) => x.id === this.workflow.value);
+    const lines: string[] = [];
+    if (w) {
+      if (w.description) lines.push(w.description);
+      lines.push(`Phases: ${w.phases.map((p) => p.skill).join(", ")}. Claude picks the next phase as the work needs it.`);
+      const have = new Set((list?.skills ?? []).map((s) => s.name));
+      const missing = w.phases.filter((p) => !have.has(p.skill) && !p.skill.includes(":")).map((p) => p.skill);
+      if (missing.length) lines.push(`No skill found for: ${missing.join(", ")}.`);
+      if (list?.from_project.includes(w.id)) lines.push("This workflow's text comes from the project folder.");
+    } else if (list && list.workflows.length === 0) {
+      lines.push("No workflows yet. Add a JSON file to .colony/workflows in the project, or workflows in Colony's folder.");
+    }
+    if (list?.problems.length) lines.push(`Couldn't read: ${list.problems.map(([n, why]) => `${n} (${why})`).join("; ")}.`);
+    this.workflowNote.hidden = lines.length === 0;
+    this.workflowNote.textContent = lines.join(" ");
   }
 
   /** Preselect the crew: the user's own pick, else the folder's default, else the suggestion, else last time's. */
@@ -362,6 +409,7 @@ export class NewSessionDialog {
         permission_mode: this.mode.value || undefined,
         ...choice,
         isolate: this.resume ? undefined : this.isolate.checked,
+        workflow: this.resume ? undefined : this.workflow.value || undefined,
         // Off unless ticked, which also skips Claude in Chrome's first-run question.
         chrome: this.chrome.checked,
         ...this.termSize(),

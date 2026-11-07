@@ -1506,3 +1506,58 @@ details.menu[open] > summary {
   line-height: 1.55;
   font-size: 15px;
 }
+
+/* Workflow block of the bot panel */
+.workflow-block .wf-status {
+  margin: 2px 0 6px;
+}
+.wf-graph {
+  display: block;
+  max-height: 220px;
+}
+.wf-node rect {
+  fill: var(--surface);
+  stroke: var(--line);
+  stroke-width: 1.2;
+}
+.wf-node.done rect {
+  fill: var(--plot);
+  stroke: var(--ok);
+}
+.wf-node.active rect {
+  fill: var(--porch);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.wf-name {
+  font: 600 11px var(--f-body);
+  fill: var(--ink);
+}
+.wf-count,
+.wf-subs {
+  font: 10px var(--f-body);
+  fill: var(--muted);
+}
+.wf-edge {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.2;
+}
+.wf-edge.back {
+  stroke-dasharray: 3 3;
+}
+.wf-edge.taken {
+  stroke: var(--accent);
+  stroke-width: 1.8;
+}
+.wf-head {
+  fill: var(--line);
+}
+.wf-head.on {
+  fill: var(--accent);
+}
+.wf-path {
+  margin-top: 6px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}

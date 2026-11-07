@@ -37,14 +37,22 @@ pub fn resolve(host: &HostId, dir: &str, id: &str) -> Result<Workflow, String> {
 #[derive(Debug, Serialize)]
 pub struct Listing {
     pub workflows: Vec<Workflow>,
+    /// Ids of the workflows that come from the project's own folder (the rest
+    /// are the user's): a repo's text goes into the prompt, so say so.
+    pub from_project: Vec<String>,
     /// Files that didn't load: (name, why).
     pub problems: Vec<(String, String)>,
     pub skills: Vec<SkillInfo>,
 }
 
 pub fn listing(host: &HostId, dir: &str) -> Listing {
-    let (workflows, problems) = workflow::list(&workflow_dirs(host, dir));
-    Listing { workflows, problems, skills: workflow::skills(&skill_dirs(host, dir)) }
+    let dirs = workflow_dirs(host, dir);
+    let (workflows, problems) = workflow::list(&dirs);
+    let from_project = match (project(host, dir), dirs.first()) {
+        (Some(_), Some(first)) => workflows.iter().filter(|w| first.join(format!("{}.json", w.id)).is_file()).map(|w| w.id.clone()).collect(),
+        _ => Vec::new(),
+    };
+    Listing { workflows, from_project, problems, skills: workflow::skills(&skill_dirs(host, dir)) }
 }
 
 /// Add `text` to the `--append-system-prompt` already in `args` (a crew's

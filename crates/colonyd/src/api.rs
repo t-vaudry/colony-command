@@ -145,7 +145,12 @@ enum Command {
     /// Start a session (or resume one) in a terminal Colony owns.
     Spawn(SpawnRequest),
     /// The workflows and skills a session started in `dir` could use.
-    ListWorkflows { host: colony_core::HostId, dir: String },
+    ListWorkflows {
+        #[serde(default)]
+        req: u64,
+        host: colony_core::HostId,
+        dir: String,
+    },
     /// Save a crew: a new one, or an edited copy of a built-in.
     SaveCrew { crew: colony_core::crew::Crew },
     /// Remove a saved crew, or reset a built-in crew to how Colony ships it.
@@ -307,9 +312,9 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
                 Err(e) => Err(e),
             }
         }
-        Command::ListWorkflows { host, dir } => {
+        Command::ListWorkflows { req, host, dir } => {
             let l = crate::workflows::listing(&host, &dir);
-            Ok(Some(json!({ "type": "workflows", "dir": dir, "workflows": l.workflows, "problems": l.problems, "skills": l.skills }).to_string()))
+            Ok(Some(json!({ "type": "workflows", "req": req, "workflows": l.workflows, "from_project": l.from_project, "problems": l.problems, "skills": l.skills }).to_string()))
         }
         Command::SaveCrew { crew } => crate::crews::save(crew).map(|all| {
             let _ = shared.deltas.send(json!({ "type": "crews", "items": all }).to_string());
