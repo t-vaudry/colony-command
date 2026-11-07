@@ -5,6 +5,10 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-11-07
+
+- Workflows: pop the graph out into a full-width dialog (#74)
+
 ## [0.1.14] - 2026-11-07
 
 - Workflows: conditionals (if / otherwise) on arrows (#73)
