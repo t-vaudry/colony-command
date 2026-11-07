@@ -1621,3 +1621,78 @@ details.menu[open] > summary {
 #wf-form label.wf-chip input {
   width: auto;
 }
+.wf-row-top select {
+  width: auto;
+}
+.wf-row textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 9px;
+  resize: vertical;
+}
+#wf-loops {
+  display: grid;
+  gap: 8px;
+  margin: 6px 0 10px;
+}
+.wf-loop-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.wf-loop-row select {
+  width: auto;
+  max-width: 11em;
+}
+.wf-loop-row input[type="text"] {
+  flex: 1 1 10em;
+  width: auto;
+  min-width: 8em;
+}
+.wf-loop-row input[type="number"] {
+  width: 4.5em;
+}
+#wf-form .wf-loop-row button {
+  padding: 4px 8px;
+}
+
+/* Loops and custom phases in the bot panel's graph */
+.wf-loop rect {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.2;
+  stroke-dasharray: 5 3;
+  opacity: 0.55;
+}
+.wf-loop.active rect {
+  opacity: 1;
+  stroke-width: 1.8;
+}
+.wf-loop-label {
+  font: 10px var(--f-body);
+  fill: var(--muted);
+}
+.wf-loop.active .wf-loop-label {
+  fill: var(--accent);
+}
+.wf-edge.loop-back {
+  stroke: var(--accent);
+  opacity: 0.7;
+}
+.wf-node.custom rect {
+  stroke-dasharray: 4 2;
+}
+.wf-kind {
+  font: 10px var(--f-body);
+  fill: var(--muted);
+}

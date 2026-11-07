@@ -194,7 +194,7 @@
     <dialog id="wf-editor">
       <form id="wf-form">
         <h2>Workflows</h2>
-        <p class="muted small">A workflow is a list of phases, each a skill. The session picks the next phase as the work needs it; "usually followed by" is a hint to it, not a rule.</p>
+        <p class="muted small">A workflow is a list of phases, each a skill or a custom instruction. The session picks the next phase as the work needs it; "usually followed by" is a hint to it, not a rule.</p>
         <label>
           <span class="k">Edit</span>
           <select id="wf-pick"></select>
@@ -219,6 +219,12 @@
           <div id="wf-phases"></div>
           <datalist id="wf-skills"></datalist>
           <button type="button" id="wf-add">Add phase</button>
+        </div>
+        <div>
+          <span class="k">Loops</span>
+          <p class="muted small">A loop repeats a run of phases, in the order above, until the session decides it is done, up to a limit. Phases inside a loop can sit inside another loop.</p>
+          <div id="wf-loops"></div>
+          <button type="button" id="wf-add-loop">Add loop</button>
         </div>
         <p id="wf-error" class="error" role="alert"></p>
         <div class="actions">

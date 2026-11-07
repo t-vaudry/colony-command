@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layout, pathLine, phaseLine, runningByPhase, taken, workflowBlock } from "./workflowview";
+import { followers, layout, loopRound, pathLine, phaseLine, runningByPhase, taken, workflowBlock } from "./workflowview";
 import type { Agent, Workflow, WorkflowInfo } from "./types";
 
 const wf: Workflow = {
@@ -16,6 +16,58 @@ const wf: Workflow = {
 const visit = (skill: string, subagents = 0) => ({ skill, started_at: 1, ended_at: null, subagents });
 const info = (visits: string[], active: string | null = visits.at(-1) ?? null): WorkflowInfo => ({ workflow: wf, visits: visits.map((s) => visit(s)), active });
 const agent = (extra: Partial<Agent> = {}): Agent => ({ id: "s", kind: "main", state: "working", ...extra }) as Agent;
+
+const bug: Workflow = {
+  id: "bug",
+  label: "Bug",
+  description: "",
+  phases: ["investigate", "triage", "develop", "test", "review", "publish"].map((skill) => ({ skill, when: "", next: [], instruction: skill === "triage" ? "Decide how bad it is." : "" })),
+  loops: [{ from: "develop", to: "review", until: "the review finds nothing", max: 3 }],
+};
+const walk = (...skills: string[]): WorkflowInfo => ({ workflow: bug, visits: skills.map((skill) => visit(skill)), active: skills.at(-1) ?? null });
+
+describe("workflow loops and custom phases", () => {
+  it("leads each phase to the one listed after it unless told otherwise", () => {
+    expect(followers(bug, 0)).toEqual(["triage"]);
+    expect(followers(bug, 5)).toEqual([]);
+    expect(followers(wf, 1)).toEqual(["review", "plan"]);
+    expect(layout(bug).map((n) => n.col)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it("counts the rounds of a loop from the way the session moves through it", () => {
+    const l = bug.loops![0];
+    expect(loopRound(walk("investigate", "triage"), l)).toEqual({ round: 0, inside: false });
+    expect(loopRound(walk("investigate", "triage", "develop"), l)).toEqual({ round: 1, inside: true });
+    expect(loopRound(walk("triage", "develop", "test", "review"), l)).toEqual({ round: 1, inside: true });
+    expect(loopRound(walk("triage", "develop", "test", "review", "develop", "test"), l)).toEqual({ round: 2, inside: true });
+    expect(loopRound(walk("develop", "test", "review", "develop", "review", "develop", "publish"), l)).toEqual({ round: 3, inside: false });
+    // Leaving and coming back starts again at round 1.
+    expect(loopRound(walk("develop", "review", "triage", "develop"), l).round).toBe(1);
+  });
+
+  it("frames the loop, says which round it is in, and marks custom phases", () => {
+    const html = workflowBlock(agent({ workflow: walk("investigate", "triage", "develop", "test", "review", "develop") }), []);
+    expect(html).toContain('class="wf-loop active"');
+    expect(html).toContain("↻ round 2 of 3 · until the review finds nothing");
+    expect(html).toMatch(/wf-edge back taken loop-back/);
+    expect(html).toContain("wf-node done custom");
+    expect(html).toContain("triage (custom phase)");
+    // Before the loop is reached it says how many rounds it may take.
+    expect(workflowBlock(agent({ workflow: walk("investigate") }), [])).toContain("↻ up to 3 rounds · until");
+  });
+
+  it("makes room for nested loops, and draws no frame for a loop that names a missing phase", () => {
+    const nested: Workflow = { ...bug, loops: [...bug.loops!, { from: "triage", to: "publish", until: "", max: 2 }, { from: "nope", to: "publish", until: "", max: 2 }] };
+    const html = workflowBlock(agent({ workflow: { workflow: nested, visits: [], active: null } }), []);
+    expect(html.match(/<g class="wf-loop/g)).toHaveLength(2);
+    expect(html).not.toContain("nope");
+  });
+
+  it("escapes a loop's text", () => {
+    const evil: Workflow = { ...bug, loops: [{ from: "develop", to: "test", until: "<img src=x>", max: 2 }] };
+    expect(workflowBlock(agent({ workflow: { workflow: evil, visits: [], active: null } }), [])).not.toContain("<img");
+  });
+});
 
 describe("workflow view", () => {
   it("puts phases in columns by distance from the first, unreached ones after", () => {

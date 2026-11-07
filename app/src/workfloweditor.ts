@@ -1,6 +1,7 @@
-// Workflow editor: make or change a workflow by picking skills for its phases.
-// The pure part (a draft, its checks, turning it into a workflow) is tested;
-// the dialog below it only draws the draft and edits it.
+// Workflow editor: make or change a workflow. A phase is a skill or a custom
+// instruction, and a run of phases can be a loop. The pure part (a draft, its
+// checks, turning it into a workflow) is tested; the dialog below it only draws
+// the draft and edits it.
 
 import type { Daemon } from "./daemon";
 import type { SkillInfo, Workflow, WorkflowListing } from "./types";
@@ -10,9 +11,20 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 export type Scope = "project" | "user";
 
 export interface DraftPhase {
+  /** The skill's name; for a custom phase just its name. */
   skill: string;
+  /** A custom phase does what `instruction` says instead of running a skill. */
+  custom: boolean;
+  instruction: string;
   when: string;
   next: string[];
+}
+
+export interface DraftLoop {
+  from: string;
+  to: string;
+  until: string;
+  max: number;
 }
 
 export interface Draft {
@@ -25,17 +37,31 @@ export interface Draft {
   /** The folder an existing workflow was loaded from (what Delete removes); null for a new one. */
   origin: Scope | null;
   phases: DraftPhase[];
+  loops: DraftLoop[];
 }
 
 const SKILL_CHARS = /^[A-Za-z0-9._:-]{1,64}$/;
+const DEFAULT_ROUNDS = 3;
+const MAX_ROUNDS = 20;
+
+export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", next: [] });
 
 export function blank(scope: Scope): Draft {
-  return { id: "", label: "", description: "", scope, origin: null, phases: [{ skill: "", when: "", next: [] }] };
+  return { id: "", label: "", description: "", scope, origin: null, phases: [newPhase()], loops: [] };
 }
 
 /** An existing workflow as a draft; `fromProject` says where it was found. */
 export function draftOf(w: Workflow, fromProject: boolean): Draft {
-  return { id: w.id, label: w.label, description: w.description, scope: fromProject ? "project" : "user", origin: fromProject ? "project" : "user", phases: w.phases.map((p) => ({ skill: p.skill, when: p.when, next: [...p.next] })) };
+  const where: Scope = fromProject ? "project" : "user";
+  return {
+    id: w.id,
+    label: w.label,
+    description: w.description,
+    scope: where,
+    origin: where,
+    phases: w.phases.map((p) => ({ skill: p.skill, custom: !!p.instruction, instruction: p.instruction ?? "", when: p.when, next: [...p.next] })),
+    loops: (w.loops ?? []).map((l) => ({ ...l })),
+  };
 }
 
 /** "Feature work!" -> "feature-work": the file name a new workflow gets. */
@@ -47,6 +73,33 @@ export function slug(label: string): string {
     .slice(0, 48);
 }
 
+/** The names of the phases, in order, that have one. */
+export function names(d: Draft): string[] {
+  return d.phases.map((p) => p.skill.trim()).filter(Boolean);
+}
+
+/** What is wrong with the loops of a draft, in words for the person; null when nothing. */
+export function loopProblem(d: Draft): string | null {
+  const all = names(d);
+  const spans: [number, number][] = [];
+  for (const [k, l] of d.loops.entries()) {
+    const n = k + 1;
+    const a = all.indexOf(l.from.trim());
+    const b = all.indexOf(l.to.trim());
+    if (!l.from || !l.to) return `Loop ${n}: choose the first and last phase it repeats.`;
+    if (a < 0 || b < 0) return `Loop ${n} names a phase that isn't in the list.`;
+    if (b < a) return `Loop ${n} ends before it starts: "${l.to}" is earlier in the list than "${l.from}". Reorder the phases or swap them.`;
+    if (!Number.isInteger(l.max) || l.max < 1 || l.max > MAX_ROUNDS) return `Loop ${n}: choose between 1 and ${MAX_ROUNDS} rounds.`;
+    for (const [c, e] of spans) {
+      const apart = b < c || e < a;
+      const inside = (c <= a && b <= e) || (a <= c && e <= b);
+      if (!apart && (!inside || (a === c && b === e))) return `Loop ${n} crosses or repeats another loop. Loops can sit inside one another or apart, not overlap.`;
+    }
+    spans.push([a, b]);
+  }
+  return null;
+}
+
 /** What stops this draft being saved, in words for the person; null when nothing does. */
 export function problem(d: Draft): string | null {
   if (!d.label.trim()) return "Give the workflow a name.";
@@ -54,27 +107,30 @@ export function problem(d: Draft): string | null {
   if (d.phases.length === 0) return "Add at least one phase.";
   const seen = new Set<string>();
   for (const [i, p] of d.phases.entries()) {
-    const skill = p.skill.trim();
-    if (!skill) return `Phase ${i + 1} has no skill. Pick one or remove the phase.`;
-    if (!SKILL_CHARS.test(skill)) return `"${skill}" isn't a skill name: use letters, digits, - _ . and :.`;
-    if (seen.has(skill)) return `"${skill}" is a phase twice. A phase can be followed by itself or by an earlier one instead.`;
-    seen.add(skill);
+    const name = p.skill.trim();
+    const what = p.custom ? "name" : "skill";
+    if (!name) return p.custom ? `Phase ${i + 1} has no name. Name it or remove the phase.` : `Phase ${i + 1} has no skill. Pick one, make it a custom phase, or remove it.`;
+    if (!SKILL_CHARS.test(name)) return `"${name}" isn't a ${what} name: use letters, digits, - _ . and :.`;
+    if (p.custom && !p.instruction.trim()) return `Phase "${name}" is a custom phase but has no instruction. Say what to do, or make it a skill.`;
+    if (seen.has(name)) return `"${name}" is a phase twice. A phase can be followed by itself or by an earlier one instead.`;
+    seen.add(name);
   }
-  return null;
+  return loopProblem(d);
 }
 
 /** The workflow a valid draft stands for; `next` entries for phases that are gone are dropped. */
 export function toWorkflow(d: Draft): Workflow {
-  const skills = new Set(d.phases.map((p) => p.skill.trim()));
+  const have = new Set(names(d));
   return {
     id: d.id || slug(d.label),
     label: d.label.trim(),
     description: d.description.trim(),
-    phases: d.phases.map((p) => ({ skill: p.skill.trim(), when: p.when.trim(), next: p.next.filter((n) => skills.has(n)) })),
+    phases: d.phases.map((p) => ({ skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), next: p.next.filter((n) => have.has(n)) })),
+    loops: d.loops.filter((l) => have.has(l.from.trim()) && have.has(l.to.trim())).map((l) => ({ from: l.from.trim(), to: l.to.trim(), until: l.until.trim(), max: l.max })),
   };
 }
 
-/** Rename a phase's skill, keeping the phases that lead to it pointing at it. */
+/** Rename a phase, keeping the phases and loops that point at it pointing at it. */
 export function renameSkill(d: Draft, i: number, to: string, was: string = d.phases[i].skill): void {
   const from = was.trim();
   d.phases[i].skill = to;
@@ -83,15 +139,20 @@ export function renameSkill(d: Draft, i: number, to: string, was: string = d.pha
   // Another phase still has the old name: the links were to that one.
   if (d.phases.some((q, j) => j !== i && q.skill.trim() === from)) return;
   for (const p of d.phases) p.next = p.next.map((n) => (n === from ? now : n));
+  for (const l of d.loops) {
+    if (l.from === from) l.from = now;
+    if (l.to === from) l.to = now;
+  }
 }
 
-/** Remove phase `i` and every way to it. */
+/** Remove phase `i`, every way to it, and the loops that ran to or from it. */
 export function removePhase(d: Draft, i: number): void {
   const [gone] = d.phases.splice(i, 1);
   const name = gone.skill.trim();
-  // Another phase with the same skill keeps the links.
+  // Another phase with the same name keeps the links.
   if (d.phases.some((q) => q.skill.trim() === name)) return;
   for (const p of d.phases) p.next = p.next.filter((n) => n !== name);
+  d.loops = d.loops.filter((l) => l.from !== name && l.to !== name);
 }
 
 /** Why saving this draft would do something unintended given what already exists; null when nothing. */
@@ -112,11 +173,13 @@ export function movePhase(d: Draft, i: number, by: -1 | 1): void {
   [d.phases[i], d.phases[j]] = [d.phases[j], d.phases[i]];
 }
 
-/** Skills installed for the project or the user whose names aren't any phase's yet. */
+/** Skills installed for the project or the user that no skill phase uses yet. */
 export function unusedSkills(d: Draft, skills: SkillInfo[]): SkillInfo[] {
-  const used = new Set(d.phases.map((p) => p.skill.trim()));
+  const used = new Set(d.phases.filter((p) => !p.custom).map((p) => p.skill.trim()));
   return skills.filter((s) => !used.has(s.name));
 }
+
+type Field = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
 
 export class WorkflowEditor {
   private dlg = document.getElementById("wf-editor") as HTMLDialogElement;
@@ -125,12 +188,13 @@ export class WorkflowEditor {
   private description = document.getElementById("wf-description") as HTMLInputElement;
   private scope = document.getElementById("wf-scope") as HTMLSelectElement;
   private phases = document.getElementById("wf-phases")!;
+  private loops = document.getElementById("wf-loops")!;
   private skillList = document.getElementById("wf-skills") as HTMLDataListElement;
   private error = document.getElementById("wf-error")!;
   private save = document.getElementById("wf-save") as HTMLButtonElement;
   private del = document.getElementById("wf-delete") as HTMLButtonElement;
   private draft: Draft = blank("user");
-  /** The skill name in the field being edited when it gained focus: links are moved once, from it to the final name. */
+  /** The name in the field being edited when it gained focus: links are moved once, from it to the final name. */
   private skillWas: { i: number; name: string } | null = null;
   private listing: WorkflowListing = { workflows: [], from_project: [], problems: [], skills: [] };
   private host = "";
@@ -147,16 +211,20 @@ export class WorkflowEditor {
     this.description.addEventListener("input", () => (this.draft.description = this.description.value));
     this.scope.addEventListener("change", () => (this.draft.scope = this.scope.value as Scope));
     document.getElementById("wf-add")!.addEventListener("click", () => {
-      this.draft.phases.push({ skill: "", when: "", next: [] });
+      this.draft.phases.push(newPhase());
       this.drawPhases();
       this.phases.querySelector<HTMLInputElement>(`[data-i="${this.draft.phases.length - 1}"][data-f="skill"]`)?.focus();
+    });
+    document.getElementById("wf-add-loop")!.addEventListener("click", () => {
+      this.draft.loops.push({ from: "", to: "", until: "", max: DEFAULT_ROUNDS });
+      this.drawLoops();
     });
     this.phases.addEventListener("focusin", (e) => {
       const t = e.target as HTMLInputElement;
       if (t.dataset.f === "skill") this.skillWas = { i: Number(t.dataset.i), name: this.draft.phases[Number(t.dataset.i)]?.skill ?? "" };
     });
-    this.phases.addEventListener("input", (e) => this.edit(e.target as HTMLInputElement, false));
-    this.phases.addEventListener("change", (e) => this.edit(e.target as HTMLInputElement, true));
+    this.phases.addEventListener("input", (e) => this.edit(e.target as Field, false));
+    this.phases.addEventListener("change", (e) => this.edit(e.target as Field, true));
     this.phases.addEventListener("click", (e) => {
       const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-act]");
       if (!b) return;
@@ -166,10 +234,20 @@ export class WorkflowEditor {
       else removePhase(this.draft, i);
       this.drawPhases();
     });
-    // Enter in a field moves on; saving is the Save button's job.
-    this.phases.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") e.preventDefault();
+    this.loops.addEventListener("input", (e) => this.editLoop(e.target as Field));
+    this.loops.addEventListener("change", (e) => this.editLoop(e.target as Field));
+    this.loops.addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-act='remove-loop']");
+      if (!b) return;
+      this.draft.loops.splice(Number(b.dataset.l), 1);
+      this.drawLoops();
     });
+    // Enter in a field moves on; saving is the Save button's job.
+    for (const box of [this.phases, this.loops]) {
+      box.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") e.preventDefault();
+      });
+    }
     for (const input of [this.label, this.description]) input.addEventListener("keydown", (e) => e.key === "Enter" && e.preventDefault());
     document.getElementById("wf-cancel")!.addEventListener("click", () => this.dlg.close());
     document.getElementById("wf-form")!.addEventListener("submit", (e) => {
@@ -197,7 +275,6 @@ export class WorkflowEditor {
     this.pick.innerHTML = "";
     this.pick.add(new Option("New workflow", ""));
     for (const w of l.workflows) this.pick.add(new Option(l.from_project.includes(w.id) ? `${w.label} (this project)` : w.label, w.id));
-
   }
 
   private show(): void {
@@ -210,21 +287,27 @@ export class WorkflowEditor {
     this.drawPhases();
   }
 
-  /** The phase rows: skill, when to use it, which phases can follow, and order controls. */
+  /** The phase rows: skill or custom instruction, when to use it, which phases can follow, and order controls. */
   private drawPhases(): void {
     const d = this.draft;
     this.phases.innerHTML = d.phases
       .map((p, i) => {
+        const n = i + 1;
         return `<div class="wf-row">
           <div class="wf-row-top">
-            <span class="wf-num">${i + 1}</span>
-            <input type="text" list="wf-skills" data-i="${i}" data-f="skill" value="${esc(p.skill)}" placeholder="Skill name" aria-label="Skill for phase ${i + 1}" />
-            <button type="button" data-act="up" data-i="${i}" title="Move up" aria-label="Move phase ${i + 1} up"${i === 0 ? " disabled" : ""}>↑</button>
-            <button type="button" data-act="down" data-i="${i}" title="Move down" aria-label="Move phase ${i + 1} down"${i === d.phases.length - 1 ? " disabled" : ""}>↓</button>
-            <button type="button" data-act="remove" data-i="${i}" title="Remove phase" aria-label="Remove phase ${i + 1}">✕</button>
+            <span class="wf-num">${n}</span>
+            <select data-i="${i}" data-f="kind" aria-label="Kind of phase ${n}">
+              <option value="skill"${p.custom ? "" : " selected"}>Skill</option>
+              <option value="custom"${p.custom ? " selected" : ""}>Custom</option>
+            </select>
+            <input type="text"${p.custom ? "" : ' list="wf-skills"'} data-i="${i}" data-f="skill" value="${esc(p.skill)}" placeholder="${p.custom ? "Phase name (e.g. triage)" : "Skill name"}" aria-label="${p.custom ? "Name" : "Skill"} for phase ${n}" />
+            <button type="button" data-act="up" data-i="${i}" title="Move up" aria-label="Move phase ${n} up"${i === 0 ? " disabled" : ""}>↑</button>
+            <button type="button" data-act="down" data-i="${i}" title="Move down" aria-label="Move phase ${n} down"${i === d.phases.length - 1 ? " disabled" : ""}>↓</button>
+            <button type="button" data-act="remove" data-i="${i}" title="Remove phase" aria-label="Remove phase ${n}">✕</button>
           </div>
           <div data-slot="warn" data-i="${i}"></div>
-          <input type="text" data-i="${i}" data-f="when" value="${esc(p.when)}" placeholder="Use when… (e.g. the change isn't clear yet)" aria-label="When to use phase ${i + 1}" />
+          ${p.custom ? `<textarea data-i="${i}" data-f="instruction" rows="3" placeholder="What should Claude do in this phase?" aria-label="Instruction for phase ${n}">${esc(p.instruction)}</textarea>` : ""}
+          <input type="text" data-i="${i}" data-f="when" value="${esc(p.when)}" placeholder="Use when… (e.g. the change isn't clear yet)" aria-label="When to use phase ${n}" />
           <div class="wf-next small" data-slot="next" data-i="${i}"></div>
         </div>`;
       })
@@ -232,33 +315,72 @@ export class WorkflowEditor {
     this.drawExtras();
   }
 
-  /** The parts of each row that follow the skill names: warnings and "followed by" choices. Redrawn in place, so a click on a button next to a field just edited isn't lost. */
+  /** The parts of each row that follow the names: warnings and "followed by" choices. Redrawn in place, so a click on a button next to a field just edited isn't lost. */
   private drawExtras(): void {
     const installed = new Set(this.listing.skills.map((s) => s.name));
     const d = this.draft;
-    const names = [...new Set(d.phases.map((q) => q.skill.trim()).filter(Boolean))];
+    const all = [...new Set(names(d))];
     this.skillList.innerHTML = unusedSkills(d, this.listing.skills)
       .map((s) => `<option value="${esc(s.name)}">${esc(`${s.source}${s.description ? ` · ${s.description}` : ""}`)}</option>`)
       .join("");
     d.phases.forEach((p, i) => {
-      const skill = p.skill.trim();
+      const name = p.skill.trim();
       const warn = this.phases.querySelector<HTMLElement>(`[data-slot="warn"][data-i="${i}"]`);
       const next = this.phases.querySelector<HTMLElement>(`[data-slot="next"][data-i="${i}"]`);
-      if (warn) warn.innerHTML = skill && !installed.has(skill) && !skill.includes(":") ? `<p class="small warn">No skill named "${esc(skill)}" is installed for this project or you.</p>` : "";
+      if (warn) warn.innerHTML = !p.custom && name && !installed.has(name) && !name.includes(":") ? `<p class="small warn">No skill named "${esc(name)}" is installed for this project or you.</p>` : "";
       if (next) {
-        const chips = names.map((n) => `<label class="wf-chip"><input type="checkbox" data-i="${i}" data-f="next" value="${esc(n)}"${p.next.includes(n) ? " checked" : ""} />${esc(n)}</label>`).join("");
-        next.innerHTML = `<span class="muted">Usually followed by</span>${chips || `<span class="muted"> (add more phases)</span>`}`;
+        const chips = all.map((n) => `<label class="wf-chip"><input type="checkbox" data-i="${i}" data-f="next" value="${esc(n)}"${p.next.includes(n) ? " checked" : ""} />${esc(n)}</label>`).join("");
+        const rest = p.next.length || i === d.phases.length - 1 ? "" : `<span class="muted"> · none ticked: the next phase in the list</span>`;
+        next.innerHTML = `<span class="muted">Usually followed by</span>${chips || `<span class="muted"> (add more phases)</span>`}${rest}`;
       }
     });
+    this.drawLoops();
   }
 
-  private edit(el: HTMLInputElement, committed: boolean): void {
+  /** The loop rows: which run of phases repeats, until what, and how many rounds at most. */
+  private drawLoops(): void {
+    const all = [...new Set(names(this.draft))];
+    const options = (chosen: string) => `<option value="">Choose…</option>${all.map((n) => `<option value="${esc(n)}"${n === chosen ? " selected" : ""}>${esc(n)}</option>`).join("")}`;
+    this.loops.innerHTML = this.draft.loops
+      .map(
+        (l, k) => `<div class="wf-loop-row">
+          <span class="wf-num">↻</span>
+          <span>Repeat</span>
+          <select data-l="${k}" data-f="from" aria-label="First phase of loop ${k + 1}">${options(l.from)}</select>
+          <span>to</span>
+          <select data-l="${k}" data-f="to" aria-label="Last phase of loop ${k + 1}">${options(l.to)}</select>
+          <span>until</span>
+          <input type="text" data-l="${k}" data-f="until" value="${esc(l.until)}" placeholder="the review finds nothing" aria-label="Stop loop ${k + 1} when" />
+          <span>at most</span>
+          <input type="number" min="1" max="${MAX_ROUNDS}" data-l="${k}" data-f="max" value="${l.max}" aria-label="Most rounds for loop ${k + 1}" />
+          <span>rounds</span>
+          <button type="button" data-act="remove-loop" data-l="${k}" title="Remove loop" aria-label="Remove loop ${k + 1}">✕</button>
+        </div>`,
+      )
+      .join("");
+  }
+
+  private editLoop(el: Field): void {
+    const l = this.draft.loops[Number(el.dataset.l)];
+    const f = el.dataset.f;
+    if (!l || !f) return;
+    if (f === "from" || f === "to" || f === "until") l[f] = el.value;
+    else if (f === "max") l.max = Number(el.value);
+  }
+
+  private edit(el: Field, committed: boolean): void {
     const i = Number(el.dataset.i);
     const f = el.dataset.f;
     const p = this.draft.phases[i];
     if (!p || !f) return;
     if (f === "when") p.when = el.value;
-    else if (f === "skill") {
+    else if (f === "instruction") p.instruction = el.value;
+    else if (f === "kind") {
+      if (committed) {
+        p.custom = el.value === "custom";
+        this.drawPhases();
+      }
+    } else if (f === "skill") {
       // Typing only sets the name. Links move once it's settled, from the name the field started with,
       // so passing through another phase's name on the way doesn't take them there.
       if (!committed) p.skill = el.value;
@@ -270,7 +392,8 @@ export class WorkflowEditor {
         this.drawExtras();
       }
     } else if (f === "next" && committed) {
-      p.next = el.checked ? [...new Set([...p.next, el.value])] : p.next.filter((n) => n !== el.value);
+      const box = el as HTMLInputElement;
+      p.next = box.checked ? [...new Set([...p.next, box.value])] : p.next.filter((n) => n !== box.value);
     }
   }
 
