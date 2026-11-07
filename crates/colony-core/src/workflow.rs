@@ -449,8 +449,8 @@ mod tests {
         .unwrap();
         let p = w.prompt();
         assert!(p.contains("- triage (custom phase; start it by running `echo colony-phase:triage`): Decide how bad it is. Write it down.; use when the cause is known (usually followed by develop)"));
-        assert!(p.contains("- investigate (usually followed by triage)"));
-        assert!(p.contains("- publish\nLoop"));
+        assert!(p.contains("- investigate (usually followed by triage) [required]"));
+        assert!(p.contains("- publish [required]\nLoop"));
         assert!(p.contains("Loop: develop to review repeat as a run. After review, check whether the review finds nothing more: if not, go round again from develop, at most 4 rounds in all; then carry on with the phase after review."));
         assert_eq!(w.followers(5), Vec::<&str>::new());
     }
