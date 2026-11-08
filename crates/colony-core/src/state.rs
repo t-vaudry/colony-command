@@ -1032,9 +1032,12 @@ impl Colony {
                 if agent_id.is_none() && (tool == "Skill" || tool == "Bash") {
                     if let (Some(target), Some(wf)) = (target.as_deref(), self.agents.get_mut(&sid).and_then(|m| m.workflow.as_mut())) {
                         // A skill phase is a Skill call; a custom phase announces itself with a marker command.
-                        let phase = if tool == "Skill" { Some(target) } else { crate::workflow::marker_phase(target) };
-                        if let Some(phase) = phase {
-                            wf.skill_called(phase, e.ts);
+                        if tool == "Skill" {
+                            wf.skill_called(target, e.ts);
+                        } else {
+                            for phase in crate::workflow::marker_phases(target) {
+                                wf.skill_called(phase, e.ts);
+                            }
                         }
                     }
                 }

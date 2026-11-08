@@ -22,21 +22,30 @@ struct State {
     blocks: u32,
 }
 
-/// The phase a tool call starts, if it starts one.
-fn started(v: &Value) -> Option<String> {
-    let input = v.get("tool_input")?;
-    match v.get("tool_name")?.as_str()? {
-        "Skill" => {
-            let s = input.get("skill")?.as_str()?.trim().trim_start_matches('/');
-            Some(s.rsplit(':').next().unwrap_or(s).to_string())
-        }
-        "Bash" => {
-            let rest = input.get("command")?.as_str()?.trim().strip_prefix("echo")?.trim_start();
-            let name = rest.trim_matches(|c| c == '"' || c == '\'').strip_prefix("colony-phase:")?.trim();
-            (!name.is_empty() && name.len() <= 64).then(|| name.to_string())
-        }
-        _ => None,
-    }
+/// The phases a tool call starts, in order: a Skill call names one; a Bash command can carry
+/// `echo colony-phase:<name>` markers among other commands.
+fn started(v: &Value) -> Vec<String> {
+    let go = || -> Option<Vec<String>> {
+        let input = v.get("tool_input")?;
+        Some(match v.get("tool_name")?.as_str()? {
+            "Skill" => {
+                let s = input.get("skill")?.as_str()?.trim().trim_start_matches('/');
+                vec![s.rsplit(':').next().unwrap_or(s).to_string()]
+            }
+            "Bash" => input
+                .get("command")?
+                .as_str()?
+                .split(|c| matches!(c, ';' | '&' | '|' | '\n' | '\r'))
+                .filter_map(|part| {
+                    let rest = part.trim().strip_prefix("echo")?.trim_start();
+                    let name = rest.trim_matches(|c| c == '"' || c == '\'').strip_prefix("colony-phase:")?.trim();
+                    (!name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))).then(|| name.to_string())
+                })
+                .collect(),
+            _ => return None,
+        })
+    };
+    go().unwrap_or_default()
 }
 
 /// What to print for this payload, if anything: a block when the session tries to stop early.
@@ -65,10 +74,27 @@ pub fn gate(colony_home: &Path, v: &Value, required: &str) -> Option<String> {
     match event {
         "UserPromptSubmit" => s.blocks = 0,
         "PreToolUse" => {
-            if let Some(p) = started(v) {
-                if !s.seen.iter().any(|x| x.eq_ignore_ascii_case(&p)) && s.seen.len() < 64 {
-                    s.seen.push(p);
+            let has = |seen: &[String], n: &str| seen.iter().any(|x| x.eq_ignore_ascii_case(n));
+            let mut seen = s.seen.clone();
+            for p in started(v) {
+                if has(&seen, &p) {
+                    continue;
                 }
+                // Starting a required phase while an earlier required one hasn't been started.
+                if let Some(pos) = required.iter().position(|r| r.eq_ignore_ascii_case(&p)) {
+                    if let Some(before) = required[..pos].iter().find(|r| !has(&seen, r)) {
+                        let reason = format!("Not yet: {p} comes after {before}, which hasn't been started. Start {before} first (on its own, before its work), do it properly, then move on to {p}. Do not mark a phase for work you haven't done.");
+                        out = Some(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}).to_string());
+                        break;
+                    }
+                }
+                if seen.len() < 64 {
+                    seen.push(p);
+                }
+            }
+            // A denied command doesn't run, so nothing in it starts a phase.
+            if out.is_none() {
+                s.seen = seen;
             }
         }
         "Stop" => {
@@ -127,6 +153,22 @@ mod tests {
         v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         v
     }
+    fn bash(cmd: &str) -> Value {
+        ev("PreToolUse", json!({"tool_name": "Bash", "tool_input": {"command": cmd}}))
+    }
+    #[test]
+    fn finds_markers_in_compound_commands_and_keeps_phases_in_order() {
+        let h = home();
+        let req = "Investigate,Plan,Develop";
+        gate(&h, &bash("echo colony-phase:Investigate; ls -R . && node -v"), req);
+        let out = gate(&h, &bash("echo colony-phase:Develop; mkdir x"), req).expect("denied: Plan not started");
+        assert!(out.contains("\"deny\"") && out.contains("Develop comes after Plan"));
+        // A denied command started nothing, even a phase it named first.
+        assert!(gate(&h, &bash("echo colony-phase:Plan; echo colony-phase:Develop"), req).is_none(), "in order within one command is accepted");
+        assert!(gate(&h, &ev("Stop", json!({})), req).is_none());
+        let _ = fs::remove_dir_all(&h);
+    }
+
     fn marker(name: &str) -> Value {
         ev("PreToolUse", json!({"tool_name": "Bash", "tool_input": {"command": format!("echo colony-phase:{name}")}}))
     }

@@ -264,6 +264,10 @@ impl Workflow {
             "\nWork in phases. A phase is either a skill, which you run with the Skill tool, \
              or a custom phase, which has its own instruction: when you start one, first run the \
              command given for it (it only prints a marker), then do what it says. \
+             Run each marker on its own, as the first thing in that phase and before any of its \
+             work: never together with another phase's marker or with other commands, and never \
+             for a phase you have not done. Do not begin a later phase's work until the earlier \
+             phases are finished. \
              Choose the next phase from what the work needs. A phase marked [required] must always run, even when the change is small. \
              A phase marked [optional] may be skipped only when its stated condition holds; say \
              that you are skipping it and why. Do not stop or report the work as finished until \
@@ -317,6 +321,12 @@ pub fn marker_phase(command: &str) -> Option<&str> {
     let name = rest.trim_matches(|c| c == '"' || c == '\'').strip_prefix(MARKER)?;
     let name = name.trim();
     (!name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))).then_some(name)
+}
+
+/// Every phase a command announces, in order: each `;`, `&&`, `||`, `|` or newline separated
+/// part that is an `echo colony-phase:<name>` counts, whatever else the command does.
+pub fn marker_phases(command: &str) -> Vec<&str> {
+    command.split(|c| matches!(c, ';' | '&' | '|' | '\n' | '\r')).filter_map(marker_phase).collect()
 }
 
 fn read_json(path: &Path) -> Result<String, String> {
@@ -519,6 +529,9 @@ mod tests {
         assert_eq!(marker_phase("ls colony-phase:x"), None);
         assert_eq!(marker_phase("echo colony-phase:a b"), None);
         assert_eq!(marker_phase("echo colony-phase:x; rm -rf /"), None);
+        assert_eq!(marker_phases("echo colony-phase:a; ls && echo colony-phase:b\necho hi"), vec!["a", "b"]);
+        assert_eq!(marker_phases("cd x && echo colony-phase:Test && npm test | tail"), vec!["Test"]);
+        assert!(marker_phases("ls; echo hi").is_empty());
     }
 
     #[test]
