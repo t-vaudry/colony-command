@@ -45,7 +45,11 @@ fn redact(e: &Envelope) -> Envelope {
         // A Skill call's target is the skill's name: replay needs it to follow a workflow's phases.
         DomainEvent::ToolStarted { tool, .. } if tool == "Skill" => {}
         // So is a custom phase's marker command (`echo colony-phase:<name>`), and only that.
-        DomainEvent::ToolStarted { tool, target, .. } if tool == "Bash" && target.as_deref().is_some_and(|t| colony_core::workflow::marker_phase(t).is_some()) => {}
+        // Whatever else the command did is dropped: it is rebuilt from the markers alone.
+        DomainEvent::ToolStarted { tool, target, .. } if tool == "Bash" && target.as_deref().is_some_and(|t| !colony_core::workflow::marker_phases(t).is_empty()) => {
+            let markers = colony_core::workflow::marker_phases(target.as_deref().unwrap_or(""));
+            *target = Some(markers.iter().map(|m| format!("echo {}{m}", colony_core::workflow::MARKER)).collect::<Vec<_>>().join("; "));
+        }
         DomainEvent::ToolStarted { target, .. } | DomainEvent::PermissionRequested { target, .. } => *target = None,
         DomainEvent::PermissionAsked { target, input, .. } => {
             *target = None;
@@ -228,7 +232,8 @@ mod tests {
         }
         let w = colony.agents.get("s").and_then(|a| a.workflow.as_ref()).expect("workflow replayed");
         assert_eq!(w.visits.iter().map(|v| v.skill.as_str()).collect::<Vec<_>>(), ["triage"]);
-        assert!(matches!(&logged[3].event, DomainEvent::ToolStarted { target: None, .. }));
+        // The marker survives, what else the command did does not.
+        assert!(matches!(&logged[3].event, DomainEvent::ToolStarted { target: Some(t), .. } if t == "echo colony-phase:x"));
         assert!(matches!(&logged[4].event, DomainEvent::ToolStarted { target: None, .. }));
     }
 
