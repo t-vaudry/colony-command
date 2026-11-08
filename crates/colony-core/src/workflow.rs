@@ -234,84 +234,12 @@ impl Workflow {
         }
     }
 
-    /// Phases the session must run: those with no skip condition that aren't one side of a
-    /// branch (only one side of a fork runs).
-    pub fn required(&self) -> Vec<&str> {
-        self.phases
-            .iter()
-            .filter(|p| p.skip_when.trim().is_empty() && !self.phases.iter().any(|q| q.branches.iter().any(|b| b.to == p.skill)))
-            .map(|p| p.skill.as_str())
-            .filter(|n| !n.contains(','))
-            .collect()
-    }
-
     /// The phase a Skill tool call names, if it's one of this workflow's.
     /// A plugin skill (`plugin:name`) matches a phase named either way.
     pub fn phase_for(&self, skill: &str) -> Option<&Phase> {
         let skill = skill.trim().trim_start_matches('/');
         let bare = skill.rsplit(':').next().unwrap_or(skill);
         self.phases.iter().find(|p| p.skill.eq_ignore_ascii_case(skill) || p.skill.eq_ignore_ascii_case(bare))
-    }
-
-    /// What the session is told: the phases, and that it chooses among them.
-    pub fn prompt(&self) -> String {
-        let mut s = format!("This session follows the \"{}\" workflow.", self.label);
-        if !self.description.trim().is_empty() {
-            s.push(' ');
-            s.push_str(self.description.trim());
-        }
-        s.push_str(
-            "\nWork in phases. A phase is either a skill, which you run with the Skill tool, \
-             or a custom phase, which has its own instruction: when you start one, first run the \
-             command given for it (it only prints a marker), then do what it says. \
-             Run each marker on its own, as the first thing in that phase and before any of its \
-             work: never together with another phase's marker or with other commands, and never \
-             for a phase you have not done. Do not begin a later phase's work until the earlier \
-             phases are finished. \
-             Choose the next phase from what the work needs. A phase marked [required] must always run, even when the change is small. \
-             A phase marked [optional] may be skipped only when its stated condition holds; say \
-             that you are skipping it and why. Do not stop or report the work as finished until \
-             the last phase has run. \
-             You may also repeat a phase or go back. \
-             Say in a sentence which phase you are starting and why.\nPhases, in their usual order:",
-        );
-        for (i, p) in self.phases.iter().enumerate() {
-            s.push_str(&format!("\n- {}", p.skill));
-            if !p.instruction.is_empty() {
-                s.push_str(&format!(" (custom phase; start it by running `echo {MARKER}{}`): {}", p.skill, p.instruction));
-            }
-            if !p.when.trim().is_empty() {
-                s.push_str(&format!("{} use when {}", if p.instruction.is_empty() { ":" } else { ";" }, p.when.trim().trim_end_matches('.')));
-            }
-            if !p.branches.is_empty() {
-                // Conditions first, in the order given; the otherwise last.
-                let mut exits: Vec<String> = p.branches.iter().filter(|b| !b.condition.is_empty()).map(|b| format!("if {}, go to {}", b.condition.trim_end_matches('.'), b.to)).collect();
-                if let Some(b) = p.branches.iter().find(|b| b.condition.is_empty()) {
-                    exits.push(if exits.is_empty() { format!("go to {}", b.to) } else { format!("otherwise go to {}", b.to) });
-                }
-                s.push_str(&format!(" -- then: {}", exits.join("; ")));
-            } else {
-                let next = self.followers(i);
-                if !next.is_empty() {
-                    s.push_str(&format!(" (usually followed by {})", next.join(" or ")));
-                }
-            }
-            if p.skip_when.trim().is_empty() {
-                s.push_str(" [required]");
-            } else {
-                s.push_str(&format!(" [optional: skip it if {}]", p.skip_when.trim().trim_end_matches('.')));
-            }
-        }
-        for l in &self.loops {
-            s.push_str(&format!("\nLoop: {} to {} repeat as a run", l.from, l.to));
-            if l.until.is_empty() {
-                s.push_str(&format!(". After {}, go round again from {} if the work needs it", l.to, l.from));
-            } else {
-                s.push_str(&format!(". After {}, check whether {}: if not, go round again from {}", l.to, l.until.trim_end_matches('.'), l.from));
-            }
-            s.push_str(&format!(", at most {} rounds in all; then carry on with the phase after {}.", l.max, l.to));
-        }
-        s
     }
 }
 
@@ -431,31 +359,19 @@ mod tests {
                     {"skill":"build","next":["review","plan"]}, {"skill":"review"} ] }"#;
 
     #[test]
-    fn parses_and_prompts() {
+    fn parses() {
         let w = parse("feature", FEATURE).unwrap();
         assert_eq!(w.id, "feature");
-        let p = w.prompt();
-        assert!(p.contains("\"Feature\" workflow"));
-        assert!(p.contains("- plan: use when the change isn't clear yet (usually followed by build) [required]"));
-        assert!(p.contains("- build (usually followed by review or plan)"));
-        assert!(p.contains("- review"));
-        assert!(p.contains("Choose the next phase"));
-        assert!(p.contains("until the last phase has run"));
-        assert!(p.contains("[required]"));
-        assert_eq!(w.required(), vec!["plan", "build", "review"]);
-        let w2 = parse("x", r#"{"phases":[{"skill":"a","branches":[{"to":"b","condition":"x"},{"to":"c","condition":""}]},{"skill":"b"},{"skill":"c"},{"skill":"d","skip_when":"tiny"}]}"#).unwrap();
-        assert_eq!(w2.required(), vec!["a"]);
-        let w = parse("x", r#"{"phases":[{"skill":"plan","skip_when":"the change is one line."},{"skill":"build"}]}"#).unwrap();
-        let p = w.prompt();
-        assert!(p.contains("- plan (usually followed by build) [optional: skip it if the change is one line]"));
-        assert!(p.contains("- build [required]"));
+        assert_eq!(w.label, "Feature");
+        assert_eq!(w.followers(0), ["build"]);
+        assert_eq!(w.followers(1), ["review", "plan"]);
     }
 
     #[test]
     fn free_text_is_one_short_line() {
         let w = parse("x", r#"{"label":"A\n- evil: use when always","description":"d\n\nPhases:\n- fake","phases":[{"skill":"a","when":"x\ny"}]}"#).unwrap();
         assert_eq!(w.label, "A - evil: use when always");
-        assert!(!w.prompt().contains("\n- fake") && !w.prompt().contains("\n- evil"));
+        assert!(!w.description.contains(char::from(10)));
         let long = "z".repeat(5000);
         let w = parse("x", &format!(r#"{{"description":"{long}","phases":[{{"skill":"a","when":"{long}"}}]}}"#)).unwrap();
         assert_eq!(w.description.len(), 400);
@@ -463,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_phases_and_loops_reach_the_prompt() {
+    fn custom_phases_and_loops_are_kept() {
         let w = parse(
             "bug",
             r#"{"phases":[{"skill":"investigate"},{"skill":"triage","instruction":"Decide how bad it is.\nWrite it down.","when":"the cause is known"},
@@ -471,29 +387,23 @@ mod tests {
                 "loops":[{"from":"develop","to":"review","until":"the review finds nothing\nmore","max":4}]}"#,
         )
         .unwrap();
-        let p = w.prompt();
-        assert!(p.contains("- triage (custom phase; start it by running `echo colony-phase:triage`): Decide how bad it is. Write it down.; use when the cause is known (usually followed by develop)"));
-        assert!(p.contains("- investigate (usually followed by triage) [required]"));
-        assert!(p.contains("- publish [required]\nLoop"));
-        assert!(p.contains("Loop: develop to review repeat as a run. After review, check whether the review finds nothing more: if not, go round again from develop, at most 4 rounds in all; then carry on with the phase after review."));
+        assert_eq!(w.phases[1].instruction, "Decide how bad it is. Write it down.");
+        assert_eq!(w.loops[0].until, "the review finds nothing more");
         assert_eq!(w.followers(5), Vec::<&str>::new());
     }
 
     #[test]
-    fn branches_reach_the_prompt_and_are_checked() {
+    fn branches_are_checked() {
         let json = |extra: &str| format!(r#"{{"phases":[{{"skill":"triage"{extra}}},{{"skill":"bisect"}},{{"skill":"develop"}},{{"skill":"publish"}}]}}"#);
         let w = parse(
             "bug",
             &json(r#","branches":[{"to":"bisect","condition":"it is a regression\nfrom last week"},{"to":"develop","condition":"the cause is clear."},{"to":"publish"}]"#),
         )
         .unwrap();
-        let p = w.prompt();
-        assert!(p.contains("- triage -- then: if it is a regression from last week, go to bisect; if the cause is clear, go to develop; otherwise go to publish"), "{p}");
-        assert!(p.contains("- bisect (usually followed by develop)"));
         assert_eq!(w.followers(0), ["bisect", "develop", "publish"]);
         // A lone unconditional branch is just where it goes.
         let one = parse("bug", &json(r#","branches":[{"to":"develop"}]"#)).unwrap();
-        assert!(one.prompt().contains("- triage -- then: go to develop"));
+        assert_eq!(one.followers(0), ["develop"]);
         assert!(parse("x", &json(r#","branches":[{"to":"nope","condition":"c"}]"#)).unwrap_err().contains("isn't a phase"));
         assert!(parse("x", &json(r#","branches":[{"to":"bisect"},{"to":"develop"}]"#)).unwrap_err().contains("more than one"));
         assert!(parse("x", &json(r#","next":["bisect"],"branches":[{"to":"develop","condition":"c"}]"#)).unwrap_err().contains("both next and branches"));
