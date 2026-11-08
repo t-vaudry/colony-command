@@ -25,6 +25,12 @@ export interface DraftPhase {
   when: string;
   /** When the phase may be skipped; "" means it always runs. */
   skipWhen: string;
+  /** The user approves before the phase starts. */
+  approve: boolean;
+  /** Only when this holds; "" means always. */
+  approveWhen: string;
+  /** Where a "no" goes; "" ends the run. */
+  onDeny: string;
   next: string[];
   /** Ways out by condition; with these (or an `otherwise`) `next` is not used. */
   branches: DraftBranch[];
@@ -56,7 +62,7 @@ const SKILL_CHARS = /^[A-Za-z0-9._:-]{1,64}$/;
 const DEFAULT_ROUNDS = 3;
 const MAX_ROUNDS = 20;
 
-export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", skipWhen: "", next: [], branches: [], otherwise: "" });
+export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", skipWhen: "", approve: false, approveWhen: "", onDeny: "", next: [], branches: [], otherwise: "" });
 
 /** Whether a phase leaves by conditions rather than a plain list of followers. */
 export const branching = (p: DraftPhase): boolean => p.branches.length > 0 || p.otherwise !== "";
@@ -80,6 +86,9 @@ export function draftOf(w: Workflow, fromProject: boolean): Draft {
       instruction: p.instruction ?? "",
       when: p.when,
       skipWhen: p.skip_when ?? "",
+      approve: !!p.approve,
+      approveWhen: p.approve_when ?? "",
+      onDeny: p.on_deny ?? "",
       next: [...p.next],
       branches: (p.branches ?? []).filter((b) => b.condition).map((b) => ({ condition: b.condition, to: b.to })),
       otherwise: (p.branches ?? []).find((b) => !b.condition)?.to ?? "",
@@ -162,7 +171,7 @@ export function toWorkflow(d: Draft): Workflow {
     phases: d.phases.map((p) => {
       // Conditions in the order written, then the otherwise.
       const branches = [...p.branches.filter((b) => b.condition.trim() && have.has(b.to)).map((b) => ({ to: b.to, condition: b.condition.trim() })), ...(p.otherwise && have.has(p.otherwise) ? [{ to: p.otherwise, condition: "" }] : [])];
-      return { skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), skip_when: p.skipWhen.trim(), next: branches.length ? [] : p.next.filter((n) => have.has(n)), branches };
+      return { skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), skip_when: p.skipWhen.trim(), ...(p.approve ? { approve: true, approve_when: p.approveWhen.trim(), on_deny: p.onDeny.trim() !== p.skill.trim() && have.has(p.onDeny.trim()) ? p.onDeny.trim() : "" } : {}), next: branches.length ? [] : p.next.filter((n) => have.has(n)), branches };
     }),
     loops: d.loops.filter((l) => have.has(l.from.trim()) && have.has(l.to.trim())).map((l) => ({ from: l.from.trim(), to: l.to.trim(), until: l.until.trim(), max: l.max })),
   };
@@ -180,6 +189,7 @@ export function renameSkill(d: Draft, i: number, to: string, was: string = d.pha
     p.next = p.next.map((n) => (n === from ? now : n));
     for (const b of p.branches) if (b.to === from) b.to = now;
     if (p.otherwise === from) p.otherwise = now;
+    if (p.onDeny === from) p.onDeny = now;
   }
   for (const l of d.loops) {
     if (l.from === from) l.from = now;
@@ -198,6 +208,7 @@ export function removePhase(d: Draft, i: number): void {
     // A condition with nowhere to go is dropped with the phase it led to.
     p.branches = p.branches.filter((b) => b.to !== name);
     if (p.otherwise === name) p.otherwise = "";
+    if (p.onDeny === name) p.onDeny = "";
   }
   d.loops = d.loops.filter((l) => l.from !== name && l.to !== name);
 }
@@ -376,6 +387,7 @@ export class WorkflowEditor {
           <input type="text" data-i="${i}" data-f="when" value="${esc(p.when)}" placeholder="Use when… (e.g. the change isn't clear yet)" aria-label="When to use phase ${n}" />
           <input type="text" data-i="${i}" data-f="skipWhen" value="${esc(p.skipWhen)}" placeholder="Optional: skip when… (leave empty to always run)" aria-label="When phase ${n} may be skipped" />
           <div class="wf-next small" data-slot="next" data-i="${i}"></div>
+          <div class="wf-approve small" data-slot="approve" data-i="${i}"></div>
         </div>`;
       })
       .join("");
@@ -394,6 +406,16 @@ export class WorkflowEditor {
       const name = p.skill.trim();
       const warn = this.phases.querySelector<HTMLElement>(`[data-slot="warn"][data-i="${i}"]`);
       const next = this.phases.querySelector<HTMLElement>(`[data-slot="next"][data-i="${i}"]`);
+      const approve = this.phases.querySelector<HTMLElement>(`[data-slot="approve"][data-i="${i}"]`);
+      if (approve) {
+        const others = all.filter((n) => n !== name);
+        const deny = `<option value="">End the run</option>${others.map((n) => `<option value="${esc(n)}"${n === p.onDeny ? " selected" : ""}>Go to ${esc(n)}</option>`).join("")}`;
+        approve.innerHTML = `<label class="wf-chip"><input type="checkbox" data-i="${i}" data-f="approve"${p.approve ? " checked" : ""} />Ask me before this phase starts</label>${
+          p.approve
+            ? ` <input type="text" data-i="${i}" data-f="approveWhen" value="${esc(p.approveWhen)}" placeholder="only when… (empty: always)" aria-label="When to ask before phase ${i + 1}" /> <span class="muted">If I say no:</span> <select data-i="${i}" data-f="onDeny" aria-label="Where phase ${i + 1} goes if denied">${deny}</select>`
+            : ""
+        }`;
+      }
       if (warn) warn.innerHTML = !p.custom && name && !installed.has(name) && !name.includes(":") ? `<p class="small warn">No skill named "${esc(name)}" is installed for this project or you.</p>` : "";
       if (next && branching(p)) {
         const options = (chosen: string, none: string) => `<option value="">${none}</option>${all.map((n) => `<option value="${esc(n)}"${n === chosen ? " selected" : ""}>${esc(n)}</option>`).join("")}`;
@@ -450,6 +472,12 @@ export class WorkflowEditor {
     if (!p || !f) return;
     if (f === "when") p.when = el.value;
     else if (f === "skipWhen") p.skipWhen = el.value;
+    else if (f === "approveWhen") p.approveWhen = el.value;
+    else if (f === "onDeny") p.onDeny = el.value;
+    else if (f === "approve" && committed) {
+      p.approve = (el as HTMLInputElement).checked;
+      this.drawExtras();
+    }
     else if (f === "instruction") p.instruction = el.value;
     else if (f === "bcond") p.branches[Number(el.dataset.b)].condition = el.value;
     else if (f === "bto") p.branches[Number(el.dataset.b)].to = el.value;

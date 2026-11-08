@@ -51,6 +51,9 @@ pub fn compile(w: &Workflow, o: &Options) -> Result<String, String> {
                 "text": p.instruction,
                 "when": p.when,
                 "skip": p.skip_when,
+                "approve": p.approve,
+                "approveWhen": p.approve_when,
+                "onDeny": if p.approve { index(&p.on_deny) } else { None },
                 "next": next,
                 "branches": conditional,
                 "otherwise": otherwise,
@@ -88,13 +91,17 @@ pub fn compile(w: &Workflow, o: &Options) -> Result<String, String> {
 
 const INTERPRETER: &str = r####"
 const ANSWERS = (args && typeof args === 'object' && args.answers) || {}
+const APPROVALS = (args && typeof args === 'object' && args.approvals) || {}
 const GOAL = TASK || (typeof args === 'string' ? args : args && args.task) || ''
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
 const SKIP_SCHEMA = { type: 'object', properties: { skip: { type: 'boolean' }, reason: { type: 'string' } }, required: ['skip'] }
+const NEED_SCHEMA = { type: 'object', properties: { needed: { type: 'boolean' }, reason: { type: 'string' } }, required: ['needed'] }
 const MET_SCHEMA = { type: 'object', properties: { met: { type: 'boolean' }, reason: { type: 'string' } }, required: ['met'] }
 const CHOICE_SCHEMA = { type: 'object', properties: { choice: { type: 'integer' }, reason: { type: 'string' } }, required: ['choice'] }
 const judge = (label, phaseName, schema) => ({ label, phase: phaseName, schema, effort: 'low', ...(JUDGE_MODEL ? { model: JUDGE_MODEL } : {}) })
 
+// What the user said when they declined the phase before this one, handed to the phase that took over.
+let declined = null
 const brief = (p, step, round) => [
   `You are doing one phase, "${p.name}", of a multi-phase workflow. The overall task:`,
   GOAL,
@@ -105,6 +112,7 @@ const brief = (p, step, round) => [
   round > 1 ? `This is round ${round} of a repeating run: read the latest notes for what the last round found, and deal with it.` : '',
   `Earlier phases left short notes in ${NOTES}/, one file per phase run, numbered in order. Read the latest ones you need before you start: they are how phases hand work to each other. Use the Glob, Read and Write tools for notes, never shell commands (cd, ls, cat, mkdir, printf): the marker above is the only Bash command this phase needs for them.`,
   `Do only this phase's work; later phases handle the rest. When you finish, write a note of at most 15 lines to ${NOTES}/${String(step).padStart(2, '0')}-${slug(p.name)}.md saying what you did, what you decided and what the next phase must know. Then reply with one sentence.`,
+  declined ? `The user declined to start "${declined.phase}"${declined.why ? `, saying: ${declined.why}` : ''}. Take that into account.` : '',
   ANSWERS[p.name] ? `The user answered a question from this phase: ${ANSWERS[p.name]}` : '',
   `If you cannot go on without the user's input, do not guess: reply starting with "BLOCKED:" followed by your question.`,
   ADVISOR ? 'You have an advisor tool: consult it before you finish if the work was not trivial.' : '',
@@ -141,6 +149,8 @@ async function after(p, i) {
 }
 
 const ran = []
+const denied = []
+const approved = new Set()
 let blocked = null
 let i = 0
 let step = 0
@@ -157,10 +167,41 @@ while (i !== null && i < PHASES.length && guard++ < 300) {
     skipped = !!(r && r.skip)
     if (skipped) log(`Skipping ${p.name}: ${(r && r.reason) || p.skip}`)
   }
+  // A phase that needs the user's approval: ask first (when its condition holds), once per run.
+  let forced
+  if (!skipped && p.approve && !approved.has(i)) {
+    let needed = true
+    if (p.approveWhen) {
+      const r = await agent(
+        `Task: ${GOAL}
+
+The phase "${p.name}" is about to start and needs the user's approval only if this holds: ${p.approveWhen}.
+Look at the repository and the notes in ${NOTES}/ as needed. Answer needed=true if it holds or you are unsure.`,
+        judge(`approval? ${p.name}`, p.name, NEED_SCHEMA),
+      )
+      needed = !r || r.needed !== false
+    }
+    const said = needed ? String(APPROVALS[p.name] === undefined ? '' : APPROVALS[p.name]).trim() : 'approved'
+    if (!said) {
+      blocked = { phase: p.name, kind: 'approval', question: `May the phase "${p.name}" start?${p.approveWhen ? ` (${p.approveWhen})` : ''}` }
+      break
+    }
+    if (/^(no|deny|denied|decline|declined|reject|rejected)\b/i.test(said)) {
+      skipped = true
+      forced = p.onDeny === null || denied.includes(p.name) ? null : p.onDeny
+      if (!denied.includes(p.name)) denied.push(p.name)
+      declined = { phase: p.name, why: said.replace(/^\w+\s*[:,-]?\s*/, '').slice(0, 400) }
+      log(`The user declined ${p.name}${forced === null ? ': ending the run' : `: going to ${PHASES[forced].name}`}`)
+    } else {
+      approved.add(i)
+    }
+  }
   if (!skipped) {
     step++
     const round = roundOf(i)
-    const reply = await agent(brief(p, step, round), { label: round > 1 ? `${p.name} (round ${round})` : p.name, phase: p.name })
+    const note = brief(p, step, round)
+    declined = null
+    const reply = await agent(note, { label: round > 1 ? `${p.name} (round ${round})` : p.name, phase: p.name })
     if (reply === null || reply === undefined) {
       blocked = { phase: p.name, question: 'The agent for this phase did not finish.' }
       break
@@ -170,6 +211,10 @@ while (i !== null && i < PHASES.length && guard++ < 300) {
       break
     }
     ran.push(p.name)
+  }
+  if (forced !== undefined) {
+    i = forced
+    continue
   }
   // A repeating run that ends here: go round again unless its exit condition holds. Innermost first.
   let next
@@ -191,7 +236,7 @@ while (i !== null && i < PHASES.length && guard++ < 300) {
   i = next
 }
 if (guard >= 300) log('Stopped after 300 steps: the workflow kept going round.')
-return { ran, blocked, rounds }
+return { ran, blocked, denied, rounds }
 "####;
 
 #[cfg(test)]

@@ -52,6 +52,15 @@ pub struct Phase {
     /// When this phase may be skipped, in a sentence; empty means it is always run.
     #[serde(default)]
     pub skip_when: String,
+    /// The user must approve before this phase starts.
+    #[serde(default)]
+    pub approve: bool,
+    /// With `approve`: only when this holds, in a sentence; empty means always.
+    #[serde(default)]
+    pub approve_when: String,
+    /// With `approve`: the phase to go to if the user says no; empty ends the run.
+    #[serde(default)]
+    pub on_deny: String,
     /// Phases that usually follow. A hint for the session, not a rule.
     #[serde(default)]
     pub next: Vec<String>,
@@ -129,6 +138,8 @@ pub fn parse(id: &str, json: &str) -> Result<Workflow, String> {
     for p in &mut w.phases {
         p.when = one_line(&p.when, 200);
         p.skip_when = one_line(&p.skip_when, 200);
+        p.approve_when = one_line(&p.approve_when, 200);
+        p.on_deny = p.on_deny.trim().to_string();
         p.instruction = one_line(&p.instruction, 600);
         for b in &mut p.branches {
             b.condition = one_line(&b.condition, 200);
@@ -163,6 +174,14 @@ impl Workflow {
             for n in &p.next {
                 if !self.phases.iter().any(|q| &q.skill == n) {
                     return Err(format!("workflow {id}: phase {:?} lists next phase {n:?}, which isn't a phase", p.skill));
+                }
+            }
+            if !p.on_deny.is_empty() {
+                if !p.approve {
+                    return Err(format!("workflow {id}: phase {:?} says where to go on a denial but doesn't ask for approval", p.skill));
+                }
+                if p.on_deny == p.skill || !self.phases.iter().any(|q| q.skill == p.on_deny) {
+                    return Err(format!("workflow {id}: phase {:?} goes to {:?} on a denial, which isn't another phase", p.skill, p.on_deny));
                 }
             }
             if p.branches.len() > MAX_BRANCHES {
@@ -411,6 +430,16 @@ mod tests {
         assert!(parse("x", &json(&format!(r#","branches":[{}]"#, many.join(",")))).unwrap_err().contains("more than 8"));
         // Branches rejoin by naming the same phase, and may go back or loop on themselves.
         assert!(parse("x", &json(r#","branches":[{"to":"triage","condition":"not enough yet"},{"to":"develop"}]"#)).is_ok());
+    }
+
+    #[test]
+    fn approvals_are_checked() {
+        let json = |extra: &str| format!(r#"{{"phases":[{{"skill":"plan"}},{{"skill":"build"{extra}}}]}}"#);
+        assert!(parse("x", &json(r#","approve":true,"approve_when":"it touches\nmore than 5 files","on_deny":"plan""#)).is_ok());
+        assert_eq!(parse("x", &json(r#","approve":true,"approve_when":"a\nb""#)).unwrap().phases[1].approve_when, "a b");
+        assert!(parse("x", &json(r#","approve":true,"on_deny":"nope""#)).unwrap_err().contains("isn't another phase"));
+        assert!(parse("x", &json(r#","approve":true,"on_deny":"build""#)).unwrap_err().contains("isn't another phase"));
+        assert!(parse("x", &json(r#","on_deny":"plan""#)).unwrap_err().contains("doesn't ask for approval"));
     }
 
     #[test]

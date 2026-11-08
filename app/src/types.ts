@@ -291,6 +291,12 @@ export interface WorkflowPhase {
   when: string;
   /** When the phase may be skipped; empty (or absent) means it always runs. */
   skip_when?: string;
+  /** The user must approve before this phase starts. */
+  approve?: boolean;
+  /** With `approve`: only when this holds; empty means always. */
+  approve_when?: string;
+  /** With `approve`: the phase to go to if the user says no; empty ends the run. */
+  on_deny?: string;
   next: string[];
   /** Ways out by condition, instead of `next`. */
   branches?: WorkflowBranch[];

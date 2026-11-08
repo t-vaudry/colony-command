@@ -236,3 +236,25 @@ describe("arrows that skip columns", () => {
     expect(width(html)).toBeGreaterThan(width(plain));
   });
 });
+
+describe("phases that ask first", () => {
+  const gated: Workflow = {
+    id: "g",
+    label: "G",
+    description: "",
+    phases: [
+      { skill: "plan", when: "", next: ["build"] },
+      { skill: "build", when: "", next: [], approve: true, approve_when: "it touches the schema", on_deny: "plan" },
+    ],
+  };
+  it("marks the phase and draws where a no goes", () => {
+    const html = workflowBlock(agent({ workflow: { workflow: gated, visits: [], active: null } }), []);
+    expect(html).toContain("wf-lock");
+    expect(html).toContain("asks you first when it touches the schema");
+    expect(html).toMatch(/class="wf-edge back denied"/);
+    expect(html).toContain(">denied<");
+    const plain = workflowBlock(agent({ workflow: { workflow: { ...gated, phases: [gated.phases[0], { skill: "build", when: "", next: [] }] }, visits: [], active: null } }), []);
+    expect(plain).not.toContain("wf-lock");
+    expect(plain).not.toContain("denied");
+  });
+});

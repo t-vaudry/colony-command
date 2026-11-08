@@ -254,6 +254,12 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
       }
     }
   });
+  // Where a "no" goes, for a phase that asks first.
+  w.phases.forEach((p) => {
+    const a = at.get(p.skill);
+    const b = p.approve && p.on_deny ? at.get(p.on_deny) : undefined;
+    if (a && b) back(a, b, false, " denied", "denied", `If you say no, goes to ${p.on_deny}`);
+  });
   // The way back round a loop, unless a phase already leads there.
   for (const l of loops) {
     const a = at.get(l.to)!;
@@ -281,13 +287,15 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
     const n_visits = visits.get(n.skill) ?? 0;
     const custom = !!w.phases[i].instruction;
     const optional = !!w.phases[i].skip_when;
+    const gated = !!w.phases[i].approve;
     const state = (info.active === n.skill ? " active" : n_visits ? " done" : "") + (custom ? " custom" : "") + (optional ? " optional" : "");
     const count = n_visits > 1 ? `<text class="wf-count" x="${n.x + NODE_W - 5}" y="${n.y + 11}" text-anchor="end">×${n_visits}</text>` : "";
+    const lock = gated ? `<text class="wf-lock" x="${n.x + NODE_W - 5}" y="${n.y + NODE_H - 5}" text-anchor="end">🔒</text>` : "";
     const kind = custom ? `<text class="wf-kind" x="${n.x + 6}" y="${n.y + 11}">✎</text>` : "";
     const busy = running.get(n.skill);
     const dots = busy ? `<text class="wf-subs" x="${n.x + NODE_W / 2}" y="${n.y + NODE_H - 5}" text-anchor="middle">${busy} subagent${busy === 1 ? "" : "s"}</text>` : "";
     const label = n.skill.length > 14 ? `${n.skill.slice(0, 13)}…` : n.skill;
-    return `<g class="wf-node${state}"><title>${esc(n.skill)}${custom ? " (custom phase)" : ""}${optional ? ` (optional: skipped if ${w.phases[i].skip_when})` : ""}${n_visits ? ` · visited ${n_visits}×` : ""}</title><rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="6"/><text class="wf-name" x="${n.x + NODE_W / 2}" y="${n.y + (busy ? 13 : 19)}" text-anchor="middle">${esc(label)}</text>${kind}${count}${dots}</g>`;
+    return `<g class="wf-node${state}"><title>${esc(n.skill)}${custom ? " (custom phase)" : ""}${optional ? ` (optional: skipped if ${w.phases[i].skip_when})` : ""}${gated ? ` (asks you first${w.phases[i].approve_when ? ` when ${w.phases[i].approve_when}` : ""})` : ""}${n_visits ? ` · visited ${n_visits}×` : ""}</title><rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="6"/><text class="wf-name" x="${n.x + NODE_W / 2}" y="${n.y + (busy ? 13 : 19)}" text-anchor="middle">${esc(label)}</text>${kind}${count}${lock}${dots}</g>`;
   });
 
   return `<svg class="wf-graph" style="--nat:${width}px" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Workflow phases">
