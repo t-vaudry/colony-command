@@ -5,6 +5,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-11-08
+
+- Native-only workflows, and phases that ask for approval (#79)
+- Workflow graph: top to bottom, fixed width; fix empty pop-out (#78)
+
 ## [0.1.17] - 2026-11-08
 
 - Workflows: run as native Claude Code dynamic workflows (#77)
