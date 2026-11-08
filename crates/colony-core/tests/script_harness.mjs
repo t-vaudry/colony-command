@@ -12,6 +12,7 @@ const agent = async (prompt, opts = {}) => {
   const label = opts.label || "";
   calls.push({ label, model: opts.model || null, phase: opts.phase || null, schema: !!opts.schema });
   if (label.startsWith("skip?")) return { skip: !!(sc.skip || {})[label.slice(6)] };
+  if (label.startsWith("approval?")) return { needed: (sc.need || {})[label.slice(10)] !== false };
   if (label.startsWith("loop check")) return { met: loopAnswers.length ? loopAnswers.shift() : true };
   if (label.startsWith("branch after") || label.startsWith("next after")) return { choice: branchAnswers.length ? branchAnswers.shift() : 0 };
   const name = label.replace(/ \(round \d+\)$/, "");

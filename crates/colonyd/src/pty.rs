@@ -78,10 +78,6 @@ pub struct SpawnRequest {
     /// A workflow (`colony_core::workflow`) for the session to follow, by name.
     #[serde(default)]
     pub workflow: Option<String>,
-    /// Run that workflow as a native Claude Code dynamic workflow (each phase its own
-    /// agent) instead of steering one session with a prompt. Windows or WSL.
-    #[serde(default)]
-    pub native: Option<bool>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -240,33 +236,26 @@ impl PtyHost {
             }
         }
         claude_args.extend(crew.args());
-        let mut native = false;
+        // A workflow runs as a Claude Code dynamic workflow: the script holds the order, the skips,
+        // loops and branches, and each phase is its own agent.
         let workflow = match req.workflow.as_deref().filter(|w| !w.is_empty()) {
             Some(id) => match crate::workflows::resolve(&req.host, &req.dir, id) {
                 Ok(w) => {
-                    // A resumed native session still has its script: it stays native.
-                    // A resumed native session still has its script, and keeps it: its finished agents are cached against it.
+                    // A resumed session keeps its script: its finished agents are cached against it.
                     let have = req.resume.is_some() && crate::workflows::run_script_exists(&req.host, &req.dir, &session_id).await;
-                    let script = if have {
-                        Ok(crate::workflows::run_script_path(&req.host, &req.dir, &session_id))
-                    } else if req.native == Some(true) {
-                        let opts = colony_core::script::Options { task: req.prompt.clone().unwrap_or_default(), judge_model: crew.swarm_model.clone(), advisor: crew.advisor.is_some() };
-                        crate::workflows::write_run_script(&req.host, &req.dir, &session_id, &w, &opts).await
+                    let path = if have {
+                        Some(crate::workflows::run_script_path(&req.host, &req.dir, &session_id))
+                    } else if req.resume.is_some() {
+                        // The conversation already knows where it was.
+                        log(format!("resuming without a script for workflow {id}"));
+                        None
                     } else {
-                        Err(String::new())
+                        let opts = colony_core::script::Options { task: req.prompt.clone().unwrap_or_default(), judge_model: crew.swarm_model.clone(), advisor: crew.advisor.is_some() };
+                        Some(crate::workflows::write_run_script(&req.host, &req.dir, &session_id, &w, &opts).await.map_err(|e| format!("couldn't set up workflow {id}: {e}"))?)
                     };
-                    match script {
-                        Ok(path) => {
-                            native = true;
-                            crate::workflows::append_prompt(&mut claude_args, &crate::workflows::native_prompt(&path, req.prompt.as_ref().is_some_and(|p| !p.trim().is_empty())));
-                            claude_args.extend(["--settings".into(), crate::workflows::NATIVE_SETTINGS.into()]);
-                        }
-                        Err(e) => {
-                            if !e.is_empty() {
-                                log(format!("native workflow unavailable, steering the session instead: {e}"));
-                            }
-                            crate::workflows::append_prompt(&mut claude_args, &w.prompt());
-                        }
+                    if let Some(path) = path {
+                        crate::workflows::append_prompt(&mut claude_args, &crate::workflows::native_prompt(&path, req.prompt.as_ref().is_some_and(|p| !p.trim().is_empty())));
+                        claude_args.extend(["--settings".into(), crate::workflows::NATIVE_SETTINGS.into()]);
                     }
                     Some(w)
                 }
@@ -315,7 +304,7 @@ impl PtyHost {
         if req.auto && !crate::resume::still_wanted(&session_id) {
             return Err("that session was dismissed or ended; not restarting it".into());
         }
-        let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows, session_env(&crew, crate::quality::Settings::load(&crate::quality::settings_path()).context_pct(), workflow.as_ref().filter(|_| !native))).await?;
+        let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows, session_env(&crew, crate::quality::Settings::load(&crate::quality::settings_path()).context_pct())).await?;
         log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
         if !req.auto {
             crate::resume::remember(&session_id, &req);
@@ -670,15 +659,8 @@ fn start_ptyd() -> Result<(), String> {
 
 /// The marks a crew session carries: the crew's, and for one with a swarm the context size
 /// (in tokens) from which its hook nudges it: `pct` of the main model's window.
-fn session_env(crew: &colony_core::crew::Resolved, pct: u32, workflow: Option<&colony_core::workflow::Workflow>) -> Vec<(String, String)> {
+fn session_env(crew: &colony_core::crew::Resolved, pct: u32) -> Vec<(String, String)> {
     let mut env = crew.env();
-    // The hook holds a workflow session to its required phases.
-    if let Some(w) = workflow {
-        let required = w.required().join(",");
-        if !required.is_empty() {
-            env.push(("COLONY_WORKFLOW_REQUIRED".into(), required));
-        }
-    }
     if !env.is_empty() && crew.swarm_model.is_some() {
         env.push(("COLONY_CONTEXT_NUDGE".into(), colony_core::context::nudge_tokens(crew.model.as_deref(), pct).to_string()));
     }
@@ -844,11 +826,11 @@ mod tests {
             swarm_model: swarm.map(str::to_string),
         };
         let get = |env: &[(String, String)]| env.iter().find(|(k, _)| k == "COLONY_CONTEXT_NUDGE").map(|(_, v)| v.clone());
-        assert_eq!(get(&session_env(&crew("claude-sonnet-5-5", Some("haiku")), 70, None)).as_deref(), Some("140000"));
-        assert_eq!(get(&session_env(&crew("claude-sonnet-5-5[1m]", Some("haiku")), 50, None)).as_deref(), Some("500000"));
-        assert_eq!(get(&session_env(&crew("claude-sonnet-5-5", None), 70, None)), None, "no swarm, no nudge");
+        assert_eq!(get(&session_env(&crew("claude-sonnet-5-5", Some("haiku")), 70)).as_deref(), Some("140000"));
+        assert_eq!(get(&session_env(&crew("claude-sonnet-5-5[1m]", Some("haiku")), 50)).as_deref(), Some("500000"));
+        assert_eq!(get(&session_env(&crew("claude-sonnet-5-5", None), 70)), None, "no swarm, no nudge");
         let plain = Resolved { crew: None, swarm_model: Some("haiku".into()), ..crew("sonnet", None) };
-        assert!(session_env(&plain, 70, None).is_empty(), "not a crew session");
+        assert!(session_env(&plain, 70).is_empty(), "not a crew session");
     }
 
     #[test]

@@ -1241,7 +1241,6 @@ pub async fn restart_with(
         swarm: None,
         isolate: false,
         workflow: None,
-        native: None,
         cols: 120,
         rows: 32,
         auto: false,

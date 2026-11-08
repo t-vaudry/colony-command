@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { blank, branching, clash, draftOf, loopProblem, movePhase, problem, removePhase, renameSkill, slug, toWorkflow, unusedSkills, type Draft, type DraftPhase } from "./workfloweditor";
 import type { Workflow, WorkflowListing } from "./types";
 
-const ph = (skill: string, next: string[] = [], extra: Partial<DraftPhase> = {}): DraftPhase => ({ skill, custom: false, instruction: "", when: "", skipWhen: "", next, branches: [], otherwise: "", ...extra });
+const ph = (skill: string, next: string[] = [], extra: Partial<DraftPhase> = {}): DraftPhase => ({ skill, custom: false, instruction: "", when: "", skipWhen: "", approve: false, approveWhen: "", onDeny: "", next, branches: [], otherwise: "", ...extra });
 
 const draft = (extra: Partial<Draft> = {}): Draft => ({
   id: "",
@@ -255,5 +255,31 @@ describe("workflow editor", () => {
     expect(unusedSkills(draft(), skills).map((s) => s.name)).toEqual(["ship"]);
     // A custom phase named like a skill doesn't use it up.
     expect(unusedSkills(draft({ phases: [ph("ship", [], { custom: true, instruction: "x" })] }), skills).map((s) => s.name)).toEqual(["plan", "ship"]);
+  });
+});
+
+describe("approvals", () => {
+  it("saves the ask, its condition and where a no goes, and nothing when it isn't asked", () => {
+    const d = draft();
+    d.phases[1] = ph("build", ["review"], { approve: true, approveWhen: " it touches the schema ", onDeny: "plan" });
+    const w = toWorkflow(d);
+    expect(w.phases[1]).toMatchObject({ approve: true, approve_when: "it touches the schema", on_deny: "plan" });
+    expect(w.phases[0].approve).toBeUndefined();
+    d.phases[1].approve = false;
+    expect(toWorkflow(d).phases[1].on_deny).toBeUndefined();
+  });
+
+  it("follows a phase that is renamed, and forgets one that is removed", () => {
+    const d = draft();
+    d.phases[1] = ph("build", ["review"], { approve: true, onDeny: "plan" });
+    renameSkill(d, 0, "design");
+    expect(d.phases[1].onDeny).toBe("design");
+    removePhase(d, 0);
+    expect(d.phases[0].onDeny).toBe("");
+  });
+
+  it("reads them back from a saved workflow", () => {
+    const d = draftOf({ id: "x", label: "X", description: "", phases: [{ skill: "a", when: "", next: [] }, { skill: "b", when: "", next: [], approve: true, approve_when: "risky", on_deny: "a" }], loops: [] }, false);
+    expect(d.phases[1]).toMatchObject({ approve: true, approveWhen: "risky", onDeny: "a" });
   });
 });

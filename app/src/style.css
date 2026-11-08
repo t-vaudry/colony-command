@@ -1559,6 +1559,18 @@ details.menu[open] > summary {
   stroke: var(--accent);
   stroke-width: 2;
 }
+.wf-edge.denied {
+  stroke-dasharray: 4 3;
+}
+.wf-lock {
+  font-size: 9px;
+}
+.wf-approve {
+  margin: 2px 0 0 28px;
+}
+.wf-approve input[type="text"] {
+  width: 14em;
+}
 .wf-name {
   font: 600 11px var(--f-body);
   fill: var(--ink);

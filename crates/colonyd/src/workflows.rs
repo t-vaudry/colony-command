@@ -204,7 +204,7 @@ pub fn native_prompt(path: &str, task_known: bool) -> String {
         format!("as soon as the user gives you a task, call the Workflow tool with scriptPath set to {path:?} and args {{\"task\": \"<their request, verbatim>\"}}")
     };
     format!(
-        "This session runs its work through a Colony workflow: a Claude Code dynamic workflow script that runs each phase in its own agent. Your first action must be to {call}. Do not start the work yourself and do not edit the script; wait for it to finish.          If its result has a `blocked` entry, a phase needs the user: tell them plainly what it asks, and when they answer call the Workflow tool again with the same scriptPath, resumeFromRunId set to that run's id, and args {{\"answers\": {{\"<phase>\": \"<their answer>\"}}}}.          When it finishes, say in a few lines what each phase did."
+        "This session runs its work through a Colony workflow: a Claude Code dynamic workflow script that runs each phase in its own agent. Your first action must be to {call}. Do not start the work yourself and do not edit the script; wait for it to finish. If there is no Workflow tool, this version of Claude Code is too old for workflows: tell the user to update it and stop.          If its result has a `blocked` entry, a phase needs the user: tell them plainly what it asks, and when they answer call the Workflow tool again with the same scriptPath, resumeFromRunId set to that run's id, and args {{\"answers\": {{\"<phase>\": \"<their answer>\"}}}}.          If the `blocked` entry has kind \"approval\", the user must say whether the named phase may start: ask them plainly, and call the Workflow tool again the same way with args {{\"approvals\": {{\"<phase>\": \"approved\"}}}}, or \"denied\" in place of \"approved\" (add their reason after \"denied: \" if they gave one). Keep every earlier answer and approval in the args. When it finishes, say in a few lines what each phase did, and which phases the user declined."
     )
 }
 
@@ -289,7 +289,7 @@ mod native_tests {
     #[test]
     fn the_prompt_says_how_to_start_and_how_to_answer_a_blocked_phase() {
         let p = native_prompt("C:/p/.colony/runs/s.js", true);
-        assert!(p.contains("scriptPath") && p.contains("no other arguments") && p.contains("resumeFromRunId") && p.contains("blocked"));
+        assert!(p.contains("scriptPath") && p.contains("no other arguments") && p.contains("resumeFromRunId") && p.contains("blocked") && p.contains("approvals") && p.contains("denied"));
         let q = native_prompt("C:/p/.colony/runs/s.js", false);
         assert!(q.contains("as soon as the user gives you a task") && q.contains("args"));
     }

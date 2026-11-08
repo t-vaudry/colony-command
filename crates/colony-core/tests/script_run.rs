@@ -96,3 +96,43 @@ fn judges_use_the_crew_swarm_model_and_phase_agents_inherit() {
         assert_eq!(c["schema"], json!(judge));
     }
 }
+
+const GATED: &str = r#"{"phases":[{"skill":"Plan"},{"skill":"Build","approve":true,"approve_when":"the plan touches more than 5 files","on_deny":"Plan"},{"skill":"Publish"}]}"#;
+
+#[test]
+fn a_phase_needing_approval_stops_the_run_and_asks() {
+    let Some(r) = run(GATED, &Options::default(), json!({"need": {}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan"]);
+    assert_eq!(r["result"]["blocked"]["kind"], json!("approval"));
+    assert_eq!(r["result"]["blocked"]["phase"], json!("Build"));
+}
+
+#[test]
+fn an_approved_phase_runs_and_the_rest_follow() {
+    let Some(r) = run(GATED, &Options::default(), json!({"args": {"approvals": {"Build": "approved"}}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan", "Build", "Publish"]);
+    assert_eq!(r["result"]["blocked"], Value::Null);
+}
+
+#[test]
+fn an_approval_whose_condition_does_not_hold_is_not_asked() {
+    let Some(r) = run(GATED, &Options::default(), json!({"need": {"Build": false}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan", "Build", "Publish"]);
+}
+
+#[test]
+fn a_denial_goes_to_the_named_phase_and_a_second_denial_ends_the_run() {
+    // Plan -> (Build denied) -> Plan -> Build denied again: stop rather than go round for ever.
+    let Some(r) = run(GATED, &Options::default(), json!({"args": {"approvals": {"Build": "denied: too risky"}}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan", "Plan"]);
+    assert_eq!(names(&r, "denied"), ["Build"]);
+    assert!(r["logs"][0].as_str().unwrap().contains("going to Plan"));
+}
+
+#[test]
+fn a_denial_with_nowhere_to_go_ends_the_run() {
+    let wf = r#"{"phases":[{"skill":"Plan"},{"skill":"Build","approve":true},{"skill":"Publish"}]}"#;
+    let Some(r) = run(wf, &Options::default(), json!({"args": {"approvals": {"Build": "no"}}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan"]);
+    assert_eq!(names(&r, "denied"), ["Build"]);
+}
