@@ -5,6 +5,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-11-08
+
+- Workflows: run as native Claude Code dynamic workflows (#77)
+- Workflows: find markers in compound commands; enforce phase order (#76)
+
 ## [0.1.16] - 2026-11-08
 
 - Workflows: enforce required phases at Stop; fix panel graph width (#75)
