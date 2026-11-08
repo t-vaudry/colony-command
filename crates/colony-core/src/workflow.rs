@@ -234,6 +234,17 @@ impl Workflow {
         }
     }
 
+    /// Phases the session must run: those with no skip condition that aren't one side of a
+    /// branch (only one side of a fork runs).
+    pub fn required(&self) -> Vec<&str> {
+        self.phases
+            .iter()
+            .filter(|p| p.skip_when.trim().is_empty() && !self.phases.iter().any(|q| q.branches.iter().any(|b| b.to == p.skill)))
+            .map(|p| p.skill.as_str())
+            .filter(|n| !n.contains(','))
+            .collect()
+    }
+
     /// The phase a Skill tool call names, if it's one of this workflow's.
     /// A plugin skill (`plugin:name`) matches a phase named either way.
     pub fn phase_for(&self, skill: &str) -> Option<&Phase> {
@@ -421,6 +432,9 @@ mod tests {
         assert!(p.contains("Choose the next phase"));
         assert!(p.contains("until the last phase has run"));
         assert!(p.contains("[required]"));
+        assert_eq!(w.required(), vec!["plan", "build", "review"]);
+        let w2 = parse("x", r#"{"phases":[{"skill":"a","branches":[{"to":"b","condition":"x"},{"to":"c","condition":""}]},{"skill":"b"},{"skill":"c"},{"skill":"d","skip_when":"tiny"}]}"#).unwrap();
+        assert_eq!(w2.required(), vec!["a"]);
         let w = parse("x", r#"{"phases":[{"skill":"plan","skip_when":"the change is one line."},{"skill":"build"}]}"#).unwrap();
         let p = w.prompt();
         assert!(p.contains("- plan (usually followed by build) [optional: skip it if the change is one line]"));
