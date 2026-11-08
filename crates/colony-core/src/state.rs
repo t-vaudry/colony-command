@@ -1041,6 +1041,28 @@ impl Colony {
                         }
                     }
                 }
+                // A native workflow runs each phase as its own agent, which announces the phase it is in.
+                if agent_id.is_some() && tool == "Bash" {
+                    let phases = target.as_deref().map(crate::workflow::marker_phases).unwrap_or_default();
+                    let named = self.agents.get_mut(&sid).and_then(|m| m.workflow.as_mut()).and_then(|wf| {
+                        let mut last = None;
+                        for phase in phases {
+                            if wf.skill_called(phase, e.ts) {
+                                if let Some(v) = wf.visits.last_mut() {
+                                    v.subagents += 1;
+                                }
+                            }
+                            last = wf.workflow.phase_for(phase).map(|p| p.skill.clone()).or(last);
+                        }
+                        last
+                    });
+                    if let Some(name) = named {
+                        if let Some(kid) = self.agents.get_mut(&id) {
+                            kid.phase = Some(name);
+                        }
+                        changed.push(id.clone());
+                    }
+                }
             }
             DomainEvent::ToolFinished { agent_id, tool, tool_use_id, ok, error } => {
                 let a = self.target(e, agent_id.as_deref(), &mut changed);

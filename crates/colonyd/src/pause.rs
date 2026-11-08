@@ -195,6 +195,7 @@ pub async fn resume(shared: &Shared, id: &str) -> Result<(), String> {
         swarm: record.as_ref().and_then(|r| r.pick.swarm.clone()),
         isolate: false,
         workflow: record.as_ref().and_then(|r| r.workflow.clone()),
+        native: None,
         cols: crate::pty::default_cols(),
         rows: crate::pty::default_rows(),
         auto: false,

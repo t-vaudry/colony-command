@@ -107,6 +107,56 @@ pub fn append_prompt(args: &mut Vec<String>, text: &str) {
     }
 }
 
+/// Settings a native workflow session starts with: the Workflow tool and the phase
+/// marker commands need no permission prompt.
+pub const NATIVE_SETTINGS: &str = r#"{"permissions":{"allow":["Workflow","Bash(echo colony-phase:*)","Read(./.colony/notes/**)","Edit(./.colony/notes/**)"]}}"#;
+
+/// Where a session's workflow script lives. It has to be inside the project: Claude
+/// Code's Workflow tool only runs scripts it can read from the working directory.
+pub fn run_script_path(dir: &str, session_id: &str) -> PathBuf {
+    PathBuf::from(dir).join(".colony").join("runs").join(format!("{session_id}.js"))
+}
+
+/// Write the native-workflow script for a session and return its path. The folder is
+/// kept out of git, like the rest of Colony's files in the project.
+pub fn write_run_script(host: &HostId, dir: &str, session_id: &str, w: &Workflow, opts: &colony_core::script::Options) -> Result<PathBuf, String> {
+    let root = project(host, dir).ok_or("native workflows need a Windows project folder")?;
+    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("odd session id".into());
+    }
+    let script = colony_core::script::compile(w, opts)?;
+    let path = run_script_path(&root.to_string_lossy(), session_id);
+    let folder = path.parent().ok_or("no folder")?;
+    std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    // Keep the scripts and the phases' notes out of commits, without touching the project's own ignore file.
+    let _ = std::fs::write(folder.parent().unwrap_or(folder).join(".gitignore"), "# Colony's files
+*
+");
+    // The phases' notes folder exists before the first phase, so no agent needs a shell to make it.
+    std::fs::create_dir_all(folder.parent().unwrap_or(folder).join("notes")).map_err(|e| format!("notes folder: {e}"))?;
+    let tmp = path.with_extension("js.tmp");
+    std::fs::write(&tmp, script).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {e}", path.display())
+    })?;
+    Ok(path)
+}
+
+/// The rules a native-workflow session gets: run the script, don't do the work itself.
+/// `task_known` is whether the script already holds the user's request.
+pub fn native_prompt(script: &std::path::Path, task_known: bool) -> String {
+    let path = script.display();
+    let call = if task_known {
+        format!("call the Workflow tool with scriptPath set to {path:?} and no other arguments")
+    } else {
+        format!("as soon as the user gives you a task, call the Workflow tool with scriptPath set to {path:?} and args {{\"task\": \"<their request, verbatim>\"}}")
+    };
+    format!(
+        "This session runs its work through a Colony workflow: a Claude Code dynamic workflow script that runs each phase in its own agent. Your first action must be to {call}. Do not start the work yourself and do not edit the script; wait for it to finish.          If its result has a `blocked` entry, a phase needs the user: tell them plainly what it asks, and when they answer call the Workflow tool again with the same scriptPath, resumeFromRunId set to that run's id, and args {{\"answers\": {{\"<phase>\": \"<their answer>\"}}}}.          When it finishes, say in a few lines what each phase did."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +203,35 @@ mod tests {
         let dirs = workflow_dirs(&HostId::Wsl("Ubuntu".into()), "/home/t/api");
         assert_eq!(dirs.len(), 1);
         assert_eq!(workflow_dirs(&HostId::Windows, r"C:\code\api").len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+
+    #[test]
+    fn writes_the_script_inside_the_project_and_keeps_it_out_of_git() {
+        let dir = std::env::temp_dir().join(format!("colony-native-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = workflow::parse("flow", r#"{"phases":[{"skill":"plan","instruction":"Plan."}]}"#).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        let path = write_run_script(&HostId::Windows, &d, "abc-123", &w, &colony_core::script::Options::default()).unwrap();
+        assert_eq!(path, run_script_path(&d, "abc-123"));
+        assert!(path.starts_with(&dir) && std::fs::read_to_string(&path).unwrap().starts_with("export const meta"));
+        assert!(std::fs::read_to_string(dir.join(".colony").join(".gitignore")).unwrap().contains('*'));
+        assert!(dir.join(".colony").join("notes").is_dir());
+        assert!(write_run_script(&HostId::Windows, &d, "../evil", &w, &Default::default()).is_err());
+        assert!(write_run_script(&HostId::Wsl("Ubuntu".into()), &d, "abc", &w, &Default::default()).is_err(), "Windows projects only");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_prompt_says_how_to_start_and_how_to_answer_a_blocked_phase() {
+        let p = native_prompt(std::path::Path::new("C:/p/.colony/runs/s.js"), true);
+        assert!(p.contains("scriptPath") && p.contains("no other arguments") && p.contains("resumeFromRunId") && p.contains("blocked"));
+        let q = native_prompt(std::path::Path::new("C:/p/.colony/runs/s.js"), false);
+        assert!(q.contains("as soon as the user gives you a task") && q.contains("args"));
     }
 }

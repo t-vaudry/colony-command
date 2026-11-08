@@ -65,6 +65,8 @@ export class NewSessionDialog {
   private crewNote = document.getElementById("ns-crew-note")!;
   private workflow = document.getElementById("ns-workflow") as HTMLSelectElement;
   private workflowNote = document.getElementById("ns-workflow-note")!;
+  private native = document.getElementById("ns-native") as HTMLInputElement;
+  private nativeRow = document.getElementById("ns-native-row")!;
   private workflowList: WorkflowListing | null = null;
   private workflowSeq = 0;
   private editor: WorkflowEditor;
@@ -111,6 +113,8 @@ export class NewSessionDialog {
     });
     this.host.addEventListener("change", () => void this.lookupFolderCrew());
     this.workflow.addEventListener("change", () => this.showWorkflowNote());
+    this.native.addEventListener("change", () => this.showWorkflowNote());
+    this.host.addEventListener("change", () => this.showWorkflowNote());
     this.editor = new WorkflowEditor(daemon);
     document.getElementById("ns-workflow-edit")!.addEventListener("click", () => this.editWorkflows());
     this.folderDefault.addEventListener("change", () => {
@@ -301,9 +305,12 @@ export class NewSessionDialog {
     const list = this.workflowList;
     const w = list?.workflows.find((x) => x.id === this.workflow.value);
     const lines: string[] = [];
+    // Native workflows write their script into the project, so only a Windows folder can have one.
+    this.nativeRow.hidden = !w || this.host.value !== "win" || !!this.resume;
+    const native = !this.nativeRow.hidden && this.native.checked;
     if (w) {
       if (w.description) lines.push(w.description);
-      lines.push(`Phases: ${w.phases.map((p) => (p.instruction ? `${p.skill} (custom)` : p.skill)).join(", ")}. Claude picks the next phase as the work needs it.`);
+      lines.push(`Phases: ${w.phases.map((p) => (p.instruction ? `${p.skill} (custom)` : p.skill)).join(", ")}. ${native ? "Each runs as its own agent, handing work on through short notes in .colony/notes." : "Claude picks the next phase as the work needs it."}`);
       for (const l of w.loops ?? []) lines.push(`Repeats ${l.from} to ${l.to}${l.until ? ` until ${l.until}` : ""}, up to ${l.max} rounds.`);
       const have = new Set((list?.skills ?? []).map((s) => s.name));
       // A custom phase has an instruction instead of a skill.
@@ -446,6 +453,7 @@ export class NewSessionDialog {
         ...choice,
         isolate: this.resume ? undefined : this.isolate.checked,
         workflow: this.resume ? undefined : this.workflow.value || undefined,
+        native: !this.resume && this.workflow.value && this.host.value === "win" ? this.native.checked : undefined,
         // Off unless ticked, which also skips Claude in Chrome's first-run question.
         chrome: this.chrome.checked,
         ...this.termSize(),
