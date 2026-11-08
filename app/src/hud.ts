@@ -915,8 +915,9 @@ export class Hud {
       const dlg = document.getElementById("popout") as HTMLDialogElement;
       dlg.classList.add("wide");
       document.getElementById("popout-title")!.textContent = `${a.name} · Workflow`;
-      this.refreshWorkflowPopout(a);
+      // Open first: the refresh only fills a dialog that is open.
       if (!dlg.open) dlg.showModal();
+      this.refreshWorkflowPopout(a);
       return;
     }
     document.getElementById("popout")?.classList.remove("wide");

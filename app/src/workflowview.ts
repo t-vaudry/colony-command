@@ -9,10 +9,13 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`)
 const NODE_W = 92;
 const NODE_H = 30;
 const GAP_X = 34;
-/** Between columns when arrows carry a condition: room for the label. */
-const LABEL_GAP = 104;
 const LABEL_CHARS = 16;
+/** Between rows of the top-to-bottom graph, plain and with a condition written beside the arrow. */
 const GAP_Y = 26;
+const GAP_V = 26;
+const LABEL_GAP_V = 34;
+/** Room for a condition written beside an arrow that runs round the side. */
+const LABEL_W = 96;
 const PAD = 10;
 /** Room under the graph for edges that go back to an earlier phase. */
 const BACK_ROOM = 22;
@@ -163,13 +166,22 @@ function nesting(w: Workflow): number[] {
   return spans.map((_, i) => level(i));
 }
 
+/** What a loop's frame says: its round and what ends it. */
+function loopLabel(info: WorkflowInfo, l: WorkflowLoop): string {
+  const { round } = loopRound(info, l);
+  const until = l.until ? (l.until.length > 30 ? `${l.until.slice(0, 29)}…` : l.until) : "";
+  return `↻ ${round ? `round ${round} of ${l.max}` : `up to ${l.max} rounds`}${until ? ` · until ${until}` : ""}`;
+}
+
 function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
   // Marker ids are per session: graphs of several sessions can be in the page, and the same one must redraw identically.
   const ids = { arrow: `wf-arrow-${owner.replace(/[^A-Za-z0-9_-]/g, "-")}` };
   const w = info.workflow;
   // Arrows with a condition on them need room between the columns.
-  const gap = w.phases.some((_, i) => exits(w, i).some((e) => e.label)) ? LABEL_GAP : GAP_X;
-  const nodes = layout(w, gap);
+  const labelled = w.phases.some((_, i) => exits(w, i).some((e) => e.label));
+  // The graph runs top to bottom: a column of the layout becomes a row, so it stays narrow and grows taller.
+  const gapV = labelled ? LABEL_GAP_V : GAP_V;
+  const nodes = layout(w).map((n) => ({ ...n, x: n.row * (NODE_W + GAP_X), y: n.col * (NODE_H + gapV) }));
   const at = new Map(nodes.map((n) => [n.skill, n]));
   const cols = Math.max(...nodes.map((n) => n.col)) + 1;
   const rows = Math.max(...nodes.map((n) => n.row)) + 1;
@@ -177,17 +189,20 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
   const levels = nesting({ ...w, loops });
   const outer = loops.length ? FRAME + FRAME_STEP * Math.max(...levels) : 0;
   const hasBack = w.phases.some((_, i) => followers(w, i).some((n) => (at.get(n)?.col ?? 0) <= (at.get(w.phases[i].skill)?.col ?? 0))) || loops.length > 0;
-  const innerW = cols * NODE_W + (cols - 1) * gap;
-  const innerH = rows * NODE_H + (rows - 1) * GAP_Y + (hasBack ? BACK_ROOM : 0);
-  const left = PAD + outer;
+  const backRoom = BACK_ROOM + (labelled ? LABEL_W : 0);
+  const innerW = rows * NODE_W + (rows - 1) * GAP_X + (hasBack ? backRoom : 0);
+  const innerH = cols * NODE_H + (cols - 1) * gapV;
   const loopTop = loops.length ? outer + LABEL_ROOM : 0;
-  // Arrows that skip columns arc over the top; the longer the skip, the higher.
   const skip = (from: string, to: string) => (at.get(to)?.col ?? 0) - (at.get(from)?.col ?? 0);
   const longest = Math.max(0, ...w.phases.flatMap((p, i) => exits(w, i).map((e) => skip(p.skill, e.to))));
-  const rise = (s: number) => loopTop + 12 + 8 * (s - 2);
-  const arcRoom = longest > 1 ? rise(longest) - loopTop : 0;
-  const top = PAD + loopTop + arcRoom;
-  const width = left * 2 + innerW;
+  // Arrows that skip rows arc out on the left; the longer the skip, the wider.
+  const rise = (s: number) => outer + 12 + 8 * (s - 2);
+  const skipLabelled = w.phases.some((p, i) => exits(w, i).some((e) => e.label && skip(p.skill, e.to) > 1));
+  const arcRoom = longest > 1 ? rise(longest) - outer + (skipLabelled ? LABEL_W : 0) : 0;
+  const left = PAD + outer + arcRoom;
+  const top = PAD + loopTop;
+  const loopLabelW = Math.max(0, ...loops.map((l) => 6 + 5.6 * (loopLabel(info, l).length + 2)));
+  const width = Math.ceil(Math.max(left + innerW + PAD + outer, PAD + outer + loopLabelW));
   const height = top + innerH + PAD + outer;
   const walked = taken(info);
   const visits = new Map<string, number>();
@@ -198,17 +213,17 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
   const edges: string[] = [];
   const drawn = new Set<string>();
   /** A condition written on its arrow, with a halo so the line doesn't run through it. */
-  const say = (x: number, y: number, label: string, full: string) =>
-    label ? edges.push(`<g class="wf-elabel"><title>${esc(full)}</title><text x="${x}" y="${y}" text-anchor="middle">${esc(label)}</text></g>`) : 0;
+  const say = (x: number, y: number, label: string, full: string, anchor = "start") =>
+    label ? edges.push(`<g class="wf-elabel"><title>${esc(full)}</title><text x="${x}" y="${y}" text-anchor="${anchor}">${esc(label)}</text></g>`) : 0;
   const back = (a: Node, b: Node, used: boolean, extra = "", label = "", full = "") => {
-    // Back to an earlier phase, sideways, or to itself: loop underneath.
+    // Back to an earlier phase, sideways, or to itself: loop round the right-hand side.
     const same = a === b;
-    const x1 = a.x + NODE_W / 2 + (same ? 14 : 0);
-    const x2 = b.x + NODE_W / 2 - (same ? 14 : 0);
-    const y = Math.max(a.y, b.y) + NODE_H;
-    const dip = y + BACK_ROOM - 4;
-    edges.push(`<path class="wf-edge back${used ? " taken" : ""}${extra}" d="M${x1} ${y} C${x1 + (same ? 8 : 0)} ${dip} ${x2 - (same ? 8 : 0)} ${dip} ${x2} ${y + 3}" marker-end="${arrow(used)}"/>`);
-    say((x1 + x2) / 2, y + 0.75 * (BACK_ROOM - 4) + 3, label, full);
+    const y1 = a.y + NODE_H / 2 + (same ? 8 : 0);
+    const y2 = b.y + NODE_H / 2 - (same ? 8 : 0);
+    const x = Math.max(a.x, b.x) + NODE_W;
+    const dip = x + BACK_ROOM - 4;
+    edges.push(`<path class="wf-edge back${used ? " taken" : ""}${extra}" d="M${x} ${y1} C${dip} ${y1 + (same ? 4 : 0)} ${dip} ${y2 - (same ? 4 : 0)} ${x + 3} ${y2}" marker-end="${arrow(used)}"/>`);
+    say(x + BACK_ROOM, (y1 + y2) / 2 + 3, label, full);
   };
   w.phases.forEach((p, i) => {
     const a = at.get(p.skill)!;
@@ -218,19 +233,21 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
       drawn.add(`${p.skill}>${n}`);
       const used = walked.has(`${p.skill}>${n}`);
       if (b.col > a.col) {
-        const x1 = a.x + NODE_W;
-        const y1 = a.y + NODE_H / 2;
-        const x2 = b.x;
-        const y2 = b.y + NODE_H / 2;
-        const mx = (x1 + x2) / 2;
+        const x1 = a.x + NODE_W / 2;
+        const y1 = a.y + NODE_H;
+        const x2 = b.x + NODE_W / 2;
+        const y2 = b.y;
+        const my = (y1 + y2) / 2;
         if (b.col - a.col > 1) {
-          // Skips columns: arc over the top rather than run through the phases between.
-          const ytop = -rise(b.col - a.col);
-          edges.push(`<path class="wf-edge${used ? " taken" : ""}" d="M${x1} ${y1} C${x1 + 24} ${ytop} ${x2 - 30} ${ytop} ${x2 - 3} ${y2}" marker-end="${arrow(used)}"/>`);
-          say(mx, 0.75 * ytop + 0.125 * (y1 + y2) + 3, label, full);
+          // Skips rows: arc out to the left rather than run through the phases between.
+          const xc = -rise(b.col - a.col);
+          const ys = a.y + NODE_H / 2;
+          const ye = b.y + NODE_H / 2;
+          edges.push(`<path class="wf-edge${used ? " taken" : ""}" d="M${a.x} ${ys} C${xc} ${ys + 24} ${xc} ${ye - 30} ${b.x - 3} ${ye}" marker-end="${arrow(used)}"/>`);
+          say(0.75 * xc + 0.125 * (a.x + b.x) - 4, (ys + ye) / 2 + 3, label, full, "end");
         } else {
-          edges.push(`<path class="wf-edge${used ? " taken" : ""}" d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2 - 3} ${y2}" marker-end="${arrow(used)}"/>`);
-          say(mx, (y1 + y2) / 2 + 3, label, full);
+          edges.push(`<path class="wf-edge${used ? " taken" : ""}" d="M${x1} ${y1} C${x1} ${my} ${x2} ${my} ${x2} ${y2 - 3}" marker-end="${arrow(used)}"/>`);
+          say((x1 + x2) / 2 + 6, my + 3, label, full);
         }
       } else {
         back(a, b, used, "", label, full);
@@ -256,8 +273,7 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
     const x2 = Math.max(...members.map((n) => n.x + NODE_W)) + pad;
     const y2 = Math.max(...members.map((n) => n.y + NODE_H)) + pad;
     const { round, inside } = loopRound(info, l);
-    const until = l.until ? (l.until.length > 30 ? `${l.until.slice(0, 29)}…` : l.until) : "";
-    const label = `↻ ${round ? `round ${round} of ${l.max}` : `up to ${l.max} rounds`}${until ? ` · until ${until}` : ""}`;
+    const label = loopLabel(info, l);
     return `<g class="wf-loop${inside ? " active" : round ? " done" : ""}"><title>${esc(`Repeats ${l.from} to ${l.to}${l.until ? ` until ${l.until}` : ""}, at most ${l.max} rounds`)}</title><rect x="${x1}" y="${y1}" width="${x2 - x1}" height="${y2 - y1}" rx="${10 + 3 * levels[k]}"/><text class="wf-loop-label" x="${x1 + 6}" y="${y1 - 4}">${esc(label)}</text></g>`;
   });
 

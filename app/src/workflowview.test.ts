@@ -228,11 +228,11 @@ describe("arrows that skip columns", () => {
       ],
     };
     const html = workflowBlock(agent({ workflow: { workflow: skip, visits: [], active: null } }), []);
-    // a -> c skips b: its curve rises above the top row (a negative y in the path).
-    expect(html).toMatch(/d="M92 15 C116 -\d+ \d+ -\d+ \d+ 15"/);
-    // The room for it is above the graph: the svg is taller than for a plain chain.
-    const height = (h: string) => Number(/<svg[^>]* height="(\d+)"/.exec(h)![1]);
+    // a -> c skips b: its curve bows out to the left of the column (a negative x in the path).
+    expect(html).toMatch(/d="M0 15 C-\d+ \d+ -\d+ \d+ -3 \d+"/);
+    // The room for it is on the left: the svg is wider than for a plain chain.
+    const width = (h: string) => Number(/<svg[^>]* width="(\d+)"/.exec(h)![1]);
     const plain = workflowBlock(agent({ workflow: { workflow: { ...skip, phases: [{ ...skip.phases[0], next: ["b"] }, skip.phases[1], skip.phases[2]] }, visits: [], active: null } }), []);
-    expect(height(html)).toBeGreaterThan(height(plain));
+    expect(width(html)).toBeGreaterThan(width(plain));
   });
 });
