@@ -5,6 +5,10 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-08
+
+- Workflows: enforce required phases at Stop; fix panel graph width (#75)
+
 ## [0.1.15] - 2026-11-07
 
 - Workflows: pop the graph out into a full-width dialog (#74)
