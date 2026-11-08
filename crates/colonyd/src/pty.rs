@@ -78,6 +78,10 @@ pub struct SpawnRequest {
     /// A workflow (`colony_core::workflow`) for the session to follow, by name.
     #[serde(default)]
     pub workflow: Option<String>,
+    /// Run that workflow as a native Claude Code dynamic workflow (each phase its own
+    /// agent) instead of steering one session with a prompt. Windows or WSL.
+    #[serde(default)]
+    pub native: Option<bool>,
     #[serde(default = "default_cols")]
     pub cols: u16,
     #[serde(default = "default_rows")]
@@ -236,10 +240,34 @@ impl PtyHost {
             }
         }
         claude_args.extend(crew.args());
+        let mut native = false;
         let workflow = match req.workflow.as_deref().filter(|w| !w.is_empty()) {
             Some(id) => match crate::workflows::resolve(&req.host, &req.dir, id) {
                 Ok(w) => {
-                    crate::workflows::append_prompt(&mut claude_args, &w.prompt());
+                    // A resumed native session still has its script: it stays native.
+                    // A resumed native session still has its script, and keeps it: its finished agents are cached against it.
+                    let have = req.resume.is_some() && crate::workflows::run_script_exists(&req.host, &req.dir, &session_id).await;
+                    let script = if have {
+                        Ok(crate::workflows::run_script_path(&req.host, &req.dir, &session_id))
+                    } else if req.native == Some(true) {
+                        let opts = colony_core::script::Options { task: req.prompt.clone().unwrap_or_default(), judge_model: crew.swarm_model.clone(), advisor: crew.advisor.is_some() };
+                        crate::workflows::write_run_script(&req.host, &req.dir, &session_id, &w, &opts).await
+                    } else {
+                        Err(String::new())
+                    };
+                    match script {
+                        Ok(path) => {
+                            native = true;
+                            crate::workflows::append_prompt(&mut claude_args, &crate::workflows::native_prompt(&path, req.prompt.as_ref().is_some_and(|p| !p.trim().is_empty())));
+                            claude_args.extend(["--settings".into(), crate::workflows::NATIVE_SETTINGS.into()]);
+                        }
+                        Err(e) => {
+                            if !e.is_empty() {
+                                log(format!("native workflow unavailable, steering the session instead: {e}"));
+                            }
+                            crate::workflows::append_prompt(&mut claude_args, &w.prompt());
+                        }
+                    }
                     Some(w)
                 }
                 // A resume must not fail because the file went away; the
@@ -287,7 +315,7 @@ impl PtyHost {
         if req.auto && !crate::resume::still_wanted(&session_id) {
             return Err("that session was dismissed or ended; not restarting it".into());
         }
-        let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows, session_env(&crew, crate::quality::Settings::load(&crate::quality::settings_path()).context_pct(), workflow.as_ref())).await?;
+        let (term_id, pid) = self.launch(&session_id, &req.host, &req.dir, program, args, cwd, req.cols, req.rows, session_env(&crew, crate::quality::Settings::load(&crate::quality::settings_path()).context_pct(), workflow.as_ref().filter(|_| !native))).await?;
         log(format!("started session {session_id} in terminal {term_id} ({}, {}, pid {pid})", req.host, req.dir));
         if !req.auto {
             crate::resume::remember(&session_id, &req);

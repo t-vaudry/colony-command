@@ -128,3 +128,28 @@ fn a_subagents_skill_call_does_not_move_the_main_session() {
     r.hook(json!({"hook_event_name": "PreToolUse", "agent_id": "a1", "tool_name": "Skill", "tool_input": {"skill": "build"}}));
     assert!(r.info().visits.is_empty());
 }
+
+#[test]
+fn a_native_workflow_agent_announcing_its_phase_moves_the_workflow_and_tags_the_agent() {
+    use colony_core::{DomainEvent, Envelope};
+    let wf = colony_core::workflow::parse("f", r#"{"phases":[{"skill":"Investigate","instruction":"Look."},{"skill":"Develop","instruction":"Make."}]}"#).unwrap();
+    let ev = |ts, event| Envelope { ts, host: colony_core::HostId::Windows, session_id: "s".into(), cwd: None, event };
+    let mut c = colony_core::Colony::new();
+    for e in [
+        ev(1, DomainEvent::SessionStarted { source: None, model: None }),
+        ev(2, DomainEvent::WorkflowSet { workflow: wf }),
+        ev(3, DomainEvent::SubagentStarted { agent_id: "a1".into(), agent_type: Some("workflow-subagent".into()) }),
+        ev(4, DomainEvent::ToolStarted { agent_id: Some("a1".into()), tool: "Bash".into(), target: Some("echo colony-phase:Investigate; ls notes".into()), tool_use_id: None, background: false }),
+        ev(5, DomainEvent::SubagentStarted { agent_id: "a2".into(), agent_type: Some("workflow-subagent".into()) }),
+        ev(6, DomainEvent::ToolStarted { agent_id: Some("a2".into()), tool: "Bash".into(), target: Some("echo colony-phase:Develop".into()), tool_use_id: None, background: false }),
+        // A subagent's Skill call is still not a phase.
+        ev(7, DomainEvent::ToolStarted { agent_id: Some("a2".into()), tool: "Skill".into(), target: Some("Investigate".into()), tool_use_id: None, background: false }),
+    ] {
+        c.apply(&e);
+    }
+    let w = c.agents.get("s").and_then(|a| a.workflow.as_ref()).unwrap();
+    assert_eq!(w.visits.iter().map(|v| v.skill.as_str()).collect::<Vec<_>>(), ["Investigate", "Develop"]);
+    assert_eq!(w.active.as_deref(), Some("Develop"));
+    assert_eq!(c.agents.get("s/a1").and_then(|a| a.phase.as_deref()), Some("Investigate"));
+    assert_eq!(c.agents.get("s/a2").and_then(|a| a.phase.as_deref()), Some("Develop"));
+}

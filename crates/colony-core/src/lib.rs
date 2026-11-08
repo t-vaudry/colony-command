@@ -18,6 +18,7 @@ pub mod paths;
 pub mod prices;
 pub mod ptyproto;
 pub mod registry;
+pub mod script;
 pub mod state;
 pub mod swarm;
 pub mod usage;

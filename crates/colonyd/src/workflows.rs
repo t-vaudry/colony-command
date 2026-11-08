@@ -107,6 +107,107 @@ pub fn append_prompt(args: &mut Vec<String>, text: &str) {
     }
 }
 
+/// Settings a native workflow session starts with: the Workflow tool and the phase
+/// marker commands need no permission prompt.
+pub const NATIVE_SETTINGS: &str = r#"{"permissions":{"allow":["Workflow","Bash(echo colony-phase:*)","Read(./.colony/notes/**)","Edit(./.colony/notes/**)"]}}"#;
+
+/// Where a session's workflow script lives, as the session's own host sees it. It has to be
+/// inside the project: Claude Code's Workflow tool only runs scripts it can read from the
+/// working directory.
+pub fn run_script_path(host: &HostId, dir: &str, session_id: &str) -> String {
+    match host {
+        HostId::Windows => PathBuf::from(dir).join(".colony").join("runs").join(format!("{session_id}.js")).to_string_lossy().into_owned(),
+        HostId::Wsl(_) => format!("{}/.colony/runs/{session_id}.js", colony_core::paths::to_wsl_path(dir).trim_end_matches('/')),
+    }
+}
+
+fn plain_id(session_id: &str) -> bool {
+    !session_id.is_empty() && session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Whether the session already has its script (a resumed native session keeps it).
+pub async fn run_script_exists(host: &HostId, dir: &str, session_id: &str) -> bool {
+    if !plain_id(session_id) || dir.trim().is_empty() {
+        return false;
+    }
+    let path = run_script_path(host, dir, session_id);
+    match host {
+        HostId::Windows => std::path::Path::new(&path).is_file(),
+        HostId::Wsl(distro) => crate::worktree::quiet("wsl.exe")
+            .args(["-d", distro, "-e", "test", "-f", &path])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false),
+    }
+}
+
+/// Write the native-workflow script for a session and return its path as the session's
+/// host sees it. The folder is kept out of git, like the rest of Colony's files in the
+/// project, and the phases' notes folder exists before the first phase so no agent needs
+/// a shell to make it.
+pub async fn write_run_script(host: &HostId, dir: &str, session_id: &str, w: &Workflow, opts: &colony_core::script::Options) -> Result<String, String> {
+    if !plain_id(session_id) {
+        return Err("odd session id".into());
+    }
+    if dir.trim().is_empty() {
+        return Err("no project folder".into());
+    }
+    let script = colony_core::script::compile(w, opts)?;
+    let path = run_script_path(host, dir, session_id);
+    match host {
+        HostId::Windows => {
+            let path = PathBuf::from(&path);
+            let folder = path.parent().ok_or("no folder")?;
+            let colony = folder.parent().unwrap_or(folder);
+            std::fs::create_dir_all(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+            let _ = std::fs::write(colony.join(".gitignore"), "# Colony's files\n*\n");
+            std::fs::create_dir_all(colony.join("notes")).map_err(|e| format!("notes folder: {e}"))?;
+            let tmp = path.with_extension("js.tmp");
+            std::fs::write(&tmp, script).map_err(|e| format!("{}: {e}", tmp.display()))?;
+            std::fs::rename(&tmp, &path).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                format!("{}: {e}", path.display())
+            })?;
+            Ok(path.to_string_lossy().into_owned())
+        }
+        HostId::Wsl(distro) => {
+            use tokio::io::AsyncWriteExt;
+            // The script goes in on stdin: it can be far longer than a command line allows.
+            const SH: &str = r#"set -e; d="$(dirname "$(dirname "$1")")"; mkdir -p "$d/runs" "$d/notes"; printf '# Colony files\n*\n' > "$d/.gitignore"; cat > "$1.tmp"; mv "$1.tmp" "$1""#;
+            let mut child = crate::worktree::quiet("wsl.exe")
+                .args(["-d", distro, "-e", "sh", "-c", SH, "sh", &path])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("couldn't run wsl.exe: {e}"))?;
+            let mut stdin = child.stdin.take().ok_or("no stdin")?;
+            stdin.write_all(script.as_bytes()).await.map_err(|e| format!("writing the script: {e}"))?;
+            drop(stdin);
+            let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
+            if !out.status.success() {
+                return Err(format!("couldn't write the script in WSL: {}", String::from_utf8_lossy(&out.stderr).trim()));
+            }
+            Ok(path)
+        }
+    }
+}
+
+/// The rules a native-workflow session gets: run the script, don't do the work itself.
+/// `task_known` is whether the script already holds the user's request.
+pub fn native_prompt(path: &str, task_known: bool) -> String {
+    let call = if task_known {
+        format!("call the Workflow tool with scriptPath set to {path:?} and no other arguments")
+    } else {
+        format!("as soon as the user gives you a task, call the Workflow tool with scriptPath set to {path:?} and args {{\"task\": \"<their request, verbatim>\"}}")
+    };
+    format!(
+        "This session runs its work through a Colony workflow: a Claude Code dynamic workflow script that runs each phase in its own agent. Your first action must be to {call}. Do not start the work yourself and do not edit the script; wait for it to finish.          If its result has a `blocked` entry, a phase needs the user: tell them plainly what it asks, and when they answer call the Workflow tool again with the same scriptPath, resumeFromRunId set to that run's id, and args {{\"answers\": {{\"<phase>\": \"<their answer>\"}}}}.          When it finishes, say in a few lines what each phase did."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +254,79 @@ mod tests {
         let dirs = workflow_dirs(&HostId::Wsl("Ubuntu".into()), "/home/t/api");
         assert_eq!(dirs.len(), 1);
         assert_eq!(workflow_dirs(&HostId::Windows, r"C:\code\api").len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn writes_the_script_inside_the_project_and_keeps_it_out_of_git() {
+        let dir = std::env::temp_dir().join(format!("colony-native-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = workflow::parse("flow", r#"{"phases":[{"skill":"plan","instruction":"Plan."}]}"#).unwrap();
+        let d = dir.to_string_lossy().to_string();
+        let path = write_run_script(&HostId::Windows, &d, "abc-123", &w, &colony_core::script::Options::default()).await.unwrap();
+        assert_eq!(path, run_script_path(&HostId::Windows, &d, "abc-123"));
+        assert!(PathBuf::from(&path).starts_with(&dir) && std::fs::read_to_string(&path).unwrap().starts_with("export const meta"));
+        assert!(run_script_exists(&HostId::Windows, &d, "abc-123").await && !run_script_exists(&HostId::Windows, &d, "other").await);
+        assert!(std::fs::read_to_string(dir.join(".colony").join(".gitignore")).unwrap().contains('*'));
+        assert!(dir.join(".colony").join("notes").is_dir());
+        assert!(write_run_script(&HostId::Windows, &d, "../evil", &w, &Default::default()).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_wsl_script_lives_at_the_linux_path_of_the_project() {
+        let wsl = HostId::Wsl("Ubuntu".into());
+        assert_eq!(run_script_path(&wsl, "/home/t/api", "s1"), "/home/t/api/.colony/runs/s1.js");
+        assert_eq!(run_script_path(&wsl, r"C:\code\api", "s1"), "/mnt/c/code/api/.colony/runs/s1.js");
+        assert_eq!(run_script_path(&wsl, "/home/t/api/", "s1"), "/home/t/api/.colony/runs/s1.js");
+    }
+
+    #[test]
+    fn the_prompt_says_how_to_start_and_how_to_answer_a_blocked_phase() {
+        let p = native_prompt("C:/p/.colony/runs/s.js", true);
+        assert!(p.contains("scriptPath") && p.contains("no other arguments") && p.contains("resumeFromRunId") && p.contains("blocked"));
+        let q = native_prompt("C:/p/.colony/runs/s.js", false);
+        assert!(q.contains("as soon as the user gives you a task") && q.contains("args"));
+    }
+}
+
+#[cfg(test)]
+mod wsl_tests {
+    use super::*;
+
+    async fn wsl(distro: &str, args: &[&str]) -> Option<String> {
+        let out = crate::worktree::quiet("wsl.exe").args(["-d", distro, "-e"]).args(args).stdin(std::process::Stdio::null()).output().await.ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// Needs a WSL distro; says so and passes without one.
+    #[tokio::test]
+    async fn a_script_written_into_a_wsl_project_is_there_and_is_found_again() {
+        if !cfg!(windows) {
+            return;
+        }
+        let Some(distro) = wsl("Ubuntu", &["echo", "Ubuntu"]).await.map(|_| "Ubuntu") else {
+            eprintln!("no Ubuntu distro: skipping");
+            return;
+        };
+        let host = HostId::Wsl(distro.into());
+        let dir = format!("/tmp/colony-native-{}", std::process::id());
+        let w = workflow::parse("flow", r#"{"phases":[{"skill":"plan","instruction":"Plan it."}]}"#).unwrap();
+        let opts = colony_core::script::Options { task: "do 'it' \"now\"".into(), ..Default::default() };
+        assert!(!run_script_exists(&host, &dir, "s-1").await);
+        let path = write_run_script(&host, &dir, "s-1", &w, &opts).await.unwrap();
+        assert_eq!(path, format!("{dir}/.colony/runs/s-1.js"));
+        assert!(run_script_exists(&host, &dir, "s-1").await);
+        let text = wsl(distro, &["cat", &path]).await.unwrap();
+        assert!(text.starts_with("export const meta") && text.contains(r#"const TASK = "do 'it' \"now\"""#), "{text}");
+        assert!(wsl(distro, &["test", "-d", &format!("{dir}/.colony/notes")]).await.is_some());
+        assert!(wsl(distro, &["cat", &format!("{dir}/.colony/.gitignore")]).await.unwrap().contains('*'));
+        assert!(wsl(distro, &["ls", &format!("{dir}/.colony/runs")]).await.unwrap().trim() == "s-1.js", "no temp file left behind");
+        let _ = wsl(distro, &["rm", "-rf", &dir]).await;
     }
 }

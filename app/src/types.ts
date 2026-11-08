@@ -361,6 +361,8 @@ export interface SpawnRequest {
   isolate?: boolean;
   /** A workflow by name: the session works through its phases (skills). */
   workflow?: string;
+  /** Run that workflow as a native Claude Code workflow, each phase its own agent. Windows or WSL. */
+  native?: boolean;
   cols?: number;
   rows?: number;
 }
