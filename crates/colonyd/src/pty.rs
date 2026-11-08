@@ -79,7 +79,7 @@ pub struct SpawnRequest {
     #[serde(default)]
     pub workflow: Option<String>,
     /// Run that workflow as a native Claude Code dynamic workflow (each phase its own
-    /// agent) instead of steering one session with a prompt. Windows projects only.
+    /// agent) instead of steering one session with a prompt. Windows or WSL.
     #[serde(default)]
     pub native: Option<bool>,
     #[serde(default = "default_cols")]
@@ -245,15 +245,13 @@ impl PtyHost {
             Some(id) => match crate::workflows::resolve(&req.host, &req.dir, id) {
                 Ok(w) => {
                     // A resumed native session still has its script: it stays native.
-                    let wants = req.native == Some(true) || (req.resume.is_some() && crate::workflows::run_script_path(&req.dir, &session_id).is_file());
-                    let script = if wants && matches!(req.host, HostId::Windows) {
+                    // A resumed native session still has its script, and keeps it: its finished agents are cached against it.
+                    let have = req.resume.is_some() && crate::workflows::run_script_exists(&req.host, &req.dir, &session_id).await;
+                    let script = if have {
+                        Ok(crate::workflows::run_script_path(&req.host, &req.dir, &session_id))
+                    } else if req.native == Some(true) {
                         let opts = colony_core::script::Options { task: req.prompt.clone().unwrap_or_default(), judge_model: crew.swarm_model.clone(), advisor: crew.advisor.is_some() };
-                        // A resume keeps the script it started with: its finished agents are cached against it.
-                        if req.resume.is_some() && crate::workflows::run_script_path(&req.dir, &session_id).is_file() {
-                            Ok(crate::workflows::run_script_path(&req.dir, &session_id))
-                        } else {
-                            crate::workflows::write_run_script(&req.host, &req.dir, &session_id, &w, &opts)
-                        }
+                        crate::workflows::write_run_script(&req.host, &req.dir, &session_id, &w, &opts).await
                     } else {
                         Err(String::new())
                     };

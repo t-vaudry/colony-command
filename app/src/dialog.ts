@@ -305,8 +305,8 @@ export class NewSessionDialog {
     const list = this.workflowList;
     const w = list?.workflows.find((x) => x.id === this.workflow.value);
     const lines: string[] = [];
-    // Native workflows write their script into the project, so only a Windows folder can have one.
-    this.nativeRow.hidden = !w || this.host.value !== "win" || !!this.resume;
+    // A resumed session keeps whatever it started with.
+    this.nativeRow.hidden = !w || !!this.resume;
     const native = !this.nativeRow.hidden && this.native.checked;
     if (w) {
       if (w.description) lines.push(w.description);
@@ -453,7 +453,7 @@ export class NewSessionDialog {
         ...choice,
         isolate: this.resume ? undefined : this.isolate.checked,
         workflow: this.resume ? undefined : this.workflow.value || undefined,
-        native: !this.resume && this.workflow.value && this.host.value === "win" ? this.native.checked : undefined,
+        native: !this.resume && this.workflow.value ? this.native.checked : undefined,
         // Off unless ticked, which also skips Claude in Chrome's first-run question.
         chrome: this.chrome.checked,
         ...this.termSize(),
