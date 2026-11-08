@@ -1515,6 +1515,11 @@ details.menu[open] > summary {
 }
 
 /* Workflow block of the bot panel */
+.fact.workflow-block {
+  /* Not the label-and-value grid of other facts: the graph takes the whole width. */
+  display: block;
+  min-width: 0;
+}
 .workflow-block .wf-status {
   margin: 2px 0 6px;
 }
@@ -1538,7 +1543,7 @@ details.menu[open] > summary {
   /* Fill the panel: grow a small graph up to 1.6x, shrink a wide one to 75% before scrolling. */
   width: 100%;
   height: auto;
-  min-width: calc(var(--nat, 400px) * 0.75);
+  min-width: calc(var(--nat, 400px) * 0.6);
   max-width: calc(var(--nat, 400px) * 1.6);
 }
 .wf-node rect {
