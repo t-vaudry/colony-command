@@ -23,6 +23,7 @@ mod quality;
 mod resume;
 mod roster;
 mod timelapse;
+mod workflow_draft;
 mod workflows;
 mod worktree;
 #[cfg(windows)]

@@ -255,6 +255,14 @@ export class NewSessionDialog {
   }
 
   /** Open the editor for this folder's workflows; a saved one is picked here afterwards. */
+  /** Open the workflow editor on its own, for the folder of the selected bot (none: workflows kept for the user only). Resolves to an error text, or null. */
+  async openWorkflowEditor(host: string, dir: string): Promise<string | null> {
+    const list = await this.daemon.listWorkflows(host, dir);
+    if (!list) return "Workflows need the updated background service. Restart Colony.";
+    this.editor.open(host, dir, list, "", () => {});
+    return null;
+  }
+
   private async editWorkflows(): Promise<void> {
     const dir = this.chosenDir();
     const host = this.host.value;

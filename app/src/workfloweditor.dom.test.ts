@@ -26,6 +26,8 @@ describe("workflow editor dialog", () => {
   let saved: { scope: string; workflow: Workflow }[];
   let deleted: { scope: string; id: string }[];
   let editor: WorkflowEditor;
+  let drafts: { request: string; current?: Workflow }[];
+  let nextDraft: { workflow: Workflow } | { error: string };
   let onSaved: ReturnType<typeof vi.fn>;
   beforeEach(() => {
     const html = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
@@ -34,7 +36,12 @@ describe("workflow editor dialog", () => {
     HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
     saved = [];
     deleted = [];
+    drafts = [];
     const daemon = {
+      draftWorkflow: async (_h: string, _d: string, request: string, current?: Workflow) => {
+        drafts.push({ request, current });
+        return nextDraft;
+      },
       saveWorkflow: async (_h: string, _d: string, scope: string, workflow: Workflow) => (saved.push({ scope, workflow }), null),
       deleteWorkflow: async (_h: string, _d: string, scope: string, id: string) => (deleted.push({ scope, id }), null),
     } as unknown as Daemon;
@@ -225,5 +232,38 @@ describe("workflow editor dialog", () => {
     expect([...document.querySelectorAll("#wf-skills option")].map((o) => (o as HTMLOptionElement).value)).toEqual(["ship"]);
     type(document.querySelector<HTMLInputElement>('[data-i="0"][data-f="skill"]')!, "nope");
     expect(el("wf-phases").textContent).toContain('No skill named "nope" is installed');
+  });
+
+  it("drafts a workflow with Claude for review, and doesn't save it", async () => {
+    nextDraft = { workflow: { id: "", label: "Bug fix", description: "d", phases: [{ skill: "Investigate", instruction: "Look.", when: "", next: [] }, { skill: "Fix", instruction: "Fix it.", when: "", next: [] }] } };
+    editor.open("win", "C:/p", listing, "", onSaved);
+    el<HTMLTextAreaElement>("wf-ask").value = "fix bugs carefully";
+    el("wf-ask-go").click();
+    await vi.waitFor(() => expect(el<HTMLInputElement>("wf-label").value).toBe("Bug fix"));
+    expect(drafts).toEqual([{ request: "fix bugs carefully", current: undefined }]);
+    expect(document.querySelectorAll("#wf-phases .wf-row")).toHaveLength(2);
+    expect(el("wf-ask-status").textContent).toContain("Nothing is saved yet");
+    expect(saved).toEqual([]);
+  });
+
+  it("sends the workflow on screen when it is complete, so Claude changes it", async () => {
+    nextDraft = { error: "Claude took too long to answer. Try again." };
+    editor.open("win", "C:/p", listing, "feature", onSaved);
+    el<HTMLTextAreaElement>("wf-ask").value = "add a review";
+    el("wf-ask-go").click();
+    await vi.waitFor(() => expect(el("wf-ask-status").textContent).toContain("took too long"));
+    expect(drafts[0].current?.label).toBe("Feature");
+    expect(el<HTMLInputElement>("wf-label").value).toBe("Feature");
+    el<HTMLTextAreaElement>("wf-ask").value = "";
+    el("wf-ask-go").click();
+    expect(el("wf-ask-status").textContent).toContain("Say what");
+    expect(drafts).toHaveLength(1);
+  });
+
+  it("without a project, saves only for the user", () => {
+    editor.open("win", "", listing, "", onSaved);
+    expect(el<HTMLSelectElement>("wf-scope").value).toBe("user");
+    expect((document.querySelector('#wf-scope option[value="project"]') as HTMLOptionElement).disabled).toBe(true);
+    expect(el("wf-context").textContent).toContain("No project chosen");
   });
 });

@@ -69,6 +69,11 @@ async function resumeNow(a: Agent, prompt?: string): Promise<void> {
 const hud = new Hud(daemon, { select, showTerminal, newSession, fixNeed, resumeNow });
 const dialog = new NewSessionDialog(daemon, started, () => terminal.size(), (m) => hud.toast(`Couldn't start the session: ${m}`));
 
+document.getElementById("workflows-btn")!.addEventListener("click", () => {
+  const a = world.selected ? daemon.agents.get(world.selected) : undefined;
+  void dialog.openWorkflowEditor(a?.host ?? "win", (a && repoDir(a.project_dir ?? a.cwd)) || "").then((err) => err && hud.toast(err));
+});
+
 document.getElementById("new-session-btn")!.addEventListener("click", () => {
   const a = world.selected ? daemon.agents.get(world.selected) : undefined;
   newSession(a ? { dir: repoDir(a.project_dir ?? a.cwd) ?? undefined, host: a.host } : undefined);

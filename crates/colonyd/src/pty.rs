@@ -194,6 +194,11 @@ impl PtyHost {
         host
     }
 
+    /// Where Claude Code is installed on Windows, if it is.
+    pub fn windows_claude_path(&self) -> Option<PathBuf> {
+        self.windows_claude.clone()
+    }
+
     pub fn hosts(&self, distros: &[String]) -> Vec<HostOption> {
         let mut out = Vec::new();
         if cfg!(windows) {

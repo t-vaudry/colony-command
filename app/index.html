@@ -20,6 +20,7 @@
       <button type="button" class="primary" id="new-session-btn" title="Start a Claude Code session in a terminal Colony owns (N)">
         + New session
       </button>
+      <button type="button" class="chip" id="workflows-btn" title="Create and edit workflows: lists of phases a session runs, each in its own agent">Workflows</button>
       <button type="button" class="chip" id="patience-btn" title="When Colony sends an OS notification for a bot that has waited too long">Notifications</button>
       <div class="conn connecting" id="conn">connecting…</div>
     </header>
@@ -194,7 +195,18 @@
     <dialog id="wf-editor">
       <form id="wf-form">
         <h2>Workflows</h2>
-        <p class="muted small">A workflow is a list of phases, each a skill or a custom instruction. The session picks the next phase as the work needs it; "usually followed by" is a hint to it, not a rule.</p>
+        <p class="muted small">A workflow is a list of phases, each a skill or a custom instruction. Colony runs each phase in its own agent and follows the order, skips, loops, branches, approvals and parallel groups you set here.</p>
+        <p id="wf-context" class="muted small"></p>
+        <div class="wf-ai">
+          <label>
+            <span class="k">Describe it and Claude drafts it</span>
+            <textarea id="wf-ask" rows="3" placeholder="Fix a bug: investigate, fix it with a test, review in a loop until clean, then open a PR. Ask me before touching database migrations."></textarea>
+          </label>
+          <div class="actions">
+            <button type="button" id="wf-ask-go">Draft with Claude</button>
+            <span id="wf-ask-status" class="muted small" role="status"></span>
+          </div>
+        </div>
         <label>
           <span class="k">Edit</span>
           <select id="wf-pick"></select>
