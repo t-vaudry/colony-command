@@ -261,7 +261,7 @@ mod tests {
         bad.id = "../evil".into();
         assert!(save(&HostId::Windows, &dir, "project", &bad).is_err());
         assert!(save(&HostId::Windows, &dir, "elsewhere", &w).is_err());
-        assert!(save(&HostId::Wsl("Ubuntu".into()), &dir, "project", &w).is_err());
+        assert!(save(&HostId::Wsl("Ubuntu".into()), "", "project", &w).is_err(), "no project folder to save into");
 
         assert!(delete(&HostId::Windows, &dir, "project", "../ship").is_err());
         delete(&HostId::Windows, &dir, "project", "ship").unwrap();
