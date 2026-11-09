@@ -212,7 +212,7 @@ describe("workflow editor dialog", () => {
 
   it("explains a draft that can't be saved, without calling the daemon", () => {
     editor.open("wsl:Ubuntu", "/home/p", listing, "", onSaved);
-    expect(el<HTMLSelectElement>("wf-scope").value).toBe("user");
+    expect(el<HTMLSelectElement>("wf-scope").value).toBe("project");
     el("wf-form").dispatchEvent(new Event("submit", { cancelable: true }));
     expect(el("wf-error").textContent).toMatch(/name/);
     expect(saved).toEqual([]);
@@ -265,5 +265,12 @@ describe("workflow editor dialog", () => {
     expect(el<HTMLSelectElement>("wf-scope").value).toBe("user");
     expect((document.querySelector('#wf-scope option[value="project"]') as HTMLOptionElement).disabled).toBe(true);
     expect(el("wf-context").textContent).toContain("No project chosen");
+  });
+
+  it("lets a WSL project keep its own workflows", () => {
+    editor.open("wsl:Ubuntu", "/home/t/api", listing, "", onSaved);
+    expect(el<HTMLSelectElement>("wf-scope").value).toBe("project");
+    expect((document.querySelector('#wf-scope option[value="project"]') as HTMLOptionElement).disabled).toBe(false);
+    expect(el("wf-context").textContent).toContain("/home/t/api");
   });
 });

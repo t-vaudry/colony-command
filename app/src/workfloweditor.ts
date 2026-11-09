@@ -421,7 +421,7 @@ export class WorkflowEditor {
     this.dir = dir;
     this.onSaved = onSaved;
     this.setListing(listing);
-    const hasProject = host === "win" && !!dir.trim();
+    const hasProject = !!dir.trim();
     this.context.textContent = hasProject ? `Project: ${dir}` : "No project chosen: workflows saved here are for you, in every project. Select a bot first to work on a project's workflows.";
     (this.scope.querySelector('option[value="project"]') as HTMLOptionElement).disabled = !hasProject;
     this.ask.value = "";
