@@ -321,11 +321,12 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
     const state = (info.active === n.skill ? " active" : n_visits ? " done" : "") + (custom ? " custom" : "") + (optional ? " optional" : "");
     const count = n_visits > 1 ? `<text class="wf-count" x="${n.x + NODE_W - 5}" y="${n.y + 11}" text-anchor="end">×${n_visits}</text>` : "";
     const lock = gated ? `<text class="wf-lock" x="${n.x + NODE_W - 5}" y="${n.y + NODE_H - 5}" text-anchor="end">🔒</text>` : "";
+    const inline = w.phases[i].inline ? `<text class="wf-lock" x="${n.x + 5}" y="${n.y + NODE_H - 5}">⌂</text>` : "";
     const kind = custom ? `<text class="wf-kind" x="${n.x + 6}" y="${n.y + 11}">✎</text>` : "";
     const busy = running.get(n.skill);
     const dots = busy ? `<text class="wf-subs" x="${n.x + NODE_W / 2}" y="${n.y + NODE_H - 5}" text-anchor="middle">${busy} subagent${busy === 1 ? "" : "s"}</text>` : "";
     const label = n.skill.length > 14 ? `${n.skill.slice(0, 13)}…` : n.skill;
-    return `<g class="wf-node${state}"><title>${esc(n.skill)}${custom ? " (custom phase)" : ""}${optional ? ` (optional: skipped if ${w.phases[i].skip_when})` : ""}${gated ? ` (asks you first${w.phases[i].approve_when ? ` when ${w.phases[i].approve_when}` : ""})` : ""}${n_visits ? ` · visited ${n_visits}×` : ""}</title><rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="6"/><text class="wf-name" x="${n.x + NODE_W / 2}" y="${n.y + (busy ? 13 : 19)}" text-anchor="middle">${esc(label)}</text>${kind}${count}${lock}${dots}</g>`;
+    return `<g class="wf-node${state}"><title>${esc(n.skill)}${custom ? " (custom phase)" : ""}${optional ? ` (optional: skipped if ${w.phases[i].skip_when})` : ""}${w.phases[i].inline ? " (runs in the main session)" : ""}${gated ? ` (asks you first${w.phases[i].approve_when ? ` when ${w.phases[i].approve_when}` : ""})` : ""}${n_visits ? ` · visited ${n_visits}×` : ""}</title><rect x="${n.x}" y="${n.y}" width="${NODE_W}" height="${NODE_H}" rx="6"/><text class="wf-name" x="${n.x + NODE_W / 2}" y="${n.y + (busy ? 13 : 19)}" text-anchor="middle">${esc(label)}</text>${kind}${count}${lock}${inline}${dots}</g>`;
   });
 
   return `<svg class="wf-graph" style="--nat:${width}px" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Workflow phases">

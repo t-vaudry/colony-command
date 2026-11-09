@@ -297,6 +297,8 @@ export interface WorkflowPhase {
   approve_when?: string;
   /** With `approve`: the phase to go to if the user says no; empty ends the run. */
   on_deny?: string;
+  /** Run in the main session, not a subagent (for a skill that starts agents of its own). */
+  inline?: boolean;
   next: string[];
   /** Ways out by condition, instead of `next`. */
   branches?: WorkflowBranch[];

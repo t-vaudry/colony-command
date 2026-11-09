@@ -34,6 +34,7 @@ Each phase (only "skill" is required):
 - "when": under 200 characters on when the phase is the right one.
 - "skip_when": makes the phase optional: skipped only when this clearly holds (a fact about the repository or the earlier work, such as "the change is a single line").
 - "approve": true to make the user approve before the phase starts. "approve_when": only ask when this holds (empty means always). "on_deny": the phase to go to if the user says no (another phase's name; empty ends the run).
+- "inline": true runs the phase in the main session instead of a subagent. Use it only for a skill known to start agents of its own, which a phase's subagent cannot do. Never put it on a phase in a parallel group.
 - "next": names of phases that may follow. One name goes there; several let a judge pick; none means the next phase in the list.
 - "branches": conditional exits instead of "next": [{"to": "Phase", "condition": "it is a regression"}, {"to": "Other"}]. The first condition that holds wins; the entry with no condition is the otherwise. Never use both "next" and "branches" on one phase.
 

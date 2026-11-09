@@ -31,6 +31,8 @@ export interface DraftPhase {
   approveWhen: string;
   /** Where a "no" goes; "" ends the run. */
   onDeny: string;
+  /** Runs in the main session instead of a subagent. */
+  inline: boolean;
   next: string[];
   /** Ways out by condition; with these (or an `otherwise`) `next` is not used. */
   branches: DraftBranch[];
@@ -70,7 +72,7 @@ const DEFAULT_ROUNDS = 3;
 const MAX_ROUNDS = 20;
 const MAX_MEMBERS = 6;
 
-export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", skipWhen: "", approve: false, approveWhen: "", onDeny: "", next: [], branches: [], otherwise: "" });
+export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", skipWhen: "", approve: false, approveWhen: "", onDeny: "", inline: false, next: [], branches: [], otherwise: "" });
 
 /** Whether a phase leaves by conditions rather than a plain list of followers. */
 export const branching = (p: DraftPhase): boolean => p.branches.length > 0 || p.otherwise !== "";
@@ -97,6 +99,7 @@ export function draftOf(w: Workflow, fromProject: boolean): Draft {
       approve: !!p.approve,
       approveWhen: p.approve_when ?? "",
       onDeny: p.on_deny ?? "",
+      inline: !!p.inline,
       next: [...p.next],
       branches: (p.branches ?? []).filter((b) => b.condition).map((b) => ({ condition: b.condition, to: b.to })),
       otherwise: (p.branches ?? []).find((b) => !b.condition)?.to ?? "",
@@ -225,7 +228,7 @@ export function toWorkflow(d: Draft): Workflow {
       const notLast = !!grouped && pi < grouped[1];
       // Conditions in the order written, then the otherwise.
       const branches = notLast ? [] : [...p.branches.filter((b) => b.condition.trim() && have.has(b.to)).map((b) => ({ to: b.to, condition: b.condition.trim() })), ...(p.otherwise && have.has(p.otherwise) ? [{ to: p.otherwise, condition: "" }] : [])];
-      return { skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), skip_when: p.skipWhen.trim(), ...(p.approve ? { approve: true, approve_when: p.approveWhen.trim(), on_deny: !grouped && p.onDeny.trim() !== p.skill.trim() && have.has(p.onDeny.trim()) ? p.onDeny.trim() : "" } : {}), next: branches.length || notLast ? [] : p.next.filter((n) => have.has(n)), branches };
+      return { skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), skip_when: p.skipWhen.trim(), ...(p.approve ? { approve: true, approve_when: p.approveWhen.trim(), on_deny: !grouped && p.onDeny.trim() !== p.skill.trim() && have.has(p.onDeny.trim()) ? p.onDeny.trim() : "" } : {}), ...(p.inline && !grouped ? { inline: true } : {}), next: branches.length || notLast ? [] : p.next.filter((n) => have.has(n)), branches };
     }),
     loops: d.loops.filter((l) => have.has(l.from.trim()) && have.has(l.to.trim())).map((l) => ({ from: l.from.trim(), to: l.to.trim(), until: l.until.trim(), max: l.max })),
     ...(groups.length ? { parallel: groups } : {}),
@@ -502,6 +505,7 @@ export class WorkflowEditor {
           <input type="text" data-i="${i}" data-f="skipWhen" value="${esc(p.skipWhen)}" placeholder="Optional: skip when… (leave empty to always run)" aria-label="When phase ${n} may be skipped" />
           <div class="wf-next small" data-slot="next" data-i="${i}"></div>
           <div class="wf-approve small" data-slot="approve" data-i="${i}"></div>
+          <div class="wf-approve small" data-slot="inline" data-i="${i}"></div>
         </div>`;
       })
       .join("");
@@ -532,6 +536,10 @@ export class WorkflowEditor {
             ? ` <input type="text" data-i="${i}" data-f="approveWhen" value="${esc(p.approveWhen)}" placeholder="only when… (empty: always)" aria-label="When to ask before phase ${i + 1}" />${group ? ` <span class="muted">If I say no, it is left out.</span>` : ` <span class="muted">If I say no:</span> <select data-i="${i}" data-f="onDeny" aria-label="Where phase ${i + 1} goes if denied">${deny}</select>`}`
             : ""
         }`;
+      }
+      const inline = this.phases.querySelector<HTMLElement>(`[data-slot="inline"][data-i="${i}"]`);
+      if (inline) {
+        inline.innerHTML = `<label class="wf-chip"><input type="checkbox" data-i="${i}" data-f="inline"${p.inline && !group ? " checked" : ""}${group ? " disabled" : ""} />Run in this session, not an agent</label> <span class="muted">${group ? "Not for a phase in a parallel group." : "For a skill that starts agents of its own: the run pauses, this session does the phase, then the workflow goes on."}</span>`;
       }
       if (warn) warn.innerHTML = !p.custom && name && !installed.has(name) && !name.includes(":") ? `<p class="small warn">No skill named "${esc(name)}" is installed for this project or you.</p>` : "";
       if (next && notLast) {
@@ -613,6 +621,7 @@ export class WorkflowEditor {
     else if (f === "skipWhen") p.skipWhen = el.value;
     else if (f === "approveWhen") p.approveWhen = el.value;
     else if (f === "onDeny") p.onDeny = el.value;
+    else if (f === "inline" && committed) p.inline = (el as HTMLInputElement).checked;
     else if (f === "approve" && committed) {
       p.approve = (el as HTMLInputElement).checked;
       this.drawExtras();

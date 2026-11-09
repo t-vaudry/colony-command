@@ -187,3 +187,35 @@ fn a_member_is_told_who_it_runs_beside() {
     let test = r["calls"].as_array().unwrap().iter().find(|c| c["label"] == "Test").unwrap();
     assert!(test["prompt"].as_str().unwrap().contains("at the same time as \"Docs\""));
 }
+
+const INLINE: &str = r#"{"phases":[{"skill":"Plan"},{"skill":"deep-review","inline":true},{"skill":"Publish"}],"loops":[{"from":"Plan","to":"deep-review","until":"clean","max":2}]}"#;
+
+#[test]
+fn an_inline_phase_stops_the_run_and_hands_it_to_the_main_session() {
+    let Some(r) = run(INLINE, &Options::default(), json!({"skip": {}, "loop": [true]})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan"]);
+    let b = &r["result"]["blocked"];
+    assert_eq!(b["kind"], json!("inline"));
+    assert_eq!(b["phase"], json!("deep-review"));
+    assert_eq!(b["key"], json!("deep-review"));
+    assert_eq!(b["note"], json!(".colony/notes/02-deep-review.md"));
+    let q = b["question"].as_str().unwrap();
+    assert!(q.contains("Skill tool") && q.contains("deep-review") && q.contains("echo colony-phase:deep-review"), "{q}");
+    // No agent was spawned for it.
+    assert!(r["calls"].as_array().unwrap().iter().all(|c| c["label"] != json!("deep-review")));
+}
+
+#[test]
+fn an_inline_phase_marked_done_counts_as_run_and_the_rest_follow() {
+    let Some(r) = run(INLINE, &Options::default(), json!({"skip": {}, "loop": [true], "args": {"done": {"deep-review": "reviewed"}}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan", "deep-review", "Publish"]);
+    assert_eq!(r["result"]["blocked"], Value::Null);
+}
+
+#[test]
+fn an_inline_phase_in_a_second_round_is_asked_for_again() {
+    // The first round's answer does not stand for the second.
+    let Some(r) = run(INLINE, &Options::default(), json!({"skip": {}, "loop": [false], "args": {"done": {"deep-review": "reviewed"}}})) else { return };
+    assert_eq!(r["result"]["blocked"]["key"], json!("deep-review (round 2)"));
+    assert_eq!(names(&r, "ran"), ["Plan", "deep-review", "Plan"]);
+}
