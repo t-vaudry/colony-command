@@ -45,6 +45,12 @@ export interface DraftLoop {
   max: number;
 }
 
+/** Phases `from` to `to`, in the order listed, that run at the same time. */
+export interface DraftGroup {
+  from: string;
+  to: string;
+}
+
 export interface Draft {
   /** Set for an existing workflow; a new one gets its id from its name when saved. */
   id: string;
@@ -56,11 +62,13 @@ export interface Draft {
   origin: Scope | null;
   phases: DraftPhase[];
   loops: DraftLoop[];
+  parallel: DraftGroup[];
 }
 
 const SKILL_CHARS = /^[A-Za-z0-9._:-]{1,64}$/;
 const DEFAULT_ROUNDS = 3;
 const MAX_ROUNDS = 20;
+const MAX_MEMBERS = 6;
 
 export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instruction: "", when: "", skipWhen: "", approve: false, approveWhen: "", onDeny: "", next: [], branches: [], otherwise: "" });
 
@@ -68,7 +76,7 @@ export const newPhase = (): DraftPhase => ({ skill: "", custom: false, instructi
 export const branching = (p: DraftPhase): boolean => p.branches.length > 0 || p.otherwise !== "";
 
 export function blank(scope: Scope): Draft {
-  return { id: "", label: "", description: "", scope, origin: null, phases: [newPhase()], loops: [] };
+  return { id: "", label: "", description: "", scope, origin: null, phases: [newPhase()], loops: [], parallel: [] };
 }
 
 /** An existing workflow as a draft; `fromProject` says where it was found. */
@@ -94,6 +102,7 @@ export function draftOf(w: Workflow, fromProject: boolean): Draft {
       otherwise: (p.branches ?? []).find((b) => !b.condition)?.to ?? "",
     })),
     loops: (w.loops ?? []).map((l) => ({ ...l })),
+    parallel: (w.parallel ?? []).filter((g) => g.phases.length > 1).map((g) => ({ from: g.phases[0], to: g.phases[g.phases.length - 1] })),
   };
 }
 
@@ -133,6 +142,46 @@ export function loopProblem(d: Draft): string | null {
   return null;
 }
 
+/** The index range of each group of a draft, or null where its ends aren't in the list in order. */
+function groupSpans(d: Draft): ([number, number] | null)[] {
+  const all = names(d);
+  return d.parallel.map((g) => {
+    const a = all.indexOf(g.from.trim());
+    const b = all.indexOf(g.to.trim());
+    return a < 0 || b <= a ? null : [a, b];
+  });
+}
+
+/** What is wrong with the parallel groups of a draft, in words for the person; null when nothing. */
+export function parallelProblem(d: Draft): string | null {
+  const all = names(d);
+  const spans: [number, number][] = [];
+  for (const [k, g] of d.parallel.entries()) {
+    const n = k + 1;
+    const a = all.indexOf(g.from.trim());
+    const b = all.indexOf(g.to.trim());
+    if (!g.from || !g.to) return `Parallel group ${n}: choose the first and last phase that run together.`;
+    if (a < 0 || b < 0) return `Parallel group ${n} names a phase that isn't in the list.`;
+    if (b <= a) return `Parallel group ${n}: "${g.to}" has to come after "${g.from}" in the list, with at least two phases in the group.`;
+    if (b - a + 1 > MAX_MEMBERS) return `Parallel group ${n} has more than ${MAX_MEMBERS} phases.`;
+    if (spans.some(([c, e]) => !(b < c || e < a))) return `Parallel group ${n} overlaps another group.`;
+    spans.push([a, b]);
+  }
+  for (const p of d.phases) {
+    for (const t of [...p.next, ...p.branches.map((x) => x.to), p.otherwise]) {
+      const j = all.indexOf(t);
+      const i = all.indexOf(p.skill.trim());
+      if (j >= 0 && spans.some(([a, b]) => a < j && j <= b && !(a <= i && i <= b))) return `Phase "${p.skill.trim()}" goes to "${t}", which runs in parallel with an earlier phase. Go to the first phase of the group instead.`;
+    }
+  }
+  for (const [k, l] of d.loops.entries()) {
+    const from = all.indexOf(l.from.trim());
+    const to = all.indexOf(l.to.trim());
+    if (spans.some(([a, b]) => (a < from && from <= b) || (a <= to && to < b))) return `Loop ${k + 1} starts or ends inside a parallel group. A loop has to hold a whole group.`;
+  }
+  return null;
+}
+
 /** What stops this draft being saved, in words for the person; null when nothing does. */
 export function problem(d: Draft): string | null {
   if (!d.label.trim()) return "Give the workflow a name.";
@@ -158,22 +207,28 @@ export function problem(d: Draft): string | null {
     }
     if (p.otherwise && !have.has(p.otherwise)) return `Phase "${name}": "otherwise" goes to "${p.otherwise}", which isn't a phase.`;
   }
-  return loopProblem(d);
+  return loopProblem(d) ?? parallelProblem(d);
 }
 
 /** The workflow a valid draft stands for; `next` entries for phases that are gone are dropped. */
 export function toWorkflow(d: Draft): Workflow {
   const have = new Set(names(d));
+  const spans = groupSpans(d);
+  const groups = spans.flatMap((s) => (s ? [{ phases: names(d).slice(s[0], s[1] + 1) }] : []));
   return {
     id: d.id || slug(d.label),
     label: d.label.trim(),
     description: d.description.trim(),
-    phases: d.phases.map((p) => {
+    phases: d.phases.map((p, pi) => {
+      const grouped = spans.find((s) => s && s[0] <= pi && pi <= s[1]);
+      // In a parallel group only the last phase says where the run goes next, and no member is sent elsewhere on a denial.
+      const notLast = !!grouped && pi < grouped[1];
       // Conditions in the order written, then the otherwise.
-      const branches = [...p.branches.filter((b) => b.condition.trim() && have.has(b.to)).map((b) => ({ to: b.to, condition: b.condition.trim() })), ...(p.otherwise && have.has(p.otherwise) ? [{ to: p.otherwise, condition: "" }] : [])];
-      return { skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), skip_when: p.skipWhen.trim(), ...(p.approve ? { approve: true, approve_when: p.approveWhen.trim(), on_deny: p.onDeny.trim() !== p.skill.trim() && have.has(p.onDeny.trim()) ? p.onDeny.trim() : "" } : {}), next: branches.length ? [] : p.next.filter((n) => have.has(n)), branches };
+      const branches = notLast ? [] : [...p.branches.filter((b) => b.condition.trim() && have.has(b.to)).map((b) => ({ to: b.to, condition: b.condition.trim() })), ...(p.otherwise && have.has(p.otherwise) ? [{ to: p.otherwise, condition: "" }] : [])];
+      return { skill: p.skill.trim(), instruction: p.custom ? p.instruction.trim() : "", when: p.when.trim(), skip_when: p.skipWhen.trim(), ...(p.approve ? { approve: true, approve_when: p.approveWhen.trim(), on_deny: !grouped && p.onDeny.trim() !== p.skill.trim() && have.has(p.onDeny.trim()) ? p.onDeny.trim() : "" } : {}), next: branches.length || notLast ? [] : p.next.filter((n) => have.has(n)), branches };
     }),
     loops: d.loops.filter((l) => have.has(l.from.trim()) && have.has(l.to.trim())).map((l) => ({ from: l.from.trim(), to: l.to.trim(), until: l.until.trim(), max: l.max })),
+    ...(groups.length ? { parallel: groups } : {}),
   };
 }
 
@@ -190,6 +245,10 @@ export function renameSkill(d: Draft, i: number, to: string, was: string = d.pha
     for (const b of p.branches) if (b.to === from) b.to = now;
     if (p.otherwise === from) p.otherwise = now;
     if (p.onDeny === from) p.onDeny = now;
+  }
+  for (const g of d.parallel) {
+    if (g.from === from) g.from = now;
+    if (g.to === from) g.to = now;
   }
   for (const l of d.loops) {
     if (l.from === from) l.from = now;
@@ -211,6 +270,7 @@ export function removePhase(d: Draft, i: number): void {
     if (p.onDeny === name) p.onDeny = "";
   }
   d.loops = d.loops.filter((l) => l.from !== name && l.to !== name);
+  d.parallel = d.parallel.filter((g) => g.from !== name && g.to !== name);
 }
 
 /** Why saving this draft would do something unintended given what already exists; null when nothing. */
@@ -247,6 +307,7 @@ export class WorkflowEditor {
   private scope = document.getElementById("wf-scope") as HTMLSelectElement;
   private phases = document.getElementById("wf-phases")!;
   private loops = document.getElementById("wf-loops")!;
+  private parallel = document.getElementById("wf-parallel")!;
   private skillList = document.getElementById("wf-skills") as HTMLDataListElement;
   private error = document.getElementById("wf-error")!;
   private save = document.getElementById("wf-save") as HTMLButtonElement;
@@ -276,6 +337,21 @@ export class WorkflowEditor {
     document.getElementById("wf-add-loop")!.addEventListener("click", () => {
       this.draft.loops.push({ from: "", to: "", until: "", max: DEFAULT_ROUNDS });
       this.drawLoops();
+    });
+    document.getElementById("wf-add-parallel")!.addEventListener("click", () => {
+      this.draft.parallel.push({ from: "", to: "" });
+      this.drawParallel();
+    });
+    this.parallel.addEventListener("change", (e) => {
+      const el = e.target as Field;
+      const g = this.draft.parallel[Number(el.dataset.g)];
+      if (g && (el.dataset.f === "from" || el.dataset.f === "to")) g[el.dataset.f] = el.value;
+    });
+    this.parallel.addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>("button[data-act='remove-parallel']");
+      if (!b) return;
+      this.draft.parallel.splice(Number(b.dataset.g), 1);
+      this.drawParallel();
     });
     this.phases.addEventListener("focusin", (e) => {
       const t = e.target as HTMLInputElement;
@@ -402,8 +478,11 @@ export class WorkflowEditor {
     this.skillList.innerHTML = unusedSkills(d, this.listing.skills)
       .map((s) => `<option value="${esc(s.name)}">${esc(`${s.source}${s.description ? ` · ${s.description}` : ""}`)}</option>`)
       .join("");
+    const spans = groupSpans(d);
     d.phases.forEach((p, i) => {
       const name = p.skill.trim();
+      const group = spans.find((s) => s && s[0] <= i && i <= s[1]);
+      const notLast = !!group && i < group[1];
       const warn = this.phases.querySelector<HTMLElement>(`[data-slot="warn"][data-i="${i}"]`);
       const next = this.phases.querySelector<HTMLElement>(`[data-slot="next"][data-i="${i}"]`);
       const approve = this.phases.querySelector<HTMLElement>(`[data-slot="approve"][data-i="${i}"]`);
@@ -412,12 +491,14 @@ export class WorkflowEditor {
         const deny = `<option value="">End the run</option>${others.map((n) => `<option value="${esc(n)}"${n === p.onDeny ? " selected" : ""}>Go to ${esc(n)}</option>`).join("")}`;
         approve.innerHTML = `<label class="wf-chip"><input type="checkbox" data-i="${i}" data-f="approve"${p.approve ? " checked" : ""} />Ask me before this phase starts</label>${
           p.approve
-            ? ` <input type="text" data-i="${i}" data-f="approveWhen" value="${esc(p.approveWhen)}" placeholder="only when… (empty: always)" aria-label="When to ask before phase ${i + 1}" /> <span class="muted">If I say no:</span> <select data-i="${i}" data-f="onDeny" aria-label="Where phase ${i + 1} goes if denied">${deny}</select>`
+            ? ` <input type="text" data-i="${i}" data-f="approveWhen" value="${esc(p.approveWhen)}" placeholder="only when… (empty: always)" aria-label="When to ask before phase ${i + 1}" />${group ? ` <span class="muted">If I say no, it is left out.</span>` : ` <span class="muted">If I say no:</span> <select data-i="${i}" data-f="onDeny" aria-label="Where phase ${i + 1} goes if denied">${deny}</select>`}`
             : ""
         }`;
       }
       if (warn) warn.innerHTML = !p.custom && name && !installed.has(name) && !name.includes(":") ? `<p class="small warn">No skill named "${esc(name)}" is installed for this project or you.</p>` : "";
-      if (next && branching(p)) {
+      if (next && notLast) {
+        next.innerHTML = `<span class="muted">Runs together with the rest of its parallel group; the group's last phase says what comes next.</span>`;
+      } else if (next && branching(p)) {
         const options = (chosen: string, none: string) => `<option value="">${none}</option>${all.map((n) => `<option value="${esc(n)}"${n === chosen ? " selected" : ""}>${esc(n)}</option>`).join("")}`;
         const rows = p.branches
           .map(
@@ -432,6 +513,26 @@ export class WorkflowEditor {
       }
     });
     this.drawLoops();
+    this.drawParallel();
+  }
+
+  /** The parallel group rows: which run of phases goes side by side. */
+  private drawParallel(): void {
+    const all = [...new Set(names(this.draft))];
+    const options = (chosen: string) => `<option value="">Choose…</option>${all.map((n) => `<option value="${esc(n)}"${n === chosen ? " selected" : ""}>${esc(n)}</option>`).join("")}`;
+    this.parallel.innerHTML = this.draft.parallel
+      .map(
+        (g, k) => `<div class="wf-loop-row">
+          <span class="wf-num">∥</span>
+          <span>Run</span>
+          <select data-g="${k}" data-f="from" aria-label="First phase of parallel group ${k + 1}">${options(g.from)}</select>
+          <span>to</span>
+          <select data-g="${k}" data-f="to" aria-label="Last phase of parallel group ${k + 1}">${options(g.to)}</select>
+          <span>at the same time</span>
+          <button type="button" data-act="remove-parallel" data-g="${k}" title="Remove group" aria-label="Remove parallel group ${k + 1}">✕</button>
+        </div>`,
+      )
+      .join("");
   }
 
   /** The loop rows: which run of phases repeats, until what, and how many rounds at most. */

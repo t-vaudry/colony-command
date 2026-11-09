@@ -10,7 +10,7 @@ const loopAnswers = [...(sc.loop || [])];
 const branchAnswers = [...(sc.branch || [])];
 const agent = async (prompt, opts = {}) => {
   const label = opts.label || "";
-  calls.push({ label, model: opts.model || null, phase: opts.phase || null, schema: !!opts.schema });
+  calls.push({ prompt, label, model: opts.model || null, phase: opts.phase || null, schema: !!opts.schema });
   if (label.startsWith("skip?")) return { skip: !!(sc.skip || {})[label.slice(6)] };
   if (label.startsWith("approval?")) return { needed: (sc.need || {})[label.slice(10)] !== false };
   if (label.startsWith("loop check")) return { met: loopAnswers.length ? loopAnswers.shift() : true };
@@ -21,6 +21,7 @@ const agent = async (prompt, opts = {}) => {
   return "done";
 };
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const body = new AsyncFunction("agent", "phase", "log", "args", src);
-const result = await body(agent, (t) => phases.push(t), (m) => logs.push(m), sc.args);
+const parallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+const body = new AsyncFunction("agent", "parallel", "phase", "log", "args", src);
+const result = await body(agent, parallel, (t) => phases.push(t), (m) => logs.push(m), sc.args);
 console.log(JSON.stringify({ result, calls, phases, logs }));

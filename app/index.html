@@ -226,6 +226,12 @@
           <div id="wf-loops"></div>
           <button type="button" id="wf-add-loop">Add loop</button>
         </div>
+        <div>
+          <span class="k">Parallel</span>
+          <p class="muted small">Phases in a parallel group run at the same time and join before the next phase. They share the working folder, so use it for work that doesn't touch the same files, such as tests, docs and review. Only the last phase of a group says where the run goes next.</p>
+          <div id="wf-parallel"></div>
+          <button type="button" id="wf-add-parallel">Add parallel group</button>
+        </div>
         <p id="wf-error" class="error" role="alert"></p>
         <div class="actions">
           <button type="submit" class="primary" id="wf-save">Save</button>

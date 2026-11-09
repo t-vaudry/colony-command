@@ -318,6 +318,8 @@ export interface Workflow {
   description: string;
   phases: WorkflowPhase[];
   loops?: WorkflowLoop[];
+  /** Runs of phases (consecutive, in list order) that go side by side. */
+  parallel?: { phases: string[] }[];
 }
 
 export interface PhaseVisit {

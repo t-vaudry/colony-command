@@ -258,3 +258,33 @@ describe("phases that ask first", () => {
     expect(plain).not.toContain("denied");
   });
 });
+
+describe("phases that run in parallel", () => {
+  const par: Workflow = {
+    id: "p",
+    label: "P",
+    description: "",
+    phases: [
+      { skill: "plan", when: "", next: [] },
+      { skill: "test", when: "", next: [] },
+      { skill: "docs", when: "", next: [] },
+      { skill: "ship", when: "", next: [] },
+    ],
+    parallel: [{ phases: ["test", "docs"] }],
+  };
+  it("leads into every member and out of every member to the same place", () => {
+    expect(followers(par, 0)).toEqual(["test", "docs"]);
+    expect(followers(par, 1)).toEqual(["ship"]);
+    expect(followers(par, 2)).toEqual(["ship"]);
+  });
+  it("puts the members in one column, one beside another, in a frame", () => {
+    const n = Object.fromEntries(layout(par).map((x) => [x.skill, x]));
+    expect(n.test.col).toBe(n.docs.col);
+    expect(n.test.row).not.toBe(n.docs.row);
+    expect(n.ship.col).toBe(n.test.col + 1);
+    const html = workflowBlock(agent({ workflow: { workflow: par, visits: [], active: null } }), []);
+    expect(html).toContain("wf-par");
+    const plain = workflowBlock(agent({ workflow: { workflow: { ...par, parallel: [] }, visits: [], active: null } }), []);
+    expect(plain).not.toContain("wf-par");
+  });
+});
