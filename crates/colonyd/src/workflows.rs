@@ -15,7 +15,11 @@ use serde::Serialize;
 
 /// The project folder as this (Windows) side can reach it, for either kind of session.
 fn project(host: &HostId, dir: &str) -> Option<PathBuf> {
-    (!dir.trim().is_empty()).then(|| PathBuf::from(crate::worktree::local_folder(host, dir.trim())))
+    let dir = dir.trim();
+    (!dir.is_empty()).then(|| match host {
+        HostId::Windows => PathBuf::from(dir),
+        HostId::Wsl(_) => PathBuf::from(crate::worktree::local_folder(host, dir)),
+    })
 }
 
 /// The user's home inside a WSL distro, as far as the project's path says (`/home/<user>` or `/root`).
@@ -266,6 +270,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // The share's path is spelled with backslashes, which only Windows reads as separators.
+    #[cfg(windows)]
     #[test]
     fn a_wsl_project_is_read_through_the_distro_share() {
         let wsl = HostId::Wsl("Ubuntu".into());
@@ -279,6 +285,7 @@ mod tests {
         assert_eq!(workflow_dirs(&wsl, "").len(), 1);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_wsl_session_also_reads_the_skills_in_the_distros_home() {
         let wsl = HostId::Wsl("Ubuntu".into());
