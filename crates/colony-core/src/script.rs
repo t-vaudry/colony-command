@@ -53,6 +53,7 @@ pub fn compile(w: &Workflow, o: &Options) -> Result<String, String> {
                 "when": p.when,
                 "skip": p.skip_when,
                 "group": groups.iter().position(|g| index(&p.skill).is_some_and(|i| g.contains(&i))),
+                "inline": p.inline,
                 "approve": p.approve,
                 "approveWhen": p.approve_when,
                 "onDeny": if p.approve { index(&p.on_deny) } else { None },
@@ -94,6 +95,7 @@ pub fn compile(w: &Workflow, o: &Options) -> Result<String, String> {
 
 const INTERPRETER: &str = r####"
 const ANSWERS = (args && typeof args === 'object' && args.answers) || {}
+const DONE = (args && typeof args === 'object' && args.done) || {}
 const APPROVALS = (args && typeof args === 'object' && args.approvals) || {}
 const GOAL = TASK || (typeof args === 'string' ? args : args && args.task) || ''
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
@@ -266,7 +268,30 @@ Look at the repository and the notes in ${NOTES}/ as needed. Answer needed=true 
       approved.add(i)
     }
   }
-  if (!skipped) {
+  if (!skipped && p.inline) {
+    // A phase for the main session (its skill starts agents of its own, which a phase agent can't): stop and hand it over.
+    step++
+    const round = roundOf(i)
+    const key = round > 1 ? `${p.name} (round ${round})` : p.name
+    declined = null
+    const finished = DONE[key]
+    if (finished === undefined || finished === null || String(finished).trim() === '') {
+      const file = `${NOTES}/${String(step).padStart(2, '0')}-${slug(p.name)}.md`
+      blocked = {
+        phase: p.name, kind: 'inline', key, note: file,
+        question: [
+          `Run the phase "${p.name}" yourself, in this session, not in an agent. The overall task: ${GOAL}`,
+          `Start with this command, as a Bash call by itself: echo colony-phase:${p.name}`,
+          p.custom ? `Do this: ${p.text}` : `Use the Skill tool to run the skill "${p.name}" and follow it.`,
+          p.when ? `(This phase is for when: ${p.when}.)` : '',
+          round > 1 ? `This is round ${round} of a repeating run: read the latest notes for what the last round found, and deal with it.` : '',
+          `First read the latest notes in ${NOTES}/. When the phase is done, write a note of at most 15 lines to ${file} saying what you did, what you decided and what the next phase must know.`,
+        ].filter(Boolean).join(' '),
+      }
+      break
+    }
+    ran.push(p.name)
+  } else if (!skipped) {
     step++
     const round = roundOf(i)
     const note = brief(p, step, round)

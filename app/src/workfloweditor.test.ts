@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { blank, branching, clash, draftOf, loopProblem, movePhase, problem, removePhase, renameSkill, slug, toWorkflow, unusedSkills, type Draft, type DraftPhase } from "./workfloweditor";
 import type { Workflow, WorkflowListing } from "./types";
 
-const ph = (skill: string, next: string[] = [], extra: Partial<DraftPhase> = {}): DraftPhase => ({ skill, custom: false, instruction: "", when: "", skipWhen: "", approve: false, approveWhen: "", onDeny: "", next, branches: [], otherwise: "", ...extra });
+const ph = (skill: string, next: string[] = [], extra: Partial<DraftPhase> = {}): DraftPhase => ({ skill, custom: false, instruction: "", when: "", skipWhen: "", approve: false, approveWhen: "", onDeny: "", inline: false, next, branches: [], otherwise: "", ...extra });
 
 const draft = (extra: Partial<Draft> = {}): Draft => ({
   id: "",
@@ -282,6 +282,21 @@ describe("approvals", () => {
   it("reads them back from a saved workflow", () => {
     const d = draftOf({ id: "x", label: "X", description: "", phases: [{ skill: "a", when: "", next: [] }, { skill: "b", when: "", next: [], approve: true, approve_when: "risky", on_deny: "a" }], loops: [] }, false);
     expect(d.phases[1]).toMatchObject({ approve: true, approveWhen: "risky", onDeny: "a" });
+  });
+});
+
+describe("inline phases", () => {
+  it("are written out and read back", () => {
+    const d = draft({ phases: [ph("plan", ["deep-review"]), ph("deep-review", ["ship"], { inline: true }), ph("ship")] });
+    const w = toWorkflow(d);
+    expect(w.phases[1].inline).toBe(true);
+    expect(w.phases[0].inline).toBeUndefined();
+    expect(draftOf({ ...w, id: "x" }, false).phases[1].inline).toBe(true);
+  });
+
+  it("are left out of a parallel group's members", () => {
+    const d = draft({ phases: [ph("plan", ["test"]), ph("test", [], { inline: true }), ph("docs", ["ship"]), ph("ship")], parallel: [{ from: "test", to: "docs" }] });
+    expect(toWorkflow(d).phases[1].inline).toBeUndefined();
   });
 });
 

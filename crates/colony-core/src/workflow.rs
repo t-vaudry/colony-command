@@ -63,6 +63,9 @@ pub struct Phase {
     /// With `approve`: the phase to go to if the user says no; empty ends the run.
     #[serde(default)]
     pub on_deny: String,
+    /// Run this phase in the main session instead of a subagent, for a skill that starts agents of its own.
+    #[serde(default)]
+    pub inline: bool,
     /// Phases that usually follow. A hint for the session, not a rule.
     #[serde(default)]
     pub next: Vec<String>,
@@ -243,6 +246,9 @@ impl Workflow {
             taken.extend(&at);
             for &i in &at {
                 let p = &self.phases[i];
+                if p.inline {
+                    return Err(format!("workflow {id}: phase {:?} runs inline in the main session, so it can't run in parallel with others", p.skill));
+                }
                 if !p.on_deny.is_empty() {
                     return Err(format!("workflow {id}: phase {:?} runs in parallel, so a denial can't send it elsewhere: it is just left out", p.skill));
                 }
@@ -509,6 +515,15 @@ mod tests {
         assert!(parse("x", &json(r#","approve":true,"on_deny":"nope""#)).unwrap_err().contains("isn't another phase"));
         assert!(parse("x", &json(r#","approve":true,"on_deny":"build""#)).unwrap_err().contains("isn't another phase"));
         assert!(parse("x", &json(r#","on_deny":"plan""#)).unwrap_err().contains("doesn't ask for approval"));
+    }
+
+    #[test]
+    fn inline_phases_are_checked() {
+        let ok = r#"{"phases":[{"skill":"plan"},{"skill":"review","inline":true,"approve":true},{"skill":"ship"}]}"#;
+        let w = parse("x", ok).unwrap();
+        assert!(w.phases[1].inline && !w.phases[0].inline);
+        let par = r#"{"phases":[{"skill":"plan"},{"skill":"review","inline":true},{"skill":"docs"}],"parallel":[{"phases":["review","docs"]}]}"#;
+        assert!(parse("x", par).unwrap_err().contains("inline in the main session"));
     }
 
     #[test]
