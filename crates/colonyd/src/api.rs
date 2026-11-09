@@ -82,7 +82,7 @@ async fn snapshot(shared: &Shared) -> String {
     let hosts = shared.pty.hosts(&shared.distros.read().await);
     let colony = shared.colony.read().await;
     let agents: Vec<_> = colony.agents.values().collect();
-    json!({ "type": "snapshot", "version": env!("CARGO_PKG_VERSION"), "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "workflows": true, "crew_folders": crate::crews::folders(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
+    json!({ "type": "snapshot", "version": env!("CARGO_PKG_VERSION"), "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "workflows": true, "workflow_draft": true, "crew_folders": crate::crews::folders(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
 }
 
 async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
@@ -150,6 +150,16 @@ enum Command {
         req: u64,
         host: colony_core::HostId,
         dir: String,
+    },
+    /// Ask Claude to write a workflow (or change the one given) from a plain-language request.
+    DraftWorkflow {
+        #[serde(default)]
+        req: u64,
+        host: colony_core::HostId,
+        dir: String,
+        request: String,
+        #[serde(default)]
+        current: Option<colony_core::workflow::Workflow>,
     },
     /// Write a workflow to the project (`scope` "project") or for the user ("user").
     SaveWorkflow {
@@ -333,6 +343,19 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         Command::ListWorkflows { req, host, dir } => {
             let l = crate::workflows::listing(&host, &dir);
             Ok(Some(json!({ "type": "workflows", "req": req, "workflows": l.workflows, "from_project": l.from_project, "problems": l.problems, "skills": l.skills }).to_string()))
+        }
+        // Takes a while, so it answers later, on its own: the map shows the result when it comes.
+        Command::DraftWorkflow { req, host, dir, request, current } => {
+            let shared = shared.clone();
+            tokio::spawn(async move {
+                let exe = shared.pty.windows_claude_path();
+                let reply = match crate::workflow_draft::draft(exe, &host, &dir, &request, current).await {
+                    Ok(workflow) => json!({ "type": "workflow_draft", "req": req, "workflow": workflow }),
+                    Err(error) => json!({ "type": "workflow_draft", "req": req, "error": error }),
+                };
+                let _ = shared.deltas.send(reply.to_string());
+            });
+            Ok(None)
         }
         // Answered in the message: an error reply would be taken for a failed spawn.
         Command::SaveWorkflow { req, host, dir, scope, workflow } => {

@@ -2,7 +2,9 @@
 //!
 //! A workflow is looked up in the project's `.colony/workflows` first, then in
 //! `workflows` in Colony's own folder. Skills come from the project's
-//! `.claude/skills`, then the user's, as Claude Code reads them.
+//! `.claude/skills`, then the user's, as Claude Code reads them. A WSL project's folders are
+//! read through Windows' view of the distro (`\\wsl.localhost\<distro>\...`), or the drive
+//! path when the project sits on a Windows drive.
 
 use std::path::PathBuf;
 
@@ -11,9 +13,26 @@ use colony_core::HostId;
 use colony_source::{colony_home, home_dir};
 use serde::Serialize;
 
-/// The project folder is only readable from here for a Windows session.
+/// The project folder as this (Windows) side can reach it, for either kind of session.
 fn project(host: &HostId, dir: &str) -> Option<PathBuf> {
-    (matches!(host, HostId::Windows) && !dir.trim().is_empty()).then(|| PathBuf::from(dir))
+    let dir = dir.trim();
+    (!dir.is_empty()).then(|| match host {
+        HostId::Windows => PathBuf::from(dir),
+        HostId::Wsl(_) => PathBuf::from(crate::worktree::local_folder(host, dir)),
+    })
+}
+
+/// The user's home inside a WSL distro, as far as the project's path says (`/home/<user>` or `/root`).
+fn wsl_home(host: &HostId, dir: &str) -> Option<PathBuf> {
+    let HostId::Wsl(_) = host else { return None };
+    let p = dir.trim().replace('\\', "/");
+    let home = if p == "/root" || p.starts_with("/root/") {
+        "/root".to_string()
+    } else {
+        let rest = p.strip_prefix("/home/")?;
+        format!("/home/{}", rest.split('/').next().filter(|u| !u.is_empty())?)
+    };
+    Some(PathBuf::from(crate::worktree::local_folder(host, &home)))
 }
 
 fn workflow_dirs(host: &HostId, dir: &str) -> Vec<PathBuf> {
@@ -24,6 +43,8 @@ fn skill_dirs(host: &HostId, dir: &str) -> Vec<(PathBuf, &'static str)> {
     project(host, dir)
         .map(|p| (p.join(".claude").join("skills"), "project"))
         .into_iter()
+        // A WSL session reads the skills in the distro's home before the ones on Windows.
+        .chain(wsl_home(host, dir).map(|h| (h.join(".claude").join("skills"), "user")))
         .chain([(home_dir().join(".claude").join("skills"), "user")])
         .collect()
 }
@@ -61,7 +82,7 @@ fn scope_dir(host: &HostId, dir: &str, scope: &str) -> Result<PathBuf, String> {
         "user" => Ok(colony_home().join("workflows")),
         "project" => project(host, dir)
             .map(|p| p.join(".colony").join("workflows"))
-            .ok_or_else(|| "Colony can only write a project's workflows for a Windows session; save it for you instead".to_string()),
+            .ok_or_else(|| "Choose a project folder first, or save the workflow for you instead".to_string()),
         other => Err(format!("unknown place {other:?} to save a workflow")),
     }
 }
@@ -240,7 +261,7 @@ mod tests {
         bad.id = "../evil".into();
         assert!(save(&HostId::Windows, &dir, "project", &bad).is_err());
         assert!(save(&HostId::Windows, &dir, "elsewhere", &w).is_err());
-        assert!(save(&HostId::Wsl("Ubuntu".into()), &dir, "project", &w).is_err());
+        assert!(save(&HostId::Wsl("Ubuntu".into()), "", "project", &w).is_err(), "no project folder to save into");
 
         assert!(delete(&HostId::Windows, &dir, "project", "../ship").is_err());
         delete(&HostId::Windows, &dir, "project", "ship").unwrap();
@@ -249,11 +270,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // The share's path is spelled with backslashes, which only Windows reads as separators.
+    #[cfg(windows)]
     #[test]
-    fn a_wsl_session_reads_only_the_users_folder() {
-        let dirs = workflow_dirs(&HostId::Wsl("Ubuntu".into()), "/home/t/api");
-        assert_eq!(dirs.len(), 1);
+    fn a_wsl_project_is_read_through_the_distro_share() {
+        let wsl = HostId::Wsl("Ubuntu".into());
+        let dirs = workflow_dirs(&wsl, "/home/t/api");
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0], PathBuf::from(r"\\wsl.localhost\Ubuntu\home\t\api\.colony\workflows"));
+        // A project on a Windows drive is just that folder.
+        assert_eq!(workflow_dirs(&wsl, "/mnt/c/code/api")[0], PathBuf::from(r"c:\code\api\.colony\workflows"));
         assert_eq!(workflow_dirs(&HostId::Windows, r"C:\code\api").len(), 2);
+        // No folder: only the user's.
+        assert_eq!(workflow_dirs(&wsl, "").len(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_wsl_session_also_reads_the_skills_in_the_distros_home() {
+        let wsl = HostId::Wsl("Ubuntu".into());
+        let dirs = skill_dirs(&wsl, "/home/t/api");
+        assert_eq!(dirs[0].1, "project");
+        assert_eq!(dirs[1], (PathBuf::from(r"\\wsl.localhost\Ubuntu\home\t\.claude\skills"), "user"));
+        assert_eq!(dirs.len(), 3);
+        assert_eq!(skill_dirs(&wsl, "/root/x")[1].0, PathBuf::from(r"\\wsl.localhost\Ubuntu\root\.claude\skills"));
+        assert_eq!(skill_dirs(&wsl, "/srv/api").len(), 2, "no home to read from a path outside one");
+        assert_eq!(skill_dirs(&HostId::Windows, r"C:\code\api").len(), 2);
     }
 }
 
@@ -327,6 +369,39 @@ mod wsl_tests {
         assert!(wsl(distro, &["test", "-d", &format!("{dir}/.colony/notes")]).await.is_some());
         assert!(wsl(distro, &["cat", &format!("{dir}/.colony/.gitignore")]).await.unwrap().contains('*'));
         assert!(wsl(distro, &["ls", &format!("{dir}/.colony/runs")]).await.unwrap().trim() == "s-1.js", "no temp file left behind");
+        let _ = wsl(distro, &["rm", "-rf", &dir]).await;
+    }
+
+    /// Saves a workflow into a project inside the distro, lists and loads it back, removes it.
+    #[tokio::test]
+    async fn a_workflow_saved_for_a_wsl_project_is_in_the_distro_and_is_found_again() {
+        if !cfg!(windows) {
+            return;
+        }
+        let Some(distro) = wsl("Ubuntu", &["echo", "Ubuntu"]).await.map(|_| "Ubuntu") else {
+            eprintln!("no Ubuntu distro: skipping");
+            return;
+        };
+        let host = HostId::Wsl(distro.into());
+        let dir = format!("/tmp/colony-wfproj-{}", std::process::id());
+        // The skill lives in the project too.
+        assert!(wsl(distro, &["mkdir", "-p", &format!("{dir}/.claude/skills/deploy")]).await.is_some());
+        assert!(wsl(distro, &["sh", "-c", &format!("printf '%s' '---
+name: deploy
+description: Ship it
+---
+' > {dir}/.claude/skills/deploy/SKILL.md")]).await.is_some());
+        let w = workflow::parse("ship", r#"{"label":"Ship","phases":[{"skill":"deploy"}]}"#).unwrap();
+        save(&host, &dir, "project", &w).unwrap();
+        let text = wsl(distro, &["cat", &format!("{dir}/.colony/workflows/ship.json")]).await.unwrap();
+        assert!(text.contains("\"label\": \"Ship\""), "{text}");
+        let l = listing(&host, &dir);
+        assert!(l.workflows.iter().any(|x| x.id == "ship"));
+        assert!(l.from_project.contains(&"ship".to_string()));
+        assert!(l.skills.iter().any(|k| k.name == "deploy" && k.source == "project"), "{:?}", l.skills);
+        assert_eq!(resolve(&host, &dir, "ship").unwrap().label, "Ship");
+        delete(&host, &dir, "project", "ship").unwrap();
+        assert!(resolve(&host, &dir, "ship").is_err());
         let _ = wsl(distro, &["rm", "-rf", &dir]).await;
     }
 }

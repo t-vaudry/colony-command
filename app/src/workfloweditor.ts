@@ -312,6 +312,10 @@ export class WorkflowEditor {
   private error = document.getElementById("wf-error")!;
   private save = document.getElementById("wf-save") as HTMLButtonElement;
   private del = document.getElementById("wf-delete") as HTMLButtonElement;
+  private context = document.getElementById("wf-context")!;
+  private ask = document.getElementById("wf-ask") as HTMLTextAreaElement;
+  private askGo = document.getElementById("wf-ask-go") as HTMLButtonElement;
+  private askStatus = document.getElementById("wf-ask-status")!;
   private draft: Draft = blank("user");
   /** The name in the field being edited when it gained focus: links are moved once, from it to the final name. */
   private skillWas: { i: number; name: string } | null = null;
@@ -326,6 +330,7 @@ export class WorkflowEditor {
       this.draft = w ? draftOf(w, this.listing.from_project.includes(w.id)) : blank(this.draft.scope);
       this.show();
     });
+    this.askGo.addEventListener("click", () => void this.draftWithClaude());
     this.label.addEventListener("input", () => (this.draft.label = this.label.value));
     this.description.addEventListener("input", () => (this.draft.description = this.description.value));
     this.scope.addEventListener("change", () => (this.draft.scope = this.scope.value as Scope));
@@ -416,11 +421,44 @@ export class WorkflowEditor {
     this.dir = dir;
     this.onSaved = onSaved;
     this.setListing(listing);
+    const hasProject = !!dir.trim();
+    this.context.textContent = hasProject ? `Project: ${dir}` : "No project chosen: workflows saved here are for you, in every project. Select a bot first to work on a project's workflows.";
+    (this.scope.querySelector('option[value="project"]') as HTMLOptionElement).disabled = !hasProject;
+    this.ask.value = "";
+    this.askStatus.textContent = "";
     const w = listing.workflows.find((x) => x.id === select);
-    this.draft = w ? draftOf(w, listing.from_project.includes(w.id)) : blank(host === "win" ? "project" : "user");
+    this.draft = w ? draftOf(w, listing.from_project.includes(w.id)) : blank(hasProject ? "project" : "user");
     this.show();
     this.dlg.showModal();
     this.label.focus();
+  }
+
+  /** Ask Claude to write the workflow described, or to change the one on screen; the result is shown for review, not saved. */
+  private async draftWithClaude(): Promise<void> {
+    const request = this.ask.value.trim();
+    if (!request) {
+      this.askStatus.textContent = "Say what the workflow should do.";
+      return;
+    }
+    // A draft on screen that is complete is changed; a blank or half-written one is left out.
+    const current = problem(this.draft) === null ? toWorkflow(this.draft) : undefined;
+    this.askGo.disabled = true;
+    this.askStatus.textContent = current ? "Claude is changing the workflow… this takes about 15 seconds." : "Claude is drafting… this takes about 15 seconds.";
+    try {
+      const r = await this.daemon.draftWorkflow(this.host, this.dir, request, current);
+      if ("error" in r) {
+        this.askStatus.textContent = r.error;
+        return;
+      }
+      const drafted = draftOf(r.workflow, false);
+      // Keep where this one is saved from; a new draft is saved under its name.
+      this.draft = { ...drafted, id: this.draft.id, origin: this.draft.origin, scope: this.draft.scope };
+      this.show();
+      this.askStatus.textContent = "Drafted. Check the phases below, change anything, then Save. Nothing is saved yet.";
+      this.ask.value = "";
+    } finally {
+      this.askGo.disabled = false;
+    }
   }
 
   private setListing(l: WorkflowListing): void {

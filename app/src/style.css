@@ -1766,3 +1766,14 @@ details.menu[open] > summary {
   font: 10px var(--f-body);
   fill: var(--muted);
 }
+
+.wf-ai {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0 10px;
+}
+.wf-ai textarea {
+  width: 100%;
+  box-sizing: border-box;
+}

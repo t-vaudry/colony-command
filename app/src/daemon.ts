@@ -4,6 +4,8 @@
 
 /** How long the New session dialog waits for the workflow list before going on without it. */
 const WORKFLOW_LIST_WAIT_MS = 4000;
+/** Claude is given 180 s by the background service; this is a little longer. */
+const WORKFLOW_DRAFT_WAIT_MS = 200_000;
 /** Saving writes a file; give it longer before reporting no answer. */
 const WORKFLOW_SAVE_WAIT_MS = 10000;
 
@@ -37,13 +39,14 @@ export interface DaemonSettings {
 }
 
 type Message =
-  | { type: "snapshot"; version?: string; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; workflows?: boolean; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
+  | { type: "snapshot"; version?: string; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; workflows?: boolean; workflow_draft?: boolean; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
   | { type: "crews"; items: Crew[] }
   | { type: "crew_folders"; items: Record<string, string> }
   | { type: "folder_crew"; req: number; crew: string | null }
   | { type: "crew_check"; req: number; error: string | null; warnings: string[] }
   | ({ type: "workflows"; req: number } & WorkflowListing)
   | { type: "workflow_saved"; req: number; error: string | null }
+  | { type: "workflow_draft"; req: number; workflow?: Workflow; error?: string }
   | { type: "settings"; settings: DaemonSettings }
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
@@ -111,6 +114,8 @@ export class Daemon {
   crewsKnown = false;
   /** Whether the daemon lists workflows: an older one answers the command with an error. */
   workflowsKnown = false;
+  /** The background service can draft a workflow with Claude. */
+  workflowDraftKnown = false;
   /** The daemon rejected a command this map sends. */
   private protocolError = false;
   private appVer: string | null = null;
@@ -148,6 +153,7 @@ export class Daemon {
   private folderCrews = new Map<number, (crew: string | null) => void>();
   private workflowLists = new Map<number, (l: WorkflowListing | null) => void>();
   private workflowSaves = new Map<number, (error: string | null) => void>();
+  private workflowDrafts = new Map<number, (r: { workflow: Workflow } | { error: string }) => void>();
   private pendingSpawns: { resolve: (v: { term: string; session_id: string }) => void; reject: (e: Error) => void }[] = [];
 
   onChange(fn: () => void): void {
@@ -222,6 +228,7 @@ export class Daemon {
         this.version = m.version;
         this.crewsKnown = m.crews !== undefined;
         this.workflowsKnown = m.workflows === true;
+        this.workflowDraftKnown = m.workflow_draft === true;
         this.crews = m.crews ?? this.crews;
         this.crewFolders = m.crew_folders ?? this.crewFolders;
         this.spend = new Map(Object.entries(m.spend ?? {}));
@@ -259,6 +266,12 @@ export class Daemon {
         this.workflowLists.get(m.req)?.({ workflows: m.workflows, from_project: m.from_project ?? [], problems: m.problems, skills: m.skills });
         this.workflowLists.delete(m.req);
         return;
+      case "workflow_draft": {
+        const done = this.workflowDrafts.get(m.req);
+        this.workflowDrafts.delete(m.req);
+        done?.(m.workflow ? { workflow: m.workflow } : { error: m.error ?? "Claude gave no draft." });
+        return;
+      }
       case "workflow_saved":
         this.workflowSaves.get(m.req)?.(m.error);
         this.workflowSaves.delete(m.req);
@@ -452,6 +465,23 @@ export class Daemon {
   /** Save a workflow for the project (`scope` "project") or the user ("user"); resolves to an error text, or null when saved. */
   saveWorkflow(host: string, dir: string, scope: "project" | "user", workflow: Workflow): Promise<string | null> {
     return this.workflowChange({ type: "save_workflow", host, dir, scope, workflow });
+  }
+
+  /** Ask Claude to write a workflow from a plain-language request, or to change `current`. Nothing is saved. */
+  draftWorkflow(host: string, dir: string, request: string, current?: Workflow): Promise<{ workflow: Workflow } | { error: string }> {
+    return new Promise((resolve) => {
+      if (!this.workflowDraftKnown) return resolve({ error: "Colony's background service is out of date. Restart Colony to update it." });
+      const req = ++this.crewCheckSeq;
+      this.workflowDrafts.set(req, resolve);
+      if (!this.send({ type: "draft_workflow", req, host, dir, request, current })) {
+        this.workflowDrafts.delete(req);
+        resolve({ error: "Lost the connection to Colony's background service." });
+        return;
+      }
+      setTimeout(() => {
+        if (this.workflowDrafts.delete(req)) resolve({ error: "Claude took too long to answer. Try again." });
+      }, WORKFLOW_DRAFT_WAIT_MS);
+    });
   }
 
   /** Remove a saved workflow; resolves to an error text, or null when removed. */
