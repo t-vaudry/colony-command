@@ -5,6 +5,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-11-09
+
+- Workflows: own editor entry, and draft them with Claude (#81)
+- Phases can run in parallel (#80)
+
 ## [0.1.18] - 2026-11-08
 
 - Native-only workflows, and phases that ask for approval (#79)
