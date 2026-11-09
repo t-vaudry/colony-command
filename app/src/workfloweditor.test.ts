@@ -12,6 +12,7 @@ const draft = (extra: Partial<Draft> = {}): Draft => ({
   origin: null,
   phases: [ph("plan", ["build"]), ph("build", ["review", "plan"]), ph("review")],
   loops: [],
+  parallel: [],
   ...extra,
 });
 
@@ -281,5 +282,32 @@ describe("approvals", () => {
   it("reads them back from a saved workflow", () => {
     const d = draftOf({ id: "x", label: "X", description: "", phases: [{ skill: "a", when: "", next: [] }, { skill: "b", when: "", next: [], approve: true, approve_when: "risky", on_deny: "a" }], loops: [] }, false);
     expect(d.phases[1]).toMatchObject({ approve: true, approveWhen: "risky", onDeny: "a" });
+  });
+});
+
+describe("parallel groups", () => {
+  const withGroup = (g: { from: string; to: string }, phases = [ph("plan", ["test"]), ph("test", ["ship"]), ph("docs", ["ship"], { approve: true, onDeny: "plan" }), ph("ship")]) => draft({ phases, parallel: [g] });
+  it("saves the group's phases and leaves routing to the last one", () => {
+    const w = toWorkflow(withGroup({ from: "test", to: "docs" }));
+    expect(w.parallel).toEqual([{ phases: ["test", "docs"] }]);
+    expect(w.phases[1].next).toEqual([]);
+    expect(w.phases[2].next).toEqual(["ship"]);
+    expect(w.phases[2].on_deny).toBe("");
+  });
+  it("reads a group back, and follows renames and removals", () => {
+    const d = withGroup({ from: "test", to: "docs" });
+    expect(draftOf(toWorkflow(d), false).parallel).toEqual([{ from: "test", to: "docs" }]);
+    renameSkill(d, 1, "check");
+    expect(d.parallel[0].from).toBe("check");
+    removePhase(d, 2);
+    expect(d.parallel).toEqual([]);
+  });
+  it("says what is wrong", () => {
+    expect(problem(withGroup({ from: "", to: "" }))).toContain("choose the first and last");
+    expect(problem(withGroup({ from: "docs", to: "test" }))).toContain("has to come after");
+    expect(problem(withGroup({ from: "test", to: "test" }))).toContain("at least two");
+    expect(problem(draft({ phases: [ph("plan", ["docs"]), ph("test"), ph("docs"), ph("ship")], parallel: [{ from: "test", to: "docs" }] }))).toContain("runs in parallel");
+    expect(problem(draft({ phases: [ph("a"), ph("b"), ph("c")], parallel: [{ from: "a", to: "b" }], loops: [{ from: "b", to: "c", until: "", max: 3 }] }))).toContain("inside a parallel group");
+    expect(problem(withGroup({ from: "test", to: "docs" }))).toBeNull();
   });
 });

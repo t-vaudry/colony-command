@@ -32,6 +32,8 @@ const MAX_FILE: u64 = 64 * 1024;
 const MAX_PHASES: usize = 40;
 const MAX_LOOPS: usize = 10;
 const MAX_BRANCHES: usize = 8;
+const MAX_GROUPS: usize = 6;
+const MAX_MEMBERS: usize = 6;
 /// Rounds a loop may be given.
 const MAX_ROUNDS: u32 = 20;
 const DEFAULT_ROUNDS: u32 = 3;
@@ -91,6 +93,12 @@ pub struct Loop {
     pub max: u32,
 }
 
+/// Consecutive phases (in the order listed) that run at the same time and join before the next.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Parallel {
+    pub phases: Vec<String>,
+}
+
 fn default_rounds() -> u32 {
     DEFAULT_ROUNDS
 }
@@ -107,6 +115,9 @@ pub struct Workflow {
     pub phases: Vec<Phase>,
     #[serde(default)]
     pub loops: Vec<Loop>,
+    /// Runs of phases that go side by side.
+    #[serde(default)]
+    pub parallel: Vec<Parallel>,
 }
 
 /// A skill name is a folder name: letters, digits, `-`, `_`, `.`, and `:` for plugins.
@@ -199,7 +210,65 @@ impl Workflow {
                 return Err(format!("workflow {id}: phase {:?} has both next and branches; use branches only", p.skill));
             }
         }
-        self.check_loops()
+        self.check_loops()?;
+        self.check_parallel()
+    }
+
+    /// The index spans of the parallel groups, once they've been checked.
+    fn group_spans(&self) -> Vec<(usize, usize)> {
+        self.parallel.iter().filter_map(|g| Some((self.index_of(g.phases.first()?)?, self.index_of(g.phases.last()?)?))).collect()
+    }
+
+    fn check_parallel(&self) -> Result<(), String> {
+        let id = &self.id;
+        if self.parallel.len() > MAX_GROUPS {
+            return Err(format!("workflow {id}: more than {MAX_GROUPS} parallel groups"));
+        }
+        let mut taken: Vec<usize> = Vec::new();
+        for g in &self.parallel {
+            let named = g.phases.join(", ");
+            if g.phases.len() < 2 || g.phases.len() > MAX_MEMBERS {
+                return Err(format!("workflow {id}: a parallel group has 2 to {MAX_MEMBERS} phases (got {named:?})"));
+            }
+            let mut at = Vec::new();
+            for n in &g.phases {
+                at.push(self.index_of(n).ok_or_else(|| format!("workflow {id}: parallel group names {n:?}, which isn't a phase"))?);
+            }
+            if at.windows(2).any(|w| w[1] != w[0] + 1) {
+                return Err(format!("workflow {id}: the phases of a parallel group ({named}) must be next to each other in the phase list, in that order"));
+            }
+            if at.iter().any(|i| taken.contains(i)) {
+                return Err(format!("workflow {id}: a phase is in two parallel groups ({named})"));
+            }
+            taken.extend(&at);
+            for &i in &at {
+                let p = &self.phases[i];
+                if !p.on_deny.is_empty() {
+                    return Err(format!("workflow {id}: phase {:?} runs in parallel, so a denial can't send it elsewhere: it is just left out", p.skill));
+                }
+                if i != *at.last().unwrap() && (!p.next.is_empty() || !p.branches.is_empty()) {
+                    return Err(format!("workflow {id}: phase {:?} runs in parallel; only the last phase of the group ({:?}) says where the run goes next", p.skill, g.phases.last().unwrap()));
+                }
+            }
+        }
+        // Nothing may jump into the middle of a group, and a loop holds a whole group or none of it.
+        let spans = self.group_spans();
+        for (i, p) in self.phases.iter().enumerate() {
+            for t in p.next.iter().chain(p.branches.iter().map(|b| &b.to)).chain(std::iter::once(&p.on_deny)) {
+                if let Some(j) = self.index_of(t) {
+                    if spans.iter().any(|&(a, b)| a < j && j <= b && !(a <= i && i <= b)) {
+                        return Err(format!("workflow {id}: phase {:?} goes to {t:?}, which is inside a parallel group but not its first phase", p.skill));
+                    }
+                }
+            }
+        }
+        for l in &self.loops {
+            let (Some(from), Some(to)) = (self.index_of(&l.from), self.index_of(&l.to)) else { continue };
+            if spans.iter().any(|&(a, b)| (a < from && from <= b) || (a <= to && to < b)) {
+                return Err(format!("workflow {id}: loop {:?} to {:?} starts or ends inside a parallel group", l.from, l.to));
+            }
+        }
+        Ok(())
     }
 
     fn index_of(&self, name: &str) -> Option<usize> {
@@ -440,6 +509,34 @@ mod tests {
         assert!(parse("x", &json(r#","approve":true,"on_deny":"nope""#)).unwrap_err().contains("isn't another phase"));
         assert!(parse("x", &json(r#","approve":true,"on_deny":"build""#)).unwrap_err().contains("isn't another phase"));
         assert!(parse("x", &json(r#","on_deny":"plan""#)).unwrap_err().contains("doesn't ask for approval"));
+    }
+
+    #[test]
+    fn parallel_groups_are_checked() {
+        let json = |phases: &str, par: &str, loops: &str| format!(r#"{{"phases":[{{"skill":"plan"}},{phases}{{"skill":"ship"}}],"parallel":{par},"loops":{loops}}}"#);
+        let three = r#"{"skill":"test"},{"skill":"docs"},{"skill":"lint"},"#;
+        assert!(parse("x", &json(three, r#"[{"phases":["test","docs","lint"]}]"#, "[]")).is_ok());
+        assert!(parse("x", &json(three, r#"[{"phases":["test","docs"]}]"#, "[]")).is_ok());
+        assert!(parse("x", &json(three, r#"[{"phases":["test"]}]"#, "[]")).unwrap_err().contains("2 to"));
+        assert!(parse("x", &json(three, r#"[{"phases":["test","nope"]}]"#, "[]")).unwrap_err().contains("isn't a phase"));
+        assert!(parse("x", &json(three, r#"[{"phases":["test","lint"]}]"#, "[]")).unwrap_err().contains("next to each other"));
+        assert!(parse("x", &json(three, r#"[{"phases":["docs","test"]}]"#, "[]")).unwrap_err().contains("next to each other"));
+        assert!(parse("x", &json(three, r#"[{"phases":["test","docs"]},{"phases":["docs","lint"]}]"#, "[]")).unwrap_err().contains("two parallel groups"));
+        // Only the last member says where to go; a denial can't redirect a member.
+        let routed = r#"{"skill":"test","next":["ship"]},{"skill":"docs"},"#;
+        assert!(parse("x", &json(routed, r#"[{"phases":["test","docs"]}]"#, "[]")).unwrap_err().contains("only the last phase"));
+        let last = r#"{"skill":"test"},{"skill":"docs","next":["ship"]},"#;
+        assert!(parse("x", &json(last, r#"[{"phases":["test","docs"]}]"#, "[]")).is_ok());
+        let deny = r#"{"skill":"test","approve":true,"on_deny":"plan"},{"skill":"docs"},"#;
+        assert!(parse("x", &json(deny, r#"[{"phases":["test","docs"]}]"#, "[]")).unwrap_err().contains("left out"));
+        // Nothing jumps into the middle of a group.
+        let into = r#"{"skill":"test"},{"skill":"docs"},{"skill":"lint"},"#;
+        let w = format!(r#"{{"phases":[{{"skill":"plan","next":["docs"]}},{into}{{"skill":"ship"}}],"parallel":[{{"phases":["test","docs","lint"]}}]}}"#);
+        assert!(parse("x", &w).unwrap_err().contains("not its first phase"));
+        // A loop holds the whole group or none of it.
+        assert!(parse("x", &json(three, r#"[{"phases":["test","docs","lint"]}]"#, r#"[{"from":"plan","to":"ship"}]"#)).is_ok());
+        assert!(parse("x", &json(three, r#"[{"phases":["test","docs","lint"]}]"#, r#"[{"from":"docs","to":"ship"}]"#)).unwrap_err().contains("inside a parallel group"));
+        assert!(parse("x", &json(three, r#"[{"phases":["test","docs","lint"]}]"#, r#"[{"from":"plan","to":"docs"}]"#)).unwrap_err().contains("inside a parallel group"));
     }
 
     #[test]

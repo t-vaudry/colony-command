@@ -136,3 +136,54 @@ fn a_denial_with_nowhere_to_go_ends_the_run() {
     assert_eq!(names(&r, "ran"), ["Plan"]);
     assert_eq!(names(&r, "denied"), ["Build"]);
 }
+
+const SIDE: &str = r#"{"phases":[{"skill":"Plan"},{"skill":"Test"},{"skill":"Docs","skip_when":"nothing to document"},{"skill":"Ship"}],"parallel":[{"phases":["Test","Docs"]}]}"#;
+
+#[test]
+fn phases_in_a_group_run_together_and_the_run_joins_after_them() {
+    let Some(r) = run(SIDE, &Options::default(), json!({"skip": {}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan", "Test", "Docs", "Ship"]);
+    assert_eq!(r["result"]["blocked"], Value::Null);
+}
+
+#[test]
+fn a_member_can_be_skipped_on_its_own() {
+    let Some(r) = run(SIDE, &Options::default(), json!({"skip": {"Docs": true}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan", "Test", "Ship"]);
+}
+
+#[test]
+fn a_blocked_member_lets_the_others_finish_then_stops_the_run() {
+    let Some(r) = run(SIDE, &Options::default(), json!({"skip": {}, "blocked": {"Test": "Which suite?"}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan", "Docs"]);
+    assert_eq!(r["result"]["blocked"], json!({"phase": "Test", "question": "Which suite?"}));
+}
+
+const SIDE_GATED: &str = r#"{"phases":[{"skill":"Plan"},{"skill":"Test","approve":true},{"skill":"Docs","approve":true},{"skill":"Ship"}],"parallel":[{"phases":["Test","Docs"]}]}"#;
+
+#[test]
+fn a_group_asks_for_all_its_approvals_at_once_and_a_denied_member_is_left_out() {
+    let Some(r) = run(SIDE_GATED, &Options::default(), json!({})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan"]);
+    assert_eq!(r["result"]["blocked"]["kind"], json!("approval"));
+    assert_eq!(r["result"]["blocked"]["phases"], json!(["Test", "Docs"]));
+    let Some(r) = run(SIDE_GATED, &Options::default(), json!({"args": {"approvals": {"Test": "approved", "Docs": "denied"}}})) else { return };
+    assert_eq!(names(&r, "ran"), ["Plan", "Test", "Ship"]);
+    assert_eq!(names(&r, "denied"), ["Docs"]);
+}
+
+#[test]
+fn a_loop_can_go_round_a_whole_group() {
+    let wf = r#"{"phases":[{"skill":"Develop"},{"skill":"Test"},{"skill":"Review"},{"skill":"Ship"}],"parallel":[{"phases":["Test","Review"]}],"loops":[{"from":"Develop","to":"Review","until":"all is well","max":3}]}"#;
+    let Some(r) = run(wf, &Options::default(), json!({"loop": [false, true]})) else { return };
+    assert_eq!(names(&r, "ran"), ["Develop", "Test", "Review", "Develop", "Test", "Review", "Ship"]);
+}
+
+#[test]
+fn a_member_is_told_who_it_runs_beside() {
+    let wf = r#"{"phases":[{"skill":"Test"},{"skill":"Docs"}],"parallel":[{"phases":["Test","Docs"]}]}"#;
+    let Some(r) = run(wf, &Options::default(), json!({})) else { return };
+    assert_eq!(names(&r, "ran"), ["Test", "Docs"]);
+    let test = r["calls"].as_array().unwrap().iter().find(|c| c["label"] == "Test").unwrap();
+    assert!(test["prompt"].as_str().unwrap().contains("at the same time as \"Docs\""));
+}

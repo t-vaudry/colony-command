@@ -33,6 +33,7 @@ pub fn compile(w: &Workflow, o: &Options) -> Result<String, String> {
         return Err("a workflow with no phases has nothing to run".into());
     }
     let index = |name: &str| w.phases.iter().position(|p| p.skill == name);
+    let groups: Vec<Vec<usize>> = w.parallel.iter().map(|g| g.phases.iter().filter_map(|n| index(n)).collect()).collect();
     let phases: Vec<Value> = w
         .phases
         .iter()
@@ -51,6 +52,7 @@ pub fn compile(w: &Workflow, o: &Options) -> Result<String, String> {
                 "text": p.instruction,
                 "when": p.when,
                 "skip": p.skip_when,
+                "group": groups.iter().position(|g| index(&p.skill).is_some_and(|i| g.contains(&i))),
                 "approve": p.approve,
                 "approveWhen": p.approve_when,
                 "onDeny": if p.approve { index(&p.on_deny) } else { None },
@@ -78,11 +80,12 @@ pub fn compile(w: &Workflow, o: &Options) -> Result<String, String> {
     });
     let s = |v: &Value| serde_json::to_string(v).expect("json");
     Ok(format!(
-        "export const meta = {meta}\n\nconst TASK = {task}\nconst PHASES = {phases}\nconst LOOPS = {loops}\nconst JUDGE_MODEL = {judge}\nconst ADVISOR = {advisor}\nconst NOTES = {notes}\n{INTERPRETER}",
+        "export const meta = {meta}\n\nconst TASK = {task}\nconst PHASES = {phases}\nconst LOOPS = {loops}\nconst GROUPS = {groups}\nconst JUDGE_MODEL = {judge}\nconst ADVISOR = {advisor}\nconst NOTES = {notes}\n{INTERPRETER}",
         meta = s(&meta),
         task = s(&json!(o.task)),
         phases = s(&Value::Array(phases)),
         loops = s(&Value::Array(loops)),
+        groups = s(&json!(groups)),
         judge = s(&json!(o.judge_model)),
         advisor = o.advisor,
         notes = s(&json!(NOTES_DIR)),
@@ -100,6 +103,7 @@ const MET_SCHEMA = { type: 'object', properties: { met: { type: 'boolean' }, rea
 const CHOICE_SCHEMA = { type: 'object', properties: { choice: { type: 'integer' }, reason: { type: 'string' } }, required: ['choice'] }
 const judge = (label, phaseName, schema) => ({ label, phase: phaseName, schema, effort: 'low', ...(JUDGE_MODEL ? { model: JUDGE_MODEL } : {}) })
 
+const denies = (said) => /^(no|deny|denied|decline|declined|reject|rejected)\b/i.test(said)
 // What the user said when they declined the phase before this one, handed to the phase that took over.
 let declined = null
 const brief = (p, step, round) => [
@@ -109,6 +113,7 @@ const brief = (p, step, round) => [
   `Run this command first, as a Bash call by itself (never chained with another command), before anything else: echo colony-phase:${p.name}`,
   p.custom ? `Then do this: ${p.text}` : `Then use the Skill tool to run the skill "${p.name}" and follow it.`,
   p.when ? `(This phase is for when: ${p.when}.)` : '',
+  p.group !== null ? `This phase runs at the same time as ${GROUPS[p.group].filter((m) => PHASES[m].name !== p.name).map((m) => `"${PHASES[m].name}"`).join(', ')}, in the same working folder. Keep to this phase's own job and do not edit files the others are likely to change; if you must, say so in your note.` : '',
   round > 1 ? `This is round ${round} of a repeating run: read the latest notes for what the last round found, and deal with it.` : '',
   `Earlier phases left short notes in ${NOTES}/, one file per phase run, numbered in order. Read the latest ones you need before you start: they are how phases hand work to each other. Use the Glob, Read and Write tools for notes, never shell commands (cd, ls, cat, mkdir, printf): the marker above is the only Bash command this phase needs for them.`,
   `Do only this phase's work; later phases handle the rest. When you finish, write a note of at most 15 lines to ${NOTES}/${String(step).padStart(2, '0')}-${slug(p.name)}.md saying what you did, what you decided and what the next phase must know. Then reply with one sentence.`,
@@ -156,7 +161,73 @@ let i = 0
 let step = 0
 let guard = 0
 while (i !== null && i < PHASES.length && guard++ < 300) {
-  const p = PHASES[i]
+  let p = PHASES[i]
+  let forced
+  const group = p.group !== null && GROUPS[p.group][0] === i ? GROUPS[p.group] : null
+  if (group) {
+    // Phases that go side by side: judge them all, ask for the approvals together, run them at once, join.
+    phase(p.name)
+    const plan = (await parallel(group.map((m) => async () => {
+      const q = PHASES[m]
+      let skip = false
+      let needed = !!q.approve && !approved.has(m)
+      if (q.skip) {
+        const r = await agent(
+          `Task: ${GOAL}
+
+Decide whether the phase "${q.name}" can be skipped. Skip it only if this clearly holds: ${q.skip}.
+Look at the repository and the notes in ${NOTES}/ as needed. Answer skip=false if you are unsure.`,
+          judge(`skip? ${q.name}`, q.name, SKIP_SCHEMA),
+        )
+        skip = !!(r && r.skip)
+        if (skip) log(`Skipping ${q.name}: ${(r && r.reason) || q.skip}`)
+      }
+      if (!skip && needed && q.approveWhen) {
+        const r = await agent(
+          `Task: ${GOAL}
+
+The phase "${q.name}" is about to start and needs the user's approval only if this holds: ${q.approveWhen}.
+Look at the repository and the notes in ${NOTES}/ as needed. Answer needed=true if it holds or you are unsure.`,
+          judge(`approval? ${q.name}`, q.name, NEED_SCHEMA),
+        )
+        needed = !r || r.needed !== false
+      }
+      return { m, skip, needed }
+    }))).map((x, k) => x || { m: group[k], skip: false, needed: !!PHASES[group[k]].approve && !approved.has(group[k]) })
+    const missing = []
+    for (const x of plan) {
+      if (x.skip || !x.needed) continue
+      const said = String(APPROVALS[PHASES[x.m].name] === undefined ? '' : APPROVALS[PHASES[x.m].name]).trim()
+      if (!said) missing.push(PHASES[x.m].name)
+      else if (denies(said)) {
+        x.skip = true
+        if (!denied.includes(PHASES[x.m].name)) denied.push(PHASES[x.m].name)
+        log(`The user declined ${PHASES[x.m].name}: it is left out`)
+      } else approved.add(x.m)
+    }
+    if (missing.length) {
+      blocked = { phase: missing[0], phases: missing, kind: 'approval', question: missing.length === 1 ? `May the phase "${missing[0]}" start?` : `May these phases start (they run together): ${missing.join(', ')}?` }
+      break
+    }
+    const todo = plan.filter((x) => !x.skip)
+    todo.forEach((x) => { x.step = ++step })
+    const replies = await parallel(todo.map((x) => () => {
+      const q = PHASES[x.m]
+      const round = roundOf(x.m)
+      return agent(brief(q, x.step, round), { label: round > 1 ? `${q.name} (round ${round})` : q.name, phase: q.name })
+    }))
+    todo.forEach((x, k) => {
+      const reply = replies[k]
+      const q = PHASES[x.m]
+      if (reply === null || reply === undefined) blocked = blocked || { phase: q.name, question: 'The agent for this phase did not finish.' }
+      else if (typeof reply === 'string' && /^\s*BLOCKED:/i.test(reply)) blocked = blocked || { phase: q.name, question: reply.replace(/^\s*BLOCKED:\s*/i, '').slice(0, 600) }
+      else ran.push(q.name)
+    })
+    if (blocked) break
+    // The group is done: carry on from its last phase, which says where the run goes next.
+    i = group[group.length - 1]
+    p = PHASES[i]
+  } else {
   phase(p.name)
   let skipped = false
   if (p.skip) {
@@ -168,7 +239,6 @@ while (i !== null && i < PHASES.length && guard++ < 300) {
     if (skipped) log(`Skipping ${p.name}: ${(r && r.reason) || p.skip}`)
   }
   // A phase that needs the user's approval: ask first (when its condition holds), once per run.
-  let forced
   if (!skipped && p.approve && !approved.has(i)) {
     let needed = true
     if (p.approveWhen) {
@@ -186,7 +256,7 @@ Look at the repository and the notes in ${NOTES}/ as needed. Answer needed=true 
       blocked = { phase: p.name, kind: 'approval', question: `May the phase "${p.name}" start?${p.approveWhen ? ` (${p.approveWhen})` : ''}` }
       break
     }
-    if (/^(no|deny|denied|decline|declined|reject|rejected)\b/i.test(said)) {
+    if (denies(said)) {
       skipped = true
       forced = p.onDeny === null || denied.includes(p.name) ? null : p.onDeny
       if (!denied.includes(p.name)) denied.push(p.name)
@@ -211,6 +281,7 @@ Look at the repository and the notes in ${NOTES}/ as needed. Answer needed=true 
       break
     }
     ran.push(p.name)
+  }
   }
   if (forced !== undefined) {
     i = forced
@@ -272,7 +343,7 @@ mod tests {
 
     #[test]
     fn nothing_to_run_is_an_error() {
-        let wf = Workflow { id: "x".into(), label: "x".into(), description: String::new(), phases: vec![], loops: vec![] };
+        let wf = Workflow { id: "x".into(), label: "x".into(), description: String::new(), phases: vec![], loops: vec![], parallel: vec![] };
         assert!(compile(&wf, &Options::default()).is_err());
     }
 }

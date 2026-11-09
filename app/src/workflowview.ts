@@ -33,8 +33,28 @@ export interface Node {
   y: number;
 }
 
-/** Where phase `i` usually leads, and what to say on the arrow: its branches (each with its condition, or "otherwise"), else its `next`, else the phase listed after it. */
+/** The phase numbers of each parallel group, in order; groups that name a phase that isn't there are left out. */
+export function groupsOf(w: Workflow): number[][] {
+  return (w.parallel ?? [])
+    .map((g) => g.phases.map((n) => w.phases.findIndex((p) => p.skill === n)))
+    .filter((m) => m.length > 1 && m.every((j, k) => j >= 0 && (k === 0 || j === m[k - 1] + 1)));
+}
+
+/** Where phase `i` usually leads, and what to say on the arrow: a phase in a parallel group leads where the group's last phase does, and a way into a group leads into every member. */
 export function exits(w: Workflow, i: number): { to: string; label: string; full: string }[] {
+  const groups = groupsOf(w);
+  const mine = groups.find((m) => m.includes(i));
+  const src = mine ? mine[mine.length - 1] : i;
+  const out = plainExits(w, src).map((e) => (mine && i !== src ? { ...e, label: "", full: "" } : e));
+  return out.flatMap((e) => {
+    const at = w.phases.findIndex((p) => p.skill === e.to);
+    const into = groups.find((m) => m[0] === at);
+    return into ? into.map((j, k) => ({ to: w.phases[j].skill, label: k === 0 ? e.label : "", full: k === 0 ? e.full : "" })) : [e];
+  });
+}
+
+/** Where phase `i` usually leads, and what to say on the arrow: its branches (each with its condition, or "otherwise"), else its `next`, else the phase listed after it. */
+function plainExits(w: Workflow, i: number): { to: string; label: string; full: string }[] {
   const p = w.phases[i];
   if (p.branches?.length) {
     const conditional = p.branches.some((b) => b.condition);
@@ -270,6 +290,16 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
     }
   }
 
+  // Phases that run together sit in a dashed frame of their own.
+  const together = groupsOf(w).map((m) => {
+    const members = m.map((j) => at.get(w.phases[j].skill)!);
+    const x1 = Math.min(...members.map((n) => n.x)) - 5;
+    const y1 = Math.min(...members.map((n) => n.y)) - 5;
+    const x2 = Math.max(...members.map((n) => n.x + NODE_W)) + 5;
+    const y2 = Math.max(...members.map((n) => n.y + NODE_H)) + 5;
+    return `<g class="wf-par"><title>These phases run at the same time</title><rect x="${x1}" y="${y1}" width="${x2 - x1}" height="${y2 - y1}" rx="8"/></g>`;
+  });
+
   const frames = loops.map((l, k) => {
     const sp = span(w, l)!;
     const members = w.phases.slice(sp[0], sp[1] + 1).map((p) => at.get(p.skill)!);
@@ -303,7 +333,7 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
       <marker id="${ids.arrow}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head"/></marker>
       <marker id="${ids.arrow}-on" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L8 4 L0 8 z" class="wf-head on"/></marker>
     </defs>
-    <g transform="translate(${left} ${top})">${frames.join("")}${edges.join("")}${boxes.join("")}</g>
+    <g transform="translate(${left} ${top})">${together.join("")}${frames.join("")}${edges.join("")}${boxes.join("")}</g>
   </svg>`;
 }
 
