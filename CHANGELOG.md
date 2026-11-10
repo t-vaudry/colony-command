@@ -5,6 +5,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-11-10
+
+- Stuck phases: surface the question, keep the work for review, resume from it (#84)
+- Workflow graph: align parallel members, fold tall graphs into stacks (#83)
+
 ## [0.1.20] - 2026-11-10
 
 - Inline phases: run skills that start agents in the main session (#82)
