@@ -5,6 +5,10 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-11-10
+
+- Inline phases: run skills that start agents in the main session (#82)
+
 ## [0.1.19] - 2026-11-09
 
 - Workflows: own editor entry, and draft them with Claude (#81)
