@@ -105,6 +105,7 @@ const MET_SCHEMA = { type: 'object', properties: { met: { type: 'boolean' }, rea
 const CHOICE_SCHEMA = { type: 'object', properties: { choice: { type: 'integer' }, reason: { type: 'string' } }, required: ['choice'] }
 const judge = (label, phaseName, schema) => ({ label, phase: phaseName, schema, effort: 'low', ...(JUDGE_MODEL ? { model: JUDGE_MODEL } : {}) })
 
+const noteFile = (step, name) => `${NOTES}/${String(step).padStart(2, '0')}-${slug(name)}.md`
 const denies = (said) => /^(no|deny|denied|decline|declined|reject|rejected)\b/i.test(said)
 // What the user said when they declined the phase before this one, handed to the phase that took over.
 let declined = null
@@ -118,10 +119,10 @@ const brief = (p, step, round) => [
   p.group !== null ? `This phase runs at the same time as ${GROUPS[p.group].filter((m) => PHASES[m].name !== p.name).map((m) => `"${PHASES[m].name}"`).join(', ')}, in the same working folder. Keep to this phase's own job and do not edit files the others are likely to change; if you must, say so in your note.` : '',
   round > 1 ? `This is round ${round} of a repeating run: read the latest notes for what the last round found, and deal with it.` : '',
   `Earlier phases left short notes in ${NOTES}/, one file per phase run, numbered in order. Read the latest ones you need before you start: they are how phases hand work to each other. Use the Glob, Read and Write tools for notes, never shell commands (cd, ls, cat, mkdir, printf): the marker above is the only Bash command this phase needs for them.`,
-  `Do only this phase's work; later phases handle the rest. When you finish, write a note of at most 15 lines to ${NOTES}/${String(step).padStart(2, '0')}-${slug(p.name)}.md saying what you did, what you decided and what the next phase must know. Then reply with one sentence.`,
+  `Do only this phase's work; later phases handle the rest. When you finish, write a note of at most 15 lines to ${noteFile(step, p.name)} saying what you did, what you decided and what the next phase must know. Then reply with one sentence.`,
   declined ? `The user declined to start "${declined.phase}"${declined.why ? `, saying: ${declined.why}` : ''}. Take that into account.` : '',
-  ANSWERS[p.name] ? `The user answered a question from this phase: ${ANSWERS[p.name]}` : '',
-  `If you cannot go on without the user's input, do not guess: reply starting with "BLOCKED:" followed by your question.`,
+  ANSWERS[p.name] ? `The user answered a question this phase stopped to ask: ${ANSWERS[p.name]}\nAn earlier attempt left a note of its progress at ${noteFile(step, p.name)}: read it first and carry on from there, keeping the work that is already done, instead of starting over.` : '',
+  `If you cannot go on without the user's input, do not guess and do not stop quietly. First write down in that note file what you have done so far, what you found and what is still open, so the user can review it. Then reply starting with "BLOCKED:" followed by one clear question (offer the options you see, if there are any).`,
   ADVISOR ? 'You have an advisor tool: consult it before you finish if the work was not trivial.' : '',
 ].filter(Boolean).join('\n')
 
@@ -221,8 +222,8 @@ Look at the repository and the notes in ${NOTES}/ as needed. Answer needed=true 
     todo.forEach((x, k) => {
       const reply = replies[k]
       const q = PHASES[x.m]
-      if (reply === null || reply === undefined) blocked = blocked || { phase: q.name, question: 'The agent for this phase did not finish.' }
-      else if (typeof reply === 'string' && /^\s*BLOCKED:/i.test(reply)) blocked = blocked || { phase: q.name, question: reply.replace(/^\s*BLOCKED:\s*/i, '').slice(0, 600) }
+      if (reply === null || reply === undefined) blocked = blocked || { phase: q.name, note: noteFile(x.step, q.name), question: 'The agent for this phase did not finish.' }
+      else if (typeof reply === 'string' && /^\s*BLOCKED:/i.test(reply)) blocked = blocked || { phase: q.name, note: noteFile(x.step, q.name), question: reply.replace(/^\s*BLOCKED:\s*/i, '').slice(0, 600) }
       else ran.push(q.name)
     })
     if (blocked) break
@@ -298,11 +299,11 @@ Look at the repository and the notes in ${NOTES}/ as needed. Answer needed=true 
     declined = null
     const reply = await agent(note, { label: round > 1 ? `${p.name} (round ${round})` : p.name, phase: p.name })
     if (reply === null || reply === undefined) {
-      blocked = { phase: p.name, question: 'The agent for this phase did not finish.' }
+      blocked = { phase: p.name, note: noteFile(step, p.name), question: 'The agent for this phase did not finish.' }
       break
     }
     if (typeof reply === 'string' && /^\s*BLOCKED:/i.test(reply)) {
-      blocked = { phase: p.name, question: reply.replace(/^\s*BLOCKED:\s*/i, '').slice(0, 600) }
+      blocked = { phase: p.name, note: noteFile(step, p.name), question: reply.replace(/^\s*BLOCKED:\s*/i, '').slice(0, 600) }
       break
     }
     ran.push(p.name)

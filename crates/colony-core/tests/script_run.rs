@@ -81,10 +81,16 @@ fn takes_the_branch_whose_condition_holds_else_the_otherwise() {
 fn a_blocked_phase_stops_the_run_and_resumes_with_the_answer() {
     let Some(r) = run(LINEAR, &Options::default(), json!({"skip": {}, "blocked": {"Plan": "Which database?"}})) else { return };
     assert_eq!(names(&r, "ran"), ["Investigate"]);
-    assert_eq!(r["result"]["blocked"], json!({"phase": "Plan", "question": "Which database?"}));
+    assert_eq!(r["result"]["blocked"], json!({"phase": "Plan", "note": ".colony/notes/02-plan.md", "question": "Which database?"}));
+    // The phase is told to leave its progress for review before it stops to ask.
+    let ask = r["calls"].as_array().unwrap().iter().find(|c| c["label"] == json!("Plan")).unwrap()["prompt"].as_str().unwrap().to_string();
+    assert!(ask.contains("First write down in that note file what you have done so far") && ask.contains("BLOCKED:"), "{ask}");
     let Some(r) = run(LINEAR, &Options::default(), json!({"skip": {}, "blocked": {"Plan": "Which database?"}, "answers": {"Plan": "Postgres"}, "args": {"answers": {"Plan": "Postgres"}}})) else { return };
     assert_eq!(names(&r, "ran"), ["Investigate", "Plan", "Develop", "Publish"]);
     assert_eq!(r["result"]["blocked"], Value::Null);
+    // The re-run carries on from the progress note rather than starting over.
+    let again = r["calls"].as_array().unwrap().iter().find(|c| c["label"] == json!("Plan")).unwrap()["prompt"].as_str().unwrap().to_string();
+    assert!(again.contains("Postgres") && again.contains(".colony/notes/02-plan.md") && again.contains("carry on from there"), "{again}");
 }
 
 #[test]
@@ -156,7 +162,7 @@ fn a_member_can_be_skipped_on_its_own() {
 fn a_blocked_member_lets_the_others_finish_then_stops_the_run() {
     let Some(r) = run(SIDE, &Options::default(), json!({"skip": {}, "blocked": {"Test": "Which suite?"}})) else { return };
     assert_eq!(names(&r, "ran"), ["Plan", "Docs"]);
-    assert_eq!(r["result"]["blocked"], json!({"phase": "Test", "question": "Which suite?"}));
+    assert_eq!(r["result"]["blocked"], json!({"phase": "Test", "note": ".colony/notes/02-test.md", "question": "Which suite?"}));
 }
 
 const SIDE_GATED: &str = r#"{"phases":[{"skill":"Plan"},{"skill":"Test","approve":true},{"skill":"Docs","approve":true},{"skill":"Ship"}],"parallel":[{"phases":["Test","Docs"]}]}"#;
