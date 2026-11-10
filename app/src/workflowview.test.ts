@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { exits, followers, layout, loopRound, pathLine, phaseLine, runningByPhase, taken, workflowBlock } from "./workflowview";
+import { exits, followers, foldPoints, layout, loopRound, pathLine, phaseLine, pickFolds, runningByPhase, taken, workflowBlock, workflowPopout } from "./workflowview";
 import type { Agent, Workflow, WorkflowInfo } from "./types";
 
 const wf: Workflow = {
@@ -228,8 +228,10 @@ describe("arrows that skip columns", () => {
       ],
     };
     const html = workflowBlock(agent({ workflow: { workflow: skip, visits: [], active: null } }), []);
-    // a -> c skips b: its curve bows out to the left of the column (a negative x in the path).
-    expect(html).toMatch(/d="M0 15 C-\d+ \d+ -\d+ \d+ -3 \d+"/);
+    // a -> c skips b: its curve bows out to the left of the column (control points left of where it starts).
+    const m = /d="M(\d+) 15 C(\d+) \d+ (\d+) \d+ (\d+) \d+"/.exec(html)!;
+    expect(Number(m[2])).toBeLessThan(Number(m[1]));
+    expect(Number(m[3])).toBeLessThan(Number(m[4]));
     // The room for it is on the left: the svg is wider than for a plain chain.
     const width = (h: string) => Number(/<svg[^>]* width="(\d+)"/.exec(h)![1]);
     const plain = workflowBlock(agent({ workflow: { workflow: { ...skip, phases: [{ ...skip.phases[0], next: ["b"] }, skip.phases[1], skip.phases[2]] }, visits: [], active: null } }), []);
@@ -286,5 +288,59 @@ describe("phases that run in parallel", () => {
     expect(html).toContain("wf-par");
     const plain = workflowBlock(agent({ workflow: { workflow: { ...par, parallel: [] }, visits: [], active: null } }), []);
     expect(plain).not.toContain("wf-par");
+  });
+});
+
+describe("phases that run in parallel at the start or after a gap", () => {
+  const phase = (skill: string, next: string[] = []) => ({ skill, when: "", next });
+  it("keeps the members side by side on one level even when nothing leads into them", () => {
+    const first: Workflow = { id: "f", label: "F", description: "", phases: [phase("test"), phase("docs"), phase("lint"), phase("ship")], parallel: [{ phases: ["test", "docs", "lint"] }] };
+    const n = layout(first);
+    expect(new Set(n.slice(0, 3).map((x) => x.col)).size).toBe(1);
+    expect(n.slice(0, 3).map((x) => x.row)).toEqual([0, 1, 2]);
+    expect(n[3].col).toBe(1);
+  });
+  it("keeps them on one level when they are reached from different depths", () => {
+    const w: Workflow = { id: "f", label: "F", description: "", phases: [phase("a", ["b"]), phase("b", ["test"]), phase("test"), phase("docs"), phase("ship")], parallel: [{ phases: ["test", "docs"] }] };
+    const n = Object.fromEntries(layout(w).map((x) => [x.skill, x]));
+    expect(n.test.col).toBe(n.docs.col);
+  });
+});
+
+describe("folding a tall graph", () => {
+  const chain = (n: number): Workflow => ({ id: "c", label: "C", description: "", phases: Array.from({ length: n }, (_, i) => ({ skill: `p${i}`, when: "", next: [] })) });
+  const size = (html: string) => ({ w: Number(/<svg[^>]* width="(\d+)"/.exec(html)![1]), h: Number(/<svg[^>]* height="(\d+)"/.exec(html)![1]) });
+  const draw = (w: Workflow, big = false) => (big ? workflowPopout : workflowBlock)(agent({ workflow: { workflow: w, visits: [], active: null } }), []);
+
+  it("finds the places where one arrow joins a stack to the next", () => {
+    expect(foldPoints(4, [[0, 1], [1, 2], [2, 3]], [])).toEqual([0, 1, 2]);
+    expect(foldPoints(4, [[0, 1], [1, 3], [2, 3]], [])).toEqual([0]);
+    expect(foldPoints(4, [[0, 1], [1, 2], [2, 3]], [[1, 2]])).toEqual([0, 2]);
+    expect(foldPoints(4, [[0, 1], [1, 2], [2, 3], [3, 1]], [])).toEqual([0]);
+  });
+  it("picks folds that make the stacks about equally tall", () => {
+    expect(pickFolds([0, 1, 2, 3, 4, 5, 6], 8, 2)).toEqual([3]);
+    expect(pickFolds([0, 1, 2, 3, 4, 5, 6], 8, 4)).toEqual([1, 3, 5]);
+    expect(pickFolds([2], 8, 3)).toBeNull();
+  });
+  it("leaves a short chain in one stack and folds a long one in a big window", () => {
+    const short = size(draw(chain(4), true));
+    expect(short.h).toBeGreaterThan(short.w * 0.5);
+    const tall = chain(12);
+    const panel = size(draw(tall));
+    const big = size(draw(tall, true));
+    expect(big.w).toBeGreaterThan(panel.w);
+    expect(big.h).toBeLessThan(panel.h);
+    expect(big.w / big.h).toBeGreaterThan(1);
+  });
+  it("joins the stacks with an arrow and keeps every phase", () => {
+    const html = draw(chain(12), true);
+    expect(html.match(/class="wf-node/g)!.length).toBe(12);
+    expect(html).toMatch(/d="M\d+ \d+ V\d+ H\d+ V-7 H\d+ V-?\d+"/);
+  });
+  it("does not fold across a loop, and a folded graph draws the same every time", () => {
+    const looped = { ...chain(8), loops: [{ from: "p0", to: "p7", until: "", max: 3 }] };
+    expect(draw(looped, true)).not.toMatch(/V-7/);
+    expect(draw(chain(12), true)).toBe(draw(chain(12), true));
   });
 });

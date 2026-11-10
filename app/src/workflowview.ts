@@ -17,6 +17,15 @@ const LABEL_GAP_V = 34;
 /** Room for a condition written beside an arrow that runs round the side. */
 const LABEL_W = 96;
 const PAD = 10;
+/** Between the stacks a tall graph is folded into, and under/over them for the arrow that joins one to the next. */
+const SEG_GAP = 44;
+const FOLD_ROOM = 14;
+/** The shape (width over height) a graph is folded towards: a narrow panel wants it tall, a big window wide. */
+export const ASPECT_PANEL = 0.7;
+export const ASPECT_BIG = 1.8;
+const MAX_STACKS = 4;
+/** A stack shorter than this isn't worth the fold. */
+const MIN_STACK = 3;
 /** Room under the graph for edges that go back to an earlier phase. */
 const BACK_ROOM = 22;
 /** A loop's frame sits this far outside its phases, and a further step more for each loop inside it. */
@@ -94,11 +103,10 @@ export function layout(w: Workflow, gapX: number = GAP_X): Node[] {
     }
     state[u] = 2;
   };
-  for (let r = 0; r < n; r++) {
-    if (state[r] !== 0) continue;
-    depth[r] = r === 0 ? 0 : Math.max(...depth) + 1;
-    walk(r);
-    for (let pass = 0; pass < n; pass++) {
+  // Phases that run together sit on one level, side by side, whatever leads into each.
+  const together = groupsOf(w);
+  const relax = () => {
+    for (let pass = 0; pass < n * 2; pass++) {
       let moved = false;
       for (const [u, v] of forward) {
         if (depth[v] < depth[u] + 1) {
@@ -106,8 +114,24 @@ export function layout(w: Workflow, gapX: number = GAP_X): Node[] {
           moved = true;
         }
       }
+      for (const m of together) {
+        const level = Math.max(...m.map((j) => depth[j]));
+        for (const j of m) {
+          if (depth[j] !== level) {
+            depth[j] = level;
+            moved = true;
+          }
+        }
+      }
       if (!moved) break;
     }
+  };
+  for (let r = 0; r < n; r++) {
+    if (state[r] !== 0) continue;
+    const mine = together.find((m) => m.includes(r) && m[0] !== r);
+    depth[r] = r === 0 ? 0 : mine ? depth[mine[0]] : Math.max(...depth) + 1;
+    walk(r);
+    relax();
   }
   const rows = new Map<number, number>();
   return w.phases.map((p, i) => {
@@ -193,7 +217,35 @@ function loopLabel(info: WorkflowInfo, l: WorkflowLoop): string {
   return `↻ ${round ? `round ${round} of ${l.max}` : `up to ${l.max} rounds`}${until ? ` · until ${until}` : ""}`;
 }
 
-function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
+/**
+ * Where a tall graph may be folded into stacks side by side: after level k when every arrow
+ * crossing the fold goes from level k to level k+1, and no loop frame spans it. `arrows` are
+ * the (from, to) levels of every arrow drawn.
+ */
+export function foldPoints(cols: number, arrows: [number, number][], frames: [number, number][]): number[] {
+  const out: number[] = [];
+  for (let k = 0; k < cols - 1; k++) {
+    const crossing = arrows.filter(([a, b]) => (a <= k) !== (b <= k));
+    if (crossing.some(([a, b]) => !(a === k && b === k + 1))) continue;
+    if (frames.some(([a, b]) => a <= k && k < b)) continue;
+    out.push(k);
+  }
+  return out;
+}
+
+/** The fold points to use so that `stacks` stacks come out about equally tall; null if there aren't enough places to fold. */
+export function pickFolds(points: number[], cols: number, stacks: number): number[] | null {
+  const chosen: number[] = [];
+  for (let s = 1; s < stacks; s++) {
+    const ideal = (cols * s) / stacks - 1;
+    const free = points.filter((k) => !chosen.length || k > chosen[chosen.length - 1]);
+    if (!free.length) return null;
+    chosen.push(free.reduce((best, k) => (Math.abs(k - ideal) < Math.abs(best - ideal) ? k : best)));
+  }
+  return chosen;
+}
+
+function graph(owner: string, info: WorkflowInfo, kids: Agent[], aspect: number = ASPECT_PANEL): string {
   // Marker ids are per session: graphs of several sessions can be in the page, and the same one must redraw identically.
   const ids = { arrow: `wf-arrow-${owner.replace(/[^A-Za-z0-9_-]/g, "-")}` };
   const w = info.workflow;
@@ -201,29 +253,64 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
   const labelled = w.phases.some((_, i) => exits(w, i).some((e) => e.label));
   // The graph runs top to bottom: a column of the layout becomes a row, so it stays narrow and grows taller.
   const gapV = labelled ? LABEL_GAP_V : GAP_V;
-  const nodes = layout(w).map((n) => ({ ...n, x: n.row * (NODE_W + GAP_X), y: n.col * (NODE_H + gapV) }));
-  const at = new Map(nodes.map((n) => [n.skill, n]));
-  const cols = Math.max(...nodes.map((n) => n.col)) + 1;
-  const rows = Math.max(...nodes.map((n) => n.row)) + 1;
+  const placed = layout(w);
+  const colOf = new Map(placed.map((n) => [n.skill, n.col]));
+  const cols = Math.max(...placed.map((n) => n.col)) + 1;
+  const rows = Math.max(...placed.map((n) => n.row)) + 1;
   const loops = (w.loops ?? []).filter((l) => span(w, l));
   const levels = nesting({ ...w, loops });
   const outer = loops.length ? FRAME + FRAME_STEP * Math.max(...levels) : 0;
-  const hasBack = w.phases.some((_, i) => followers(w, i).some((n) => (at.get(n)?.col ?? 0) <= (at.get(w.phases[i].skill)?.col ?? 0))) || loops.length > 0;
+  const hasBack = w.phases.some((_, i) => followers(w, i).some((n) => (colOf.get(n) ?? 0) <= (colOf.get(w.phases[i].skill) ?? 0))) || loops.length > 0;
   const backRoom = BACK_ROOM + (labelled ? LABEL_W : 0);
   const innerW = rows * NODE_W + (rows - 1) * GAP_X + (hasBack ? backRoom : 0);
-  const innerH = cols * NODE_H + (cols - 1) * gapV;
   const loopTop = loops.length ? outer + LABEL_ROOM : 0;
-  const skip = (from: string, to: string) => (at.get(to)?.col ?? 0) - (at.get(from)?.col ?? 0);
+  const skip = (from: string, to: string) => (colOf.get(to) ?? 0) - (colOf.get(from) ?? 0);
   const longest = Math.max(0, ...w.phases.flatMap((p, i) => exits(w, i).map((e) => skip(p.skill, e.to))));
   // Arrows that skip rows arc out on the left; the longer the skip, the wider.
   const rise = (s: number) => outer + 12 + 8 * (s - 2);
   const skipLabelled = w.phases.some((p, i) => exits(w, i).some((e) => e.label && skip(p.skill, e.to) > 1));
   const arcRoom = longest > 1 ? rise(longest) - outer + (skipLabelled ? LABEL_W : 0) : 0;
-  const left = PAD + outer + arcRoom;
+  const left = PAD + outer;
   const top = PAD + loopTop;
+  // A tall graph is folded into stacks side by side, at places where one arrow joins one stack to the next.
+  const arrowLevels: [number, number][] = [
+    ...w.phases.flatMap((p, i) => exits(w, i).map((e): [number, number] => [colOf.get(p.skill) ?? 0, colOf.get(e.to) ?? 0])),
+    ...w.phases.flatMap((p): [number, number][] => (p.approve && p.on_deny ? [[colOf.get(p.skill) ?? 0, colOf.get(p.on_deny) ?? 0]] : [])),
+    ...loops.map((l): [number, number] => [colOf.get(l.to) ?? 0, colOf.get(l.from) ?? 0]),
+  ];
+  const frameLevels = loops.map((l): [number, number] => {
+    const sp = span(w, l)!;
+    const cs = w.phases.slice(sp[0], sp[1] + 1).map((p) => colOf.get(p.skill) ?? 0);
+    return [Math.min(...cs), Math.max(...cs)];
+  });
+  const points = foldPoints(cols, arrowLevels, frameLevels);
+  const pitch = arcRoom + innerW + SEG_GAP;
   const loopLabelW = Math.max(0, ...loops.map((l) => 6 + 5.6 * (loopLabel(info, l).length + 2)));
-  const width = Math.ceil(Math.max(left + innerW + PAD + outer, PAD + outer + loopLabelW));
-  const height = top + innerH + PAD + outer;
+  const sizeOf = (folds: number[]) => {
+    const tallest = Math.max(...[...folds, cols - 1].map((k, i) => k - (i ? folds[i - 1] : -1)));
+    return {
+      w: Math.ceil(Math.max(left + (folds.length + 1) * pitch - SEG_GAP + PAD + outer, PAD + outer + loopLabelW)),
+      h: top + tallest * NODE_H + (tallest - 1) * gapV + PAD + outer + (folds.length ? FOLD_ROOM : 0),
+    };
+  };
+  const shape = (folds: number[]) => {
+    const { w: fw, h: fh } = sizeOf(folds);
+    return Math.abs(Math.log(fw / fh / aspect));
+  };
+  let folds: number[] = [];
+  for (let stacks = 2; stacks <= MAX_STACKS; stacks++) {
+    const f = pickFolds(points, cols, stacks);
+    const levels = f ? [...f, cols - 1].map((k, i) => k - (i ? f[i - 1] : -1)) : [];
+    if (f && Math.min(...levels) >= MIN_STACK && shape(f) < shape(folds)) folds = f;
+  }
+  const stackOf = (col: number) => folds.filter((k) => col > k).length;
+  const startOf = (stack: number) => (stack ? folds[stack - 1] + 1 : 0);
+  const nodes = placed.map((n) => {
+    const st = stackOf(n.col);
+    return { ...n, x: st * pitch + arcRoom + n.row * (NODE_W + GAP_X), y: (n.col - startOf(st)) * (NODE_H + gapV) };
+  });
+  const at = new Map(nodes.map((n) => [n.skill, n]));
+  const { w: width, h: height } = sizeOf(folds);
   const walked = taken(info);
   const visits = new Map<string, number>();
   for (const v of info.visits) visits.set(v.skill, (visits.get(v.skill) ?? 0) + 1);
@@ -252,7 +339,16 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
       if (!b) continue;
       drawn.add(`${p.skill}>${n}`);
       const used = walked.has(`${p.skill}>${n}`);
-      if (b.col > a.col) {
+      if (b.col > a.col && stackOf(b.col) !== stackOf(a.col)) {
+        // Over to the next stack: down under this one, across, and up over the next.
+        const x1 = a.x + NODE_W / 2;
+        const x2 = b.x + NODE_W / 2;
+        const xg = stackOf(b.col) * pitch - SEG_GAP / 2;
+        const yd = Math.max(...nodes.map((m) => m.y + NODE_H)) + 7;
+        const yu = -7;
+        edges.push(`<path class="wf-edge${used ? " taken" : ""}" d="M${x1} ${a.y + NODE_H} V${yd} H${xg} V${yu} H${x2} V${b.y - 3}" marker-end="${arrow(used)}"/>`);
+        say(xg + 5, (yd + yu) / 2, label, full);
+      } else if (b.col > a.col) {
         const x1 = a.x + NODE_W / 2;
         const y1 = a.y + NODE_H;
         const x2 = b.x + NODE_W / 2;
@@ -260,7 +356,7 @@ function graph(owner: string, info: WorkflowInfo, kids: Agent[]): string {
         const my = (y1 + y2) / 2;
         if (b.col - a.col > 1) {
           // Skips rows: arc out to the left rather than run through the phases between.
-          const xc = -rise(b.col - a.col);
+          const xc = stackOf(a.col) * pitch + arcRoom - rise(b.col - a.col);
           const ys = a.y + NODE_H / 2;
           const ye = b.y + NODE_H / 2;
           edges.push(`<path class="wf-edge${used ? " taken" : ""}" d="M${a.x} ${ys} C${xc} ${ys + 24} ${xc} ${ye - 30} ${b.x - 3} ${ye}" marker-end="${arrow(used)}"/>`);
@@ -358,7 +454,7 @@ export function workflowPopout(a: Agent, kids: Agent[]): string {
   if (a.kind !== "main" || !info || info.workflow.phases.length === 0) return "";
   const path = pathLine(info);
   const status = info.active ? `In <b>${esc(info.active)}</b>` : "No phase started yet";
-  return `<div class="wf-status muted small">${status}</div><div class="wf-scroll wf-big">${graph(`${a.id}-big`, info, kids)}</div>${path ? `<div class="wf-path small">${esc(path)}</div>` : ""}`;
+  return `<div class="wf-status muted small">${status}</div><div class="wf-scroll wf-big">${graph(`${a.id}-big`, info, kids, ASPECT_BIG)}</div>${path ? `<div class="wf-path small">${esc(path)}</div>` : ""}`;
 }
 
 /** A subagent's phase, for its panel: "Started in phase build", or "". */
