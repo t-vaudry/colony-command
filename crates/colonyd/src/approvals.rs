@@ -12,13 +12,16 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use colony_core::Colony;
 use crate::policy::{self, Policy, Suggested};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
+
+/// How long a remote client counts as watching after its last presence signal.
+pub const PRESENCE_TTL: Duration = Duration::from_secs(45);
 
 /// Longest a request is held. The hook's own timeout is 600 s.
 pub const MAX_WAIT: Duration = Duration::from_secs(570);
@@ -78,11 +81,30 @@ pub struct Approvals {
     pub policy: Policy,
     /// Connected maps. With none, nobody could answer, so nothing is held.
     pub maps: AtomicUsize,
+    /// Remote clients (connection id -> last presence signal). A remote client
+    /// that is merely connected doesn't count: it has to say it is in the
+    /// foreground, and keep saying so, or requests wouldn't wait on it.
+    presence: Mutex<HashMap<u64, Instant>>,
 }
 
 impl Approvals {
     pub fn anyone_watching(&self) -> bool {
+        self.watching_at(Instant::now())
+    }
+
+    fn watching_at(&self, now: Instant) -> bool {
         self.maps.load(Ordering::SeqCst) > 0
+            || self.presence.lock().unwrap().values().any(|t| now.saturating_duration_since(*t) < PRESENCE_TTL)
+    }
+
+    /// A remote client says it is looking at the map (or, with `false`, that it stopped).
+    pub fn set_present(&self, conn: u64, present: bool) {
+        let mut p = self.presence.lock().unwrap();
+        if present {
+            p.insert(conn, Instant::now());
+        } else {
+            p.remove(&conn);
+        }
     }
 
     pub fn hold(&self, request_id: &str, held: Held) -> oneshot::Receiver<Decision> {
@@ -234,6 +256,30 @@ impl Drop for Hold {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_client_watches_only_while_it_keeps_saying_so() {
+        let a = Approvals::default();
+        assert!(!a.anyone_watching());
+        a.set_present(7, true);
+        assert!(a.anyone_watching());
+        // Gone quiet: no longer watching, so requests aren't held for it.
+        assert!(!a.watching_at(Instant::now() + PRESENCE_TTL + Duration::from_secs(1)));
+        a.set_present(7, false);
+        assert!(!a.anyone_watching());
+        // A local map still counts as soon as it connects.
+        a.maps.fetch_add(1, Ordering::SeqCst);
+        assert!(a.anyone_watching());
+    }
+
+    #[test]
+    fn a_request_is_answered_once() {
+        let a = Approvals::default();
+        let mut rx = a.hold("q", Held { agent_id: "s".into(), tool: "Bash".into(), suggestions: vec![], input: None, project: None });
+        assert!(a.decide("q", Choice::Allow, None, None).is_ok());
+        assert!(a.decide("q", Choice::Deny, None, None).is_err(), "the second client finds it already answered");
+        assert_eq!(rx.try_recv().unwrap(), Decision::Allow { rule: None, updated_input: None });
+    }
 
     fn held(tool: &str, suggestions: Vec<Value>) -> Held {
         Held { agent_id: "s".into(), tool: tool.into(), suggestions, input: None, project: Some(("c:/code/api".into(), "api".into())) }

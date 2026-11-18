@@ -58,7 +58,7 @@ pub fn router(shared: Arc<Shared>) -> Router {
 /// What the VPN listener serves: the map's socket and the snapshot, nothing
 /// else. Hooks, acks and ingest stay on loopback.
 pub fn remote_router(shared: Arc<Shared>) -> Router {
-    Router::new().route("/ws", get(ws)).route("/api/agents", get(agents)).with_state(shared)
+    Router::new().route("/ws", get(ws)).route("/api/agents", get(agents)).layer(axum::Extension(Remote)).with_state(shared)
 }
 
 fn authorized(shared: &Shared, params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
@@ -215,7 +215,11 @@ enum Command {
     Send { term: String, text: String },
     /// Esc: stop what the agent is doing, keep the session.
     Interrupt { term: String },
+    /// Owner-wins: only the desktop resizes a shared terminal; a remote client's resize is ignored.
     Resize { term: String, cols: u16, rows: u16 },
+    /// A remote client says whether it is in the foreground. Sent every ~20 s while it is;
+    /// without it, requests don't wait on a remote client.
+    Presence { foreground: bool },
     /// End the session's process.
     Kill { term: String },
     /// Switch a Colony-started session's model (types `/model <name>`).
@@ -301,7 +305,16 @@ enum Command {
 #[derive(Default)]
 struct Conn {
     attached: Option<String>,
+    /// Arrived on the VPN listener.
+    remote: bool,
+    id: u64,
 }
+
+static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Marks the router served on the VPN listener, so its connections are known as remote.
+#[derive(Clone, Copy)]
+pub struct Remote;
 
 fn error(message: impl std::fmt::Display) -> Option<String> {
     Some(json!({ "type": "error", "message": message.to_string() }).to_string())
@@ -417,7 +430,19 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
             Err(e) => Err(e),
         },
         Command::Interrupt { term } => pty.input(&term, b"\x1b").map(|_| None),
-        Command::Resize { term, cols, rows } => pty.resize(&term, cols, rows).map(|_| None),
+        Command::Resize { term, cols, rows } => {
+            if conn.remote {
+                Ok(None)
+            } else {
+                pty.resize(&term, cols, rows).map(|_| None)
+            }
+        }
+        Command::Presence { foreground } => {
+            if conn.remote {
+                shared.approvals.set_present(conn.id, foreground);
+            }
+            Ok(None)
+        }
         Command::Kill { term } => pty.kill(&term).map(|_| None),
         Command::FixNeed { id, cols, rows } => match crate::needs::start(shared, &id, cols, rows).await {
             Ok(term) => {
@@ -504,6 +529,7 @@ async fn ws(
     State(shared): State<Arc<Shared>>,
     Query(params): Params,
     headers: HeaderMap,
+    remote: Option<axum::Extension<Remote>>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
     if !authorized(&shared, &params, &headers) {
@@ -511,23 +537,32 @@ async fn ws(
     }
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("no origin").to_string();
     log(format!("map connected ({origin})"));
-    upgrade.on_upgrade(move |socket| stream(shared, socket))
+    let remote = remote.is_some();
+    upgrade.on_upgrade(move |socket| stream(shared, socket, remote))
 }
 
-async fn stream(shared: Arc<Shared>, socket: WebSocket) {
-    // Count this map as able to answer permission requests while it's open.
-    shared.approvals.maps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    struct Watching(Arc<crate::approvals::Approvals>);
+async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool) {
+    let id = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // A desktop map counts as able to answer permission requests while it's open.
+    // A remote one only while it says it is in the foreground (`Presence`).
+    if !remote {
+        shared.approvals.maps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    struct Watching(Arc<crate::approvals::Approvals>, bool, u64);
     impl Drop for Watching {
         fn drop(&mut self) {
-            self.0.maps.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            if self.1 {
+                self.0.set_present(self.2, false);
+            } else {
+                self.0.maps.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
         }
     }
-    let _watching = Watching(shared.approvals.clone());
+    let _watching = Watching(shared.approvals.clone(), remote, id);
     // Subscribe before taking the snapshot so no delta falls in the gap.
     let mut rx = shared.deltas.subscribe();
     let mut term_rx = shared.pty.output.subscribe();
-    let mut conn = Conn::default();
+    let mut conn = Conn { attached: None, remote, id };
     let (mut tx, mut incoming) = socket.split();
     if tx.send(Message::Text(snapshot(&shared).await.into())).await.is_err() {
         return;
@@ -1190,9 +1225,20 @@ pub async fn hold_permission(shared: &Arc<Shared>, host: HostId, body: &str) -> 
             let _ = events.try_send(Envelope { ts: now_ms(), host, session_id: sid, cwd: None, event: DomainEvent::PermissionSettled { request_id: rid, answered } });
         })),
     };
+    // Also stop waiting once nobody is watching any more (a tablet put down,
+    // the map closed): Claude Code's own prompt takes over.
+    let unattended = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            if !shared.approvals.anyone_watching() {
+                return;
+            }
+        }
+    };
     let decision = tokio::select! {
         d = rx => d.unwrap_or(Decision::Pass),
         _ = tokio::time::sleep(MAX_WAIT) => Decision::Pass,
+        _ = unattended => Decision::Pass,
     };
     answered.store(decision != Decision::Pass, std::sync::atomic::Ordering::SeqCst);
     log(format!("permission request {request_id}: {decision:?}"));
