@@ -311,7 +311,13 @@ export class Hud {
     const code = p
       ? `<div class="choice"><p>Enter this code on the device (valid 5 minutes, once): <b class="mono">${esc(p.code.slice(0, 4))} ${esc(p.code.slice(4))}</b></p>${p.remote ? `<p class="muted small">Connect to ${esc(p.remote)}</p>` : ""}<div class="actions"><button type="button" data-hide-pairing>Done</button></div></div>`
       : "";
-    return `<div class="fact"><span class="k">Paired devices</span><span>${list || `<span class="muted small">None yet.</span>`}<button type="button" data-pair-device>Pair a device</button></span></div>${code}`;
+    const a = this.daemon.audit;
+    const log = a
+      ? `<div class="choice"><p><b>Remote activity</b> <span class="muted small">device, kind of command and time only; never what was typed</span></p>${
+          a.length ? a.map((e) => `<div class="row small"><span>${new Date(e.ts).toLocaleString()}</span><span>${esc(e.device_name)}</span><span>${esc(e.command.replace(/_/g, " "))}${e.allowed ? "" : " (refused)"}</span></div>`).join("") : `<p class="muted small">Nothing yet.</p>`
+        }<div class="actions"><button type="button" data-hide-audit>Close</button></div></div>`
+      : "";
+    return `<div class="fact"><span class="k">Paired devices</span><span>${list || `<span class="muted small">None yet.</span>`}<button type="button" data-pair-device>Pair a device</button><button type="button" data-show-audit>Remote activity</button></span></div>${code}${log}`;
   }
 
   private modelRows(a: Agent): string {
@@ -1148,6 +1154,8 @@ export class Hud {
     if (el.dataset.contextPct && !this.daemon.setContextPct(Number(el.dataset.contextPct))) this.toast("Not connected to colonyd.");
     if (budgetClick(el, this.daemon.settings, (bot, day) => this.daemon.setBudgets(bot, day)) === false) this.toast("Not connected to colonyd.");
     if (el.hasAttribute("data-pair-device") && !this.daemon.createPairing()) this.toast("Not connected to colonyd.");
+    if (el.hasAttribute("data-show-audit") && !this.daemon.showAudit()) this.toast("Not connected to colonyd.");
+    if (el.hasAttribute("data-hide-audit")) this.daemon.hideAudit();
     if (el.hasAttribute("data-hide-pairing")) this.daemon.hidePairing();
     if (el.dataset.deviceScope && el.dataset.device && !this.daemon.setDeviceScope(el.dataset.device, el.dataset.deviceScope as "view" | "control")) this.toast("Not connected to colonyd.");
     if (el.dataset.revokeDevice && !this.daemon.revokeDevice(el.dataset.revokeDevice)) this.toast("Not connected to colonyd.");

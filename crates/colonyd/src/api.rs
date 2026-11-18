@@ -279,6 +279,8 @@ enum Command {
     RevokeDevice { id: String },
     /// Desktop only: let a device control (or take it back to view-only).
     SetDeviceScope { id: String, scope: crate::devices::Scope },
+    /// Desktop only: the latest remote commands, newest first (kind of command and device, never content).
+    ListAudit,
     /// End the session's process.
     Kill { term: String },
     /// Switch a Colony-started session's model (types `/model <name>`).
@@ -401,10 +403,17 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         }
         let kind = serde_json::from_str::<Kind>(text).map(|k| k.r#type).unwrap_or_default();
         let scope = conn.device.as_deref().and_then(|d| shared.devices.scope_of(d));
+        let who = conn.device.as_deref().unwrap_or("");
+        let name = shared.devices.name_of(who).unwrap_or_default();
+        let audited = crate::audit::Audit::counts(&kind);
         match scope {
             None => return error_code("revoked", "This device is no longer paired."),
             Some(scope) => {
-                if let Err(r) = crate::scopes::allow(&kind, scope) {
+                let verdict = crate::scopes::allow(&kind, scope);
+                if audited {
+                    shared.audit.record(now_ms(), who, &name, &kind, verdict.is_ok());
+                }
+                if let Err(r) = verdict {
                     log(format!("refused {kind} from a {scope:?} device"));
                     return error_code(r.code, r.message);
                 }
@@ -535,6 +544,7 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
                 Err("That device isn't paired any more.".into())
             }
         }
+        Command::ListAudit => Ok(Some(json!({ "type": "audit", "entries": shared.audit.recent(200) }).to_string())),
         Command::SetDeviceScope { id, scope } => {
             if shared.devices.set_scope(&id, scope) {
                 log(format!("device {id} is now {scope:?}"));
@@ -1675,12 +1685,17 @@ mod remote_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn shared() -> Arc<Shared> {
+        shared_with(Default::default())
+    }
+
+    fn shared_with(audit: crate::audit::Audit) -> Arc<Shared> {
         let (ev_tx, _rx) = tokio::sync::mpsc::channel(8);
         Arc::new(Shared {
             colony: tokio::sync::RwLock::new(colony_core::Colony::default()),
             deltas: tokio::sync::broadcast::channel(8).0,
             token: "tok".into(),
             devices: Default::default(),
+            audit,
             pty: crate::pty::PtyHost::new(ev_tx.clone()),
             distros: Default::default(),
             wsl_wake: Default::default(),
@@ -1751,6 +1766,31 @@ mod remote_tests {
         assert_eq!(status_with(remote_router(sh.clone()), "GET", "/api/agents", &bearer).await, 401);
         // The loopback router keeps the hook route.
         assert_ne!(status(router(sh.clone()), "POST", "/api/ack?token=tok").await, 404);
+    }
+
+    #[tokio::test]
+    async fn every_remote_command_is_audited_without_its_content() {
+        let path = std::env::temp_dir().join(format!("colony-audit-api-{}", uuid::Uuid::new_v4().simple())).join("audit.jsonl");
+        let sh = shared_with(crate::audit::Audit::open(path.clone()));
+        let (code, _) = sh.devices.new_code(now_ms());
+        let (info, _) = sh.devices.redeem(&code, "Tablet", now_ms()).unwrap();
+        let mut conn = Conn { attached: None, remote: true, id: 1, device: Some(info.id.clone()) };
+        // View-only: refused, with a code the client can show, and still on the record.
+        let out = handle_command(&sh, &mut conn, r#"{"type":"input","term":"t1","data":"rm -rf C:/secret"}"#).await.unwrap();
+        assert!(out.contains("view_only"), "{out}");
+        sh.devices.set_scope(&info.id, crate::devices::Scope::Control);
+        handle_command(&sh, &mut conn, r#"{"type":"presence","foreground":true}"#).await;
+        handle_command(&sh, &mut conn, r#"{"type":"send","term":"t1","text":"my private prompt"}"#).await;
+        let entries = sh.audit.recent(10);
+        let kinds: Vec<_> = entries.iter().map(|e| (e.command.as_str(), e.allowed)).collect();
+        assert_eq!(kinds, [("send", true), ("input", false)], "newest first, heartbeat left out");
+        assert!(entries.iter().all(|e| e.device_name == "Tablet" && e.device_id == info.id && e.ts > 0));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("secret") && !text.contains("private prompt") && !text.contains("rm -rf"));
+        // The desktop's own commands are not remote commands: not audited.
+        let mut desktop = Conn { attached: None, remote: false, id: 2, device: None };
+        handle_command(&sh, &mut desktop, r#"{"type":"list_devices"}"#).await;
+        assert_eq!(sh.audit.recent(10).len(), 2);
     }
 
     #[test]

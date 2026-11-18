@@ -10,7 +10,7 @@ use crate::devices::Scope;
 pub const VIEW: &[&str] = &["attach", "detach", "presence", "resize", "list_workflows", "folder_crew", "check_crew", "replay"];
 
 /// Managing devices: the desktop only, whatever a device was granted.
-pub const DESKTOP_ONLY: &[&str] = &["create_pairing", "list_devices", "revoke_device", "set_device_scope"];
+pub const DESKTOP_ONLY: &[&str] = &["create_pairing", "list_devices", "revoke_device", "set_device_scope", "list_audit"];
 
 /// Everything that changes state or acts for the user: answering approvals,
 /// typing into or ending sessions, starting work, editing crews and workflows,
