@@ -522,7 +522,10 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
         }
         Command::Presence { foreground } => {
             if conn.remote {
-                shared.approvals.set_present(conn.id, foreground);
+                // Only a device that could answer counts as watching: a view-only one
+                // would otherwise make requests wait for an answer it can't give.
+                let can_answer = conn.device.as_deref().and_then(|d| shared.devices.scope_of(d)) == Some(crate::devices::Scope::Control);
+                shared.approvals.set_present(conn.id, foreground && can_answer);
             }
             Ok(None)
         }
@@ -1652,6 +1655,24 @@ mod remote_tests {
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
         out.split(' ').nth(1).unwrap().parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_a_control_device_counts_as_watching() {
+        let sh = shared();
+        let (code, _) = sh.devices.new_code(now_ms());
+        let (info, _) = sh.devices.redeem(&code, "Tablet", now_ms()).unwrap();
+        let mut conn = Conn { attached: None, remote: true, id: 9, device: Some(info.id.clone()) };
+        let present = r#"{"type":"presence","foreground":true}"#;
+        handle_command(&sh, &mut conn, present).await;
+        assert!(!sh.approvals.anyone_watching(), "a view-only tablet can't answer, so requests don't wait on it");
+        sh.devices.set_scope(&info.id, crate::devices::Scope::Control);
+        handle_command(&sh, &mut conn, present).await;
+        assert!(sh.approvals.anyone_watching());
+        // Downgraded: the next heartbeat clears it.
+        sh.devices.set_scope(&info.id, crate::devices::Scope::View);
+        handle_command(&sh, &mut conn, present).await;
+        assert!(!sh.approvals.anyone_watching());
     }
 
     #[tokio::test]
