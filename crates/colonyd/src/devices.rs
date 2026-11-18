@@ -23,6 +23,18 @@ pub const MAX_FAILS: usize = 5;
 pub const FAIL_WINDOW_MS: u64 = 60 * 1000;
 const MAX_NAME: usize = 40;
 
+/// What a paired device may do. A new device is view-only; control is granted
+/// per device on the desktop.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    /// Read-only: the snapshot, deltas and terminals' output.
+    #[default]
+    View,
+    /// May also answer approvals, send input, start and stop sessions and change settings.
+    Control,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct Stored {
     id: String,
@@ -30,6 +42,9 @@ struct Stored {
     /// SHA-256 of the credential, hex.
     hash: String,
     created_ms: u64,
+    /// Missing in files from before scopes: view.
+    #[serde(default)]
+    scope: Scope,
 }
 
 /// What the desktop app lists.
@@ -39,6 +54,7 @@ pub struct DeviceInfo {
     pub name: String,
     pub created_ms: u64,
     pub last_seen_ms: Option<u64>,
+    pub scope: Scope,
 }
 
 #[derive(Debug, PartialEq)]
@@ -144,8 +160,9 @@ impl Devices {
             name: if name.is_empty() { "Device".into() } else { name },
             hash: hash(&credential),
             created_ms: now,
+            scope: Scope::View,
         };
-        let info = DeviceInfo { id: stored.id.clone(), name: stored.name.clone(), created_ms: now, last_seen_ms: None };
+        let info = DeviceInfo { id: stored.id.clone(), name: stored.name.clone(), created_ms: now, last_seen_ms: None, scope: Scope::View };
         inner.devices.push(stored);
         self.save(&inner);
         Ok((info, credential))
@@ -164,12 +181,25 @@ impl Devices {
         self.inner.lock().unwrap().devices.iter().any(|d| d.id == id)
     }
 
+    /// What a device may do now (read each time, so a grant or revoke applies to open connections).
+    pub fn scope_of(&self, id: &str) -> Option<Scope> {
+        self.inner.lock().unwrap().devices.iter().find(|d| d.id == id).map(|d| d.scope)
+    }
+
+    pub fn set_scope(&self, id: &str, scope: Scope) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let Some(d) = inner.devices.iter_mut().find(|d| d.id == id) else { return false };
+        d.scope = scope;
+        self.save(&inner);
+        true
+    }
+
     pub fn list(&self) -> Vec<DeviceInfo> {
         let inner = self.inner.lock().unwrap();
         inner
             .devices
             .iter()
-            .map(|d| DeviceInfo { id: d.id.clone(), name: d.name.clone(), created_ms: d.created_ms, last_seen_ms: inner.seen.get(&d.id).copied() })
+            .map(|d| DeviceInfo { id: d.id.clone(), name: d.name.clone(), created_ms: d.created_ms, last_seen_ms: inner.seen.get(&d.id).copied(), scope: d.scope })
             .collect()
     }
 
@@ -260,6 +290,30 @@ mod tests {
         // Revoking persists too.
         again.revoke(&info.id);
         assert_eq!(Devices::load(again.path.clone().unwrap()).authenticate(&cred, 3), None);
+    }
+
+    #[test]
+    fn devices_start_view_only_and_control_is_granted_per_device() {
+        let path = temp();
+        let d = Devices::load(path.clone());
+        let (code, _) = d.new_code(0);
+        let (a, _) = d.redeem(&code, "A", 1).unwrap();
+        let (code, _) = d.new_code(0);
+        let (b, _) = d.redeem(&code, "B", 1).unwrap();
+        assert_eq!(d.scope_of(&a.id), Some(Scope::View));
+        assert!(d.set_scope(&a.id, Scope::Control));
+        assert_eq!(d.scope_of(&b.id), Some(Scope::View), "only the device that was granted");
+        assert_eq!(Devices::load(path).scope_of(&a.id), Some(Scope::Control), "kept across restarts");
+        assert!(!d.set_scope("nobody", Scope::Control));
+        assert_eq!(d.scope_of("nobody"), None);
+    }
+
+    #[test]
+    fn a_file_from_before_scopes_loads_as_view() {
+        let path = temp();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"devices":[{"id":"x","name":"Old","hash":"h","created_ms":1}]}"#).unwrap();
+        assert_eq!(Devices::load(path).scope_of("x"), Some(Scope::View));
     }
 
     #[test]

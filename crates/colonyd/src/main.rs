@@ -24,6 +24,7 @@ mod quality;
 mod remote;
 mod resume;
 mod roster;
+mod scopes;
 mod timelapse;
 mod workflow_draft;
 mod workflows;

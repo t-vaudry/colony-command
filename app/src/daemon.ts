@@ -46,6 +46,8 @@ export interface PairedDevice {
   name: string;
   created_ms: number;
   last_seen_ms: number | null;
+  /** View-only until the desktop grants control. */
+  scope: "view" | "control";
 }
 
 /** A pairing code waiting to be typed on a new device. */
@@ -431,6 +433,11 @@ export class Daemon {
   /** Unpair a device; its credential stops working at once. */
   revokeDevice(id: string): boolean {
     return this.send({ type: "revoke_device", id });
+  }
+
+  /** Let a device control (answer approvals, send input...) or take it back to view-only. */
+  setDeviceScope(id: string, scope: "view" | "control"): boolean {
+    return this.send({ type: "set_device_scope", id, scope });
   }
 
   /** Turn the opt-in Haiku classifier for unclear endings on or off. */

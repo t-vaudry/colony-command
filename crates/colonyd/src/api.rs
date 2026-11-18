@@ -254,6 +254,8 @@ enum Command {
     ListDevices,
     /// Desktop only: unpair a device; its credential stops working at once.
     RevokeDevice { id: String },
+    /// Desktop only: let a device control (or take it back to view-only).
+    SetDeviceScope { id: String, scope: crate::devices::Scope },
     /// End the session's process.
     Kill { term: String },
     /// Switch a Colony-started session's model (types `/model <name>`).
@@ -356,6 +358,11 @@ fn error(message: impl std::fmt::Display) -> Option<String> {
     Some(json!({ "type": "error", "message": message.to_string() }).to_string())
 }
 
+/// An error with a code the client can act on (for example, offer to ask for control).
+fn error_code(code: &str, message: &str) -> Option<String> {
+    Some(json!({ "type": "error", "code": code, "message": message }).to_string())
+}
+
 fn term_data(term: &str, bytes: &[u8], reset: bool) -> String {
     let data = base64::engine::general_purpose::STANDARD.encode(bytes);
     json!({ "type": "term_data", "term": term, "data": data, "reset": reset }).to_string()
@@ -363,6 +370,24 @@ fn term_data(term: &str, bytes: &[u8], reset: bool) -> String {
 
 /// Run one command; returns a message to send back to this map, if any.
 async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Option<String> {
+    // A remote device is held to its scope before anything is parsed or run.
+    if conn.remote {
+        #[derive(Deserialize)]
+        struct Kind {
+            r#type: String,
+        }
+        let kind = serde_json::from_str::<Kind>(text).map(|k| k.r#type).unwrap_or_default();
+        let scope = conn.device.as_deref().and_then(|d| shared.devices.scope_of(d));
+        match scope {
+            None => return error_code("revoked", "This device is no longer paired."),
+            Some(scope) => {
+                if let Err(r) = crate::scopes::allow(&kind, scope) {
+                    log(format!("refused {kind} from a {scope:?} device"));
+                    return error_code(r.code, r.message);
+                }
+            }
+        }
+    }
     let cmd = match serde_json::from_str::<Command>(text) {
         Ok(c) => c,
         Err(e) => return error(format!("unknown command ({e})")),
@@ -473,9 +498,6 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
                 pty.resize(&term, cols, rows).map(|_| None)
             }
         }
-        Command::CreatePairing | Command::ListDevices | Command::RevokeDevice { .. } if conn.remote => {
-            Err("Only the desktop app can manage paired devices.".into())
-        }
         Command::CreatePairing => {
             let (code, expires_at) = shared.devices.new_code(now_ms());
             let remote = shared.settings.lock().unwrap().remote_listening.clone();
@@ -490,9 +512,20 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
                 Err("That device isn't paired any more.".into())
             }
         }
+        Command::SetDeviceScope { id, scope } => {
+            if shared.devices.set_scope(&id, scope) {
+                log(format!("device {id} is now {scope:?}"));
+                Ok(Some(devices_message(shared)))
+            } else {
+                Err("That device isn't paired any more.".into())
+            }
+        }
         Command::Presence { foreground } => {
             if conn.remote {
-                shared.approvals.set_present(conn.id, foreground);
+                // Only a device that could answer counts as watching: a view-only one
+                // would otherwise make requests wait for an answer it can't give.
+                let can_answer = conn.device.as_deref().and_then(|d| shared.devices.scope_of(d)) == Some(crate::devices::Scope::Control);
+                shared.approvals.set_present(conn.id, foreground && can_answer);
             }
             Ok(None)
         }
@@ -1622,6 +1655,24 @@ mod remote_tests {
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
         out.split(' ').nth(1).unwrap().parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_a_control_device_counts_as_watching() {
+        let sh = shared();
+        let (code, _) = sh.devices.new_code(now_ms());
+        let (info, _) = sh.devices.redeem(&code, "Tablet", now_ms()).unwrap();
+        let mut conn = Conn { attached: None, remote: true, id: 9, device: Some(info.id.clone()) };
+        let present = r#"{"type":"presence","foreground":true}"#;
+        handle_command(&sh, &mut conn, present).await;
+        assert!(!sh.approvals.anyone_watching(), "a view-only tablet can't answer, so requests don't wait on it");
+        sh.devices.set_scope(&info.id, crate::devices::Scope::Control);
+        handle_command(&sh, &mut conn, present).await;
+        assert!(sh.approvals.anyone_watching());
+        // Downgraded: the next heartbeat clears it.
+        sh.devices.set_scope(&info.id, crate::devices::Scope::View);
+        handle_command(&sh, &mut conn, present).await;
+        assert!(!sh.approvals.anyone_watching());
     }
 
     #[tokio::test]

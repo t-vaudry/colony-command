@@ -306,7 +306,7 @@ export class Hud {
   private devicesRow(): string {
     const p = this.daemon.pairing;
     const list = this.daemon.devices
-      .map((d) => `<div class="row"><span>${esc(d.name)}</span><span class="muted small">paired ${new Date(d.created_ms).toLocaleDateString()}${d.last_seen_ms ? `, seen ${new Date(d.last_seen_ms).toLocaleTimeString()}` : ""}</span><button type="button" data-revoke-device="${esc(d.id)}" title="Unpair this device. It stops working at once.">Revoke</button></div>`)
+      .map((d) => `<div class="row"><span>${esc(d.name)}</span><span class="muted small">paired ${new Date(d.created_ms).toLocaleDateString()}${d.last_seen_ms ? `, seen ${new Date(d.last_seen_ms).toLocaleTimeString()}` : ""}</span><button type="button" data-device-scope="${d.scope === "control" ? "view" : "control"}" data-device="${esc(d.id)}" aria-pressed="${d.scope === "control"}" title="${d.scope === "control" ? "Can answer approvals, type into and end sessions. Click to make it view-only." : "View-only: can watch, not act. Click to let it control."}">${d.scope === "control" ? "Control" : "View only"}</button><button type="button" data-revoke-device="${esc(d.id)}" title="Unpair this device. It stops working at once.">Revoke</button></div>`)
       .join("");
     const code = p
       ? `<div class="choice"><p>Enter this code on the device (valid 5 minutes, once): <b class="mono">${esc(p.code.slice(0, 4))} ${esc(p.code.slice(4))}</b></p>${p.remote ? `<p class="muted small">Connect to ${esc(p.remote)}</p>` : ""}<div class="actions"><button type="button" data-hide-pairing>Done</button></div></div>`
@@ -1149,6 +1149,7 @@ export class Hud {
     if (budgetClick(el, this.daemon.settings, (bot, day) => this.daemon.setBudgets(bot, day)) === false) this.toast("Not connected to colonyd.");
     if (el.hasAttribute("data-pair-device") && !this.daemon.createPairing()) this.toast("Not connected to colonyd.");
     if (el.hasAttribute("data-hide-pairing")) this.daemon.hidePairing();
+    if (el.dataset.deviceScope && el.dataset.device && !this.daemon.setDeviceScope(el.dataset.device, el.dataset.deviceScope as "view" | "control")) this.toast("Not connected to colonyd.");
     if (el.dataset.revokeDevice && !this.daemon.revokeDevice(el.dataset.revokeDevice)) this.toast("Not connected to colonyd.");
     if (el.dataset.classifier) {
       if (!this.daemon.setClassifier(el.dataset.classifier === "on")) this.toast("Not connected to colonyd.");
