@@ -72,7 +72,24 @@
   !insertmacro ColonyCleanOld "colony-setup"
 !macroend
 
+; Inbound rule for the optional VPN listener (off by default), limited to Tailscale's
+; CGNAT range and Tailscale's IPv6 range (100.64.0.0/10, fd7a:115c:a1e0::/48). Other VPN ranges bind but stay blocked. Harmless while the listener is off.
+!macro ColonyRemoveFirewallRule
+  Push $0
+  nsExec::Exec `netsh advfirewall firewall delete rule name="Colony Command remote"`
+  Pop $0
+  Pop $0
+!macroend
+
+!macro ColonyAddFirewallRule
+  Push $0
+  nsExec::Exec `netsh advfirewall firewall add rule name="Colony Command remote" dir=in action=allow protocol=TCP program="$INSTDIR\colonyd.exe" remoteip=100.64.0.0/10,fd7a:115c:a1e0::/48 profile=any`
+  Pop $0
+  Pop $0
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
+  !insertmacro ColonyRemoveFirewallRule
   !insertmacro ColonyStopInstalledDaemon
   ; Even if the stop failed: a running exe can still be renamed.
   !insertmacro ColonyMoveAsideAll
@@ -80,12 +97,14 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  !insertmacro ColonyAddFirewallRule
   !insertmacro ColonyCleanOldAll
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
   ; Not when an update is replacing this install: PREINSTALL has already handled it.
   ${If} $UpdateMode <> 1
+    !insertmacro ColonyRemoveFirewallRule
     !insertmacro ColonyStopInstalledDaemon
     Push $0
     Push $3

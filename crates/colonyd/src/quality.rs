@@ -64,6 +64,13 @@ pub struct Settings {
     /// copied here for the map. Not saved with the settings.
     #[serde(skip)]
     pub budget_overrides: std::collections::BTreeMap<String, f64>,
+    /// Address of a VPN interface (e.g. Tailscale's 100.x.y.z) to also serve
+    /// /ws and /api/agents on. Off when unset; `COLONY_REMOTE_ADDR` overrides.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_listen: Option<String>,
+    /// Where the remote listener actually is, once bound. Runtime only.
+    #[serde(skip)]
+    pub remote_listening: Option<String>,
 }
 
 impl Settings {
@@ -100,6 +107,7 @@ impl Settings {
             "budget_bot_usd": self.budget_bot_usd,
             "budget_day_usd": self.budget_day_usd,
             "budget_overrides": self.budget_overrides,
+            "remote_listening": self.remote_listening,
         })
     }
 }

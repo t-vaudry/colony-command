@@ -1,4 +1,5 @@
-//! Local API for the map. Bound to 127.0.0.1 only, and every route needs the
+//! Local API for the map. Bound to 127.0.0.1 only (plus, when opted in, a VPN
+//! address serving just /ws and /api/agents, see `remote_router`), and every route needs the
 //! token from `~/.colony/daemon.json` (query `?token=` or a Bearer header),
 //! because this API can type into sessions.
 //!
@@ -52,6 +53,12 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .route("/api/ingest", post(ingest))
         .route("/api/shutdown", post(shutdown))
         .with_state(shared)
+}
+
+/// What the VPN listener serves: the map's socket and the snapshot, nothing
+/// else. Hooks, acks and ingest stay on loopback.
+pub fn remote_router(shared: Arc<Shared>) -> Router {
+    Router::new().route("/ws", get(ws)).route("/api/agents", get(agents)).with_state(shared)
 }
 
 fn authorized(shared: &Shared, params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
@@ -1441,5 +1448,52 @@ mod shutdown_tests {
         assert!(!token_ok("secret", &HashMap::new(), &HeaderMap::new()));
         assert!(!token_ok("secret", &bad, &HeaderMap::new()));
         assert!(token_ok("secret", &good, &HeaderMap::new()));
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn shared() -> Arc<Shared> {
+        let (ev_tx, _rx) = tokio::sync::mpsc::channel(8);
+        Arc::new(Shared {
+            colony: tokio::sync::RwLock::new(colony_core::Colony::default()),
+            deltas: tokio::sync::broadcast::channel(8).0,
+            token: "tok".into(),
+            pty: crate::pty::PtyHost::new(ev_tx.clone()),
+            distros: Default::default(),
+            wsl_wake: Default::default(),
+            events: ev_tx,
+            approvals: Arc::default(),
+            settings: Default::default(),
+        })
+    }
+
+    async fn status(router: Router, method: &str, path: &str) -> u16 {
+        let l = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!("{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{{}}");
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).await.unwrap();
+        out.split(' ').nth(1).unwrap().parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn remote_router_serves_only_the_map_routes() {
+        let sh = shared();
+        for p in ["/api/permission?token=tok", "/api/ingest?token=tok", "/api/ack?token=tok"] {
+            assert_eq!(status(remote_router(sh.clone()), "POST", p).await, 404, "{p}");
+        }
+        assert_eq!(status(remote_router(sh.clone()), "GET", "/api/agents").await, 401);
+        assert_eq!(status(remote_router(sh.clone()), "GET", "/api/agents?token=tok").await, 200);
+        // /ws exists (a plain GET is refused as a bad upgrade, not 404).
+        assert_ne!(status(remote_router(sh.clone()), "GET", "/ws?token=tok").await, 404);
+        // The loopback router keeps the hook route.
+        assert_ne!(status(router(sh), "POST", "/api/ack?token=tok").await, 404);
     }
 }

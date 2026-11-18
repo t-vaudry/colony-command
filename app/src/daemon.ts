@@ -36,6 +36,8 @@ export interface DaemonSettings {
   budget_bot_usd?: number | null;
   budget_day_usd?: number | null;
   budget_overrides?: Record<string, number>;
+  /** Address the VPN listener is bound to, or null when remote access is off. */
+  remote_listening?: string | null;
 }
 
 type Message =
