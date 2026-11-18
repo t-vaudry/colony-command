@@ -23,6 +23,10 @@ function tauriCore(): TauriCore | undefined {
 interface DaemonInfo {
   port: number;
   token: string;
+  /** A paired remote device: the VPN address to connect to and its own credential. The credential is
+   *  sent as the first message, never in the URL; `token` is then unused. */
+  host?: string;
+  credential?: string;
 }
 
 export interface DaemonSettings {
@@ -228,7 +232,11 @@ export class Daemon {
       this.setOffline(e instanceof Error ? e.message : String(e));
       return;
     }
-    const ws = new WebSocket(`ws://127.0.0.1:${this.info.port}/ws?token=${this.info.token}`);
+    const { host, credential, port, token } = this.info;
+    // Remote: the credential is the first message, so it never appears in a URL. (Over the
+    // VPN tunnel the traffic is already encrypted; see docs/remote-access.md for why this is ws://.)
+    const ws = credential ? new WebSocket(`ws://${host}:${port}/ws`) : new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
+    if (credential) ws.onopen = () => ws.send(JSON.stringify({ type: "auth", credential }));
     ws.onmessage = (ev) => this.handle(JSON.parse(ev.data as string) as Message);
     ws.onclose = () => {
       this.ws = null;

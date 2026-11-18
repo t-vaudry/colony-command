@@ -96,17 +96,40 @@ enum Who {
 }
 
 /// On the VPN listener only a paired device's credential is accepted (the
-/// loopback token never is); on loopback only the token is.
+/// loopback token never is), and only in the Authorization header: a URL ends up
+/// in logs and histories. A webview can't set headers on a WebSocket, so `/ws`
+/// also takes it as the first message (see `first_message_auth`). On loopback
+/// only the token is accepted.
 fn identify(shared: &Shared, params: &HashMap<String, String>, headers: &HeaderMap, remote: bool) -> Option<Who> {
     if !origin_ok(headers) {
         return None;
     }
-    let given = given_token(params, headers)?;
     if remote {
-        shared.devices.authenticate(given, now_ms()).map(Who::Device)
-    } else {
-        (given == shared.token).then_some(Who::Desktop)
+        let credential = bearer(headers)?;
+        return shared.devices.authenticate(credential, now_ms()).map(Who::Device);
     }
+    (given_token(params, headers)? == shared.token).then_some(Who::Desktop)
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "))
+}
+
+/// How long a remote socket may stay open before it has said who it is.
+const AUTH_WAIT: Duration = Duration::from_secs(5);
+
+/// `{"type":"auth","credential":"..."}` as the first frame of a remote socket.
+fn first_message_auth(shared: &Shared, text: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Auth {
+        r#type: String,
+        credential: String,
+    }
+    let a: Auth = serde_json::from_str(text).ok()?;
+    if a.r#type != "auth" {
+        return None;
+    }
+    shared.devices.authenticate(&a.credential, now_ms())
 }
 
 fn unauthorized() -> Response {
@@ -618,12 +641,16 @@ async fn ws(
     remote: Option<axum::Extension<Remote>>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let Some(who) = identify(&shared, &params, &headers, remote.is_some()) else {
-        return unauthorized();
-    };
-    let device = match who {
-        Who::Device(id) => Some(id),
-        Who::Desktop => None,
+    let is_remote = remote.is_some();
+    // A remote socket with no Authorization header may still authenticate with its first message.
+    let device = if is_remote && !headers.contains_key(header::AUTHORIZATION) && origin_ok(&headers) {
+        None
+    } else {
+        match identify(&shared, &params, &headers, is_remote) {
+            Some(Who::Device(id)) => Some(id),
+            Some(Who::Desktop) => None,
+            None => return unauthorized(),
+        }
     };
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("no origin").to_string();
     log(format!("map connected ({origin})"));
@@ -660,6 +687,25 @@ async fn pair(State(shared): State<Arc<Shared>>, headers: HeaderMap, Json(body):
 }
 
 async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool, device: Option<String>) {
+    let (mut tx, mut incoming) = socket.split();
+    let device = match device {
+        Some(d) => Some(d),
+        None if remote => {
+            let first = tokio::time::timeout(AUTH_WAIT, incoming.next()).await;
+            let who = match first {
+                Ok(Some(Ok(Message::Text(t)))) => first_message_auth(&shared, t.as_str()),
+                _ => None,
+            };
+            match who {
+                Some(id) => Some(id),
+                None => {
+                    let _ = tx.send(Message::Text(error_code("unauthorized", "Missing or wrong credential.").unwrap().into())).await;
+                    return;
+                }
+            }
+        }
+        None => None,
+    };
     let id = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     // A desktop map counts as able to answer permission requests while it's open.
     // A remote one only while it says it is in the foreground (`Presence`).
@@ -682,7 +728,6 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool, device: Op
     let mut term_rx = shared.pty.output.subscribe();
     let mut revoked = shared.devices.revoked.subscribe();
     let mut conn = Conn { attached: None, remote, id, device };
-    let (mut tx, mut incoming) = socket.split();
     if tx.send(Message::Text(snapshot(&shared).await.into())).await.is_err() {
         return;
     }
@@ -1646,11 +1691,15 @@ mod remote_tests {
     }
 
     async fn status(router: Router, method: &str, path: &str) -> u16 {
+        status_with(router, method, path, "").await
+    }
+
+    async fn status_with(router: Router, method: &str, path: &str, extra_headers: &str) -> u16 {
         let l = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let addr = l.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
         let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let req = format!("{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{{}}");
+        let req = format!("{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nContent-Type: application/json\r\n{extra_headers}Connection: close\r\n\r\n{{}}");
         s.write_all(req.as_bytes()).await.unwrap();
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
@@ -1686,17 +1735,37 @@ mod remote_tests {
         assert_eq!(status(remote_router(sh.clone()), "GET", "/api/agents?token=tok").await, 401);
         let (code, _) = sh.devices.new_code(now_ms());
         let (_, cred) = sh.devices.redeem(&code, "Tablet", now_ms()).unwrap();
-        assert_eq!(status(remote_router(sh.clone()), "GET", &format!("/api/agents?token={cred}")).await, 200);
+        let bearer = format!("Authorization: Bearer {cred}
+");
+        // The credential is accepted in the header only: never in a URL.
+        assert_eq!(status(remote_router(sh.clone()), "GET", &format!("/api/agents?token={cred}")).await, 401);
+        assert_eq!(status_with(remote_router(sh.clone()), "GET", "/api/agents", &bearer).await, 200);
         // A device credential is not accepted on loopback.
         assert_eq!(status(router(sh.clone()), "GET", &format!("/api/agents?token={cred}")).await, 401);
-        // /ws exists (a plain GET is refused as a bad upgrade, not 404).
-        assert_ne!(status(remote_router(sh.clone()), "GET", &format!("/ws?token={cred}")).await, 404);
+        assert_eq!(status_with(router(sh.clone()), "GET", "/api/agents", &bearer).await, 401);
+        // /ws exists (a plain GET is refused as a bad upgrade, not 404) (the upgrade is checked before the credential).
+        assert_ne!(status_with(remote_router(sh.clone()), "GET", "/ws", &bearer).await, 404);
         // Revoked: refused at once.
         let id = sh.devices.list()[0].id.clone();
         sh.devices.revoke(&id);
-        assert_eq!(status(remote_router(sh.clone()), "GET", &format!("/api/agents?token={cred}")).await, 401);
+        assert_eq!(status_with(remote_router(sh.clone()), "GET", "/api/agents", &bearer).await, 401);
         // The loopback router keeps the hook route.
         assert_ne!(status(router(sh.clone()), "POST", "/api/ack?token=tok").await, 404);
+    }
+
+    #[test]
+    fn the_first_message_can_carry_the_credential() {
+        let sh = shared();
+        let (code, _) = sh.devices.new_code(now_ms());
+        let (info, cred) = sh.devices.redeem(&code, "Tablet", now_ms()).unwrap();
+        let ok = format!(r#"{{"type":"auth","credential":"{cred}"}}"#);
+        assert_eq!(first_message_auth(&sh, &ok), Some(info.id));
+        assert_eq!(first_message_auth(&sh, r#"{"type":"auth","credential":"nope"}"#), None);
+        // The loopback token is not a device credential.
+        assert_eq!(first_message_auth(&sh, r#"{"type":"auth","credential":"tok"}"#), None);
+        // Anything else first (a command, junk) is refused.
+        assert_eq!(first_message_auth(&sh, &format!(r#"{{"type":"permission","credential":"{cred}"}}"#)), None);
+        assert_eq!(first_message_auth(&sh, "{"), None);
     }
 
     #[tokio::test]

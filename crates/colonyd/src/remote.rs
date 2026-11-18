@@ -3,6 +3,16 @@
 //! address must be one of this machine's own interfaces, so it is the user's
 //! choice of which network may knock. Only a small router is served there
 //! (`api::remote_router`).
+//!
+//! Transport decision (#89): plain `ws://` over the VPN, not `wss`. Tailscale
+//! and WireGuard already encrypt and authenticate every packet between the two
+//! machines, so a TLS layer would add certificate handling (MagicDNS names,
+//! renewal) without adding protection on the wire. The cost is that mobile
+//! webviews restrict cleartext traffic, so the mobile shell must be allowed to
+//! make it (Android network security config, iOS ATS exception) for the VPN
+//! address only. The credential is never put in a URL: it travels in the
+//! Authorization header, or, for a webview that cannot set headers on a
+//! WebSocket, as the socket's first message.
 
 use std::net::IpAddr;
 
