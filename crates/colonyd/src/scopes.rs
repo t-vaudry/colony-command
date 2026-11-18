@@ -49,7 +49,8 @@ mod tests {
     fn command_types() -> Vec<String> {
         let src = include_str!("api.rs");
         let body = &src[src.find("\nenum Command {").expect("enum Command") + 1..];
-        let body = &body[..body.find("\n}\n").unwrap()];
+        // "\n}" and not "\n}\n": a Windows checkout has CRLF line endings.
+        let body = &body[..body.find("\n}").unwrap()];
         body.lines()
             .filter(|l| l.starts_with("    ") && !l.starts_with("     "))
             .map(str::trim_start)
