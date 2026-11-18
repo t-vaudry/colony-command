@@ -16,6 +16,7 @@ futures-util.workspace = true
 uuid.workspace = true
 base64.workspace = true
 ureq = "3.4.2"
+sha2 = "0.10"
 
 
 [dev-dependencies]

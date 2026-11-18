@@ -40,6 +40,22 @@ export interface DaemonSettings {
   remote_listening?: string | null;
 }
 
+/** A paired remote device, as the desktop lists it. */
+export interface PairedDevice {
+  id: string;
+  name: string;
+  created_ms: number;
+  last_seen_ms: number | null;
+}
+
+/** A pairing code waiting to be typed on a new device. */
+export interface Pairing {
+  code: string;
+  expires_at: number;
+  /** Where the device should connect, when the VPN listener is up. */
+  remote: string | null;
+}
+
 type Message =
   | { type: "snapshot"; version?: string; now: number; agents: Agent[]; hosts?: HostOption[]; crews?: Crew[]; workflows?: boolean; workflow_draft?: boolean; crew_folders?: Record<string, string>; leftovers?: Leftover[]; found?: Found[]; spend?: Record<string, ProjectSpend>; latency?: Record<string, ProjectLatency>; rules?: Rule[]; offers?: Record<string, Offer>; settings?: DaemonSettings }
   | { type: "crews"; items: Crew[] }
@@ -50,6 +66,8 @@ type Message =
   | { type: "workflow_saved"; req: number; error: string | null }
   | { type: "workflow_draft"; req: number; workflow?: Workflow; error?: string }
   | { type: "settings"; settings: DaemonSettings }
+  | { type: "devices"; devices: PairedDevice[] }
+  | ({ type: "pairing" } & Pairing)
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
   | { type: "spend"; projects: Record<string, ProjectSpend> }
@@ -108,6 +126,11 @@ export class Daemon {
   rules: Rule[] = [];
   /** What each held permission request would save as a project rule, by request id. */
   offers = new Map<string, Offer>();
+  /** Paired remote devices. */
+  devices: PairedDevice[] = [];
+  /** The pairing code on show, if any. */
+  pairing: Pairing | null = null;
+  private pairPoll: ReturnType<typeof setInterval> | undefined;
   /** Daemon settings the map can change. */
   settings: DaemonSettings = { haiku_classifier: false, haiku_key_present: false };
   /** The daemon's version from its snapshot; undefined for a daemon from before versions. */
@@ -292,6 +315,18 @@ export class Daemon {
       case "settings":
         this.settings = m.settings;
         break;
+      case "devices":
+        this.devices = m.devices;
+        break;
+      case "pairing":
+        this.pairing = { code: m.code, expires_at: m.expires_at, remote: m.remote };
+        // The device list changes when the code is used; look until it expires or is hidden.
+        clearInterval(this.pairPoll);
+        this.pairPoll = setInterval(() => {
+          if (!this.pairing || Date.now() > this.pairing.expires_at) this.hidePairing();
+          else this.send({ type: "list_devices" });
+        }, 3000);
+        break;
       case "rules":
         this.rules = m.items;
         break;
@@ -374,6 +409,26 @@ export class Daemon {
   /** Type /compact into a bot Colony started; the daemon refuses while it is working. Errors come back as toasts. */
   compact(id: string): boolean {
     return this.send({ type: "compact", id });
+  }
+
+  /** Show a one-time code for pairing a remote device. */
+  createPairing(): boolean {
+    return this.send({ type: "create_pairing" });
+  }
+
+  hidePairing(): void {
+    clearInterval(this.pairPoll);
+    this.pairing = null;
+    for (const fn of this.listeners) fn();
+  }
+
+  listDevices(): boolean {
+    return this.send({ type: "list_devices" });
+  }
+
+  /** Unpair a device; its credential stops working at once. */
+  revokeDevice(id: string): boolean {
+    return this.send({ type: "revoke_device", id });
   }
 
   /** Turn the opt-in Haiku classifier for unclear endings on or off. */
