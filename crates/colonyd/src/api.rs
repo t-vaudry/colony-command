@@ -55,30 +55,58 @@ pub fn router(shared: Arc<Shared>) -> Router {
         .with_state(shared)
 }
 
-/// What the VPN listener serves: the map's socket and the snapshot, nothing
-/// else. Hooks, acks and ingest stay on loopback.
+/// What the VPN listener serves: the map's socket, the snapshot and pairing,
+/// nothing else. Hooks, acks and ingest stay on loopback.
 pub fn remote_router(shared: Arc<Shared>) -> Router {
-    Router::new().route("/ws", get(ws)).route("/api/agents", get(agents)).layer(axum::Extension(Remote)).with_state(shared)
+    Router::new().route("/ws", get(ws)).route("/api/agents", get(agents)).route("/api/pair", post(pair)).layer(axum::Extension(Remote)).with_state(shared)
 }
 
 fn authorized(shared: &Shared, params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
     token_ok(&shared.token, params, headers)
 }
 
-fn token_ok(expected: &str, params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
+fn given_token<'a>(params: &'a HashMap<String, String>, headers: &'a HeaderMap) -> Option<&'a str> {
     let from_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
-    let given = params.get("token").map(String::as_str).or(from_header);
-    // Only local pages may connect from a browser context.
-    let origin_ok = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).is_none_or(|o| {
+    params.get("token").map(String::as_str).or(from_header)
+}
+
+/// Only local pages may connect from a browser context.
+fn origin_ok(headers: &HeaderMap) -> bool {
+    headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).is_none_or(|o| {
         o == "tauri://localhost"
             || o.starts_with("http://tauri.localhost")
             || o.starts_with("http://localhost:")
             || o.starts_with("http://127.0.0.1:")
-    });
-    origin_ok && given == Some(expected)
+    })
+}
+
+fn token_ok(expected: &str, params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
+    origin_ok(headers) && given_token(params, headers) == Some(expected)
+}
+
+/// Who is asking.
+enum Who {
+    /// The desktop app, with the loopback token.
+    Desktop,
+    /// A paired device, by id.
+    Device(String),
+}
+
+/// On the VPN listener only a paired device's credential is accepted (the
+/// loopback token never is); on loopback only the token is.
+fn identify(shared: &Shared, params: &HashMap<String, String>, headers: &HeaderMap, remote: bool) -> Option<Who> {
+    if !origin_ok(headers) {
+        return None;
+    }
+    let given = given_token(params, headers)?;
+    if remote {
+        shared.devices.authenticate(given, now_ms()).map(Who::Device)
+    } else {
+        (given == shared.token).then_some(Who::Desktop)
+    }
 }
 
 fn unauthorized() -> Response {
@@ -92,8 +120,8 @@ async fn snapshot(shared: &Shared) -> String {
     json!({ "type": "snapshot", "version": env!("CARGO_PKG_VERSION"), "now": now_ms(), "agents": agents, "spend": colony.spend, "latency": colony.latency, "hosts": hosts, "crews": crate::crews::all(), "workflows": true, "workflow_draft": true, "crew_folders": crate::crews::folders(), "leftovers": crate::worktree::leftovers(), "found": crate::found::offered(),"rules": shared.approvals.policy.list(), "offers": shared.approvals.offers(), "settings": shared.settings.lock().unwrap().public() }).to_string()
 }
 
-async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap) -> Response {
-    if !authorized(&shared, &params, &headers) {
+async fn agents(State(shared): State<Arc<Shared>>, Query(params): Params, headers: HeaderMap, remote: Option<axum::Extension<Remote>>) -> Response {
+    if identify(&shared, &params, &headers, remote.is_some()).is_none() {
         return unauthorized();
     }
     ([(header::CONTENT_TYPE, "application/json")], snapshot(&shared).await).into_response()
@@ -220,6 +248,12 @@ enum Command {
     /// A remote client says whether it is in the foreground. Sent every ~20 s while it is;
     /// without it, requests don't wait on a remote client.
     Presence { foreground: bool },
+    /// Desktop only: show a pairing code for a new device.
+    CreatePairing,
+    /// Desktop only: the paired devices.
+    ListDevices,
+    /// Desktop only: unpair a device; its credential stops working at once.
+    RevokeDevice { id: String },
     /// End the session's process.
     Kill { term: String },
     /// Switch a Colony-started session's model (types `/model <name>`).
@@ -308,6 +342,8 @@ struct Conn {
     /// Arrived on the VPN listener.
     remote: bool,
     id: u64,
+    /// The paired device this connection belongs to (remote only).
+    device: Option<String>,
 }
 
 static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -437,6 +473,23 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
                 pty.resize(&term, cols, rows).map(|_| None)
             }
         }
+        Command::CreatePairing | Command::ListDevices | Command::RevokeDevice { .. } if conn.remote => {
+            Err("Only the desktop app can manage paired devices.".into())
+        }
+        Command::CreatePairing => {
+            let (code, expires_at) = shared.devices.new_code(now_ms());
+            let remote = shared.settings.lock().unwrap().remote_listening.clone();
+            Ok(Some(json!({ "type": "pairing", "code": code, "expires_at": expires_at, "remote": remote }).to_string()))
+        }
+        Command::ListDevices => Ok(Some(devices_message(shared))),
+        Command::RevokeDevice { id } => {
+            if shared.devices.revoke(&id) {
+                log(format!("revoked paired device {id}"));
+                Ok(Some(devices_message(shared)))
+            } else {
+                Err("That device isn't paired any more.".into())
+            }
+        }
         Command::Presence { foreground } => {
             if conn.remote {
                 shared.approvals.set_present(conn.id, foreground);
@@ -532,16 +585,48 @@ async fn ws(
     remote: Option<axum::Extension<Remote>>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    if !authorized(&shared, &params, &headers) {
+    let Some(who) = identify(&shared, &params, &headers, remote.is_some()) else {
         return unauthorized();
-    }
+    };
+    let device = match who {
+        Who::Device(id) => Some(id),
+        Who::Desktop => None,
+    };
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("no origin").to_string();
     log(format!("map connected ({origin})"));
     let remote = remote.is_some();
-    upgrade.on_upgrade(move |socket| stream(shared, socket, remote))
+    upgrade.on_upgrade(move |socket| stream(shared, socket, remote, device))
 }
 
-async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool) {
+fn devices_message(shared: &Shared) -> String {
+    json!({ "type": "devices", "devices": shared.devices.list() }).to_string()
+}
+
+#[derive(Deserialize)]
+struct PairBody {
+    code: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// A device exchanges a pairing code for its own credential. Needs no token:
+/// the code is the proof, it expires, and wrong tries are rate limited.
+async fn pair(State(shared): State<Arc<Shared>>, headers: HeaderMap, Json(body): Json<PairBody>) -> Response {
+    use crate::devices::PairError;
+    if !origin_ok(&headers) {
+        return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+    }
+    match shared.devices.redeem(&body.code, &body.name, now_ms()) {
+        Ok((info, credential)) => {
+            log(format!("paired device {} ({})", info.id, info.name));
+            Json(json!({ "device_id": info.id, "credential": credential })).into_response()
+        }
+        Err(PairError::BadCode) => (StatusCode::FORBIDDEN, "That code is wrong or has expired.").into_response(),
+        Err(PairError::Locked) => (StatusCode::TOO_MANY_REQUESTS, "Too many wrong codes. Wait a minute and try again.").into_response(),
+    }
+}
+
+async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool, device: Option<String>) {
     let id = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     // A desktop map counts as able to answer permission requests while it's open.
     // A remote one only while it says it is in the foreground (`Presence`).
@@ -562,7 +647,8 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool) {
     // Subscribe before taking the snapshot so no delta falls in the gap.
     let mut rx = shared.deltas.subscribe();
     let mut term_rx = shared.pty.output.subscribe();
-    let mut conn = Conn { attached: None, remote, id };
+    let mut revoked = shared.devices.revoked.subscribe();
+    let mut conn = Conn { attached: None, remote, id, device };
     let (mut tx, mut incoming) = socket.split();
     if tx.send(Message::Text(snapshot(&shared).await.into())).await.is_err() {
         return;
@@ -605,6 +691,14 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool) {
                     .attached
                     .as_ref()
                     .and_then(|t| shared.pty.scrollback(t).map(|b| term_data(t, &b, true))),
+                Err(RecvError::Closed) => return,
+            },
+            gone = revoked.recv() => match gone {
+                Ok(id) if conn.device.as_deref() == Some(id.as_str()) => return,
+                Ok(_) => None,
+                // Missed some: make sure this device is still paired.
+                Err(RecvError::Lagged(_)) if conn.device.as_deref().is_some_and(|d| !shared.devices.is_paired(d)) => return,
+                Err(RecvError::Lagged(_)) => None,
                 Err(RecvError::Closed) => return,
             },
             frame = incoming.next() => match frame {
@@ -1508,6 +1602,7 @@ mod remote_tests {
             colony: tokio::sync::RwLock::new(colony_core::Colony::default()),
             deltas: tokio::sync::broadcast::channel(8).0,
             token: "tok".into(),
+            devices: Default::default(),
             pty: crate::pty::PtyHost::new(ev_tx.clone()),
             distros: Default::default(),
             wsl_wake: Default::default(),
@@ -1536,10 +1631,53 @@ mod remote_tests {
             assert_eq!(status(remote_router(sh.clone()), "POST", p).await, 404, "{p}");
         }
         assert_eq!(status(remote_router(sh.clone()), "GET", "/api/agents").await, 401);
-        assert_eq!(status(remote_router(sh.clone()), "GET", "/api/agents?token=tok").await, 200);
+        // The desktop's loopback token is not a credential on the VPN listener.
+        assert_eq!(status(remote_router(sh.clone()), "GET", "/api/agents?token=tok").await, 401);
+        let (code, _) = sh.devices.new_code(now_ms());
+        let (_, cred) = sh.devices.redeem(&code, "Tablet", now_ms()).unwrap();
+        assert_eq!(status(remote_router(sh.clone()), "GET", &format!("/api/agents?token={cred}")).await, 200);
+        // A device credential is not accepted on loopback.
+        assert_eq!(status(router(sh.clone()), "GET", &format!("/api/agents?token={cred}")).await, 401);
         // /ws exists (a plain GET is refused as a bad upgrade, not 404).
-        assert_ne!(status(remote_router(sh.clone()), "GET", "/ws?token=tok").await, 404);
+        assert_ne!(status(remote_router(sh.clone()), "GET", &format!("/ws?token={cred}")).await, 404);
+        // Revoked: refused at once.
+        let id = sh.devices.list()[0].id.clone();
+        sh.devices.revoke(&id);
+        assert_eq!(status(remote_router(sh.clone()), "GET", &format!("/api/agents?token={cred}")).await, 401);
         // The loopback router keeps the hook route.
-        assert_ne!(status(router(sh), "POST", "/api/ack?token=tok").await, 404);
+        assert_ne!(status(router(sh.clone()), "POST", "/api/ack?token=tok").await, 404);
+    }
+
+    #[tokio::test]
+    async fn pairing_over_http_needs_a_live_code_and_is_rate_limited() {
+        let sh = shared();
+        let pair_status = |sh: Arc<Shared>, body: String| async move {
+            let l = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let addr = l.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(l, remote_router(sh)).await.unwrap() });
+            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let req = format!("POST /api/pair HTTP/1.1
+Host: x
+Content-Length: {}
+Content-Type: application/json
+Connection: close
+
+{body}", body.len());
+            s.write_all(req.as_bytes()).await.unwrap();
+            let mut out = String::new();
+            s.read_to_string(&mut out).await.unwrap();
+            (out.split(' ').nth(1).unwrap().parse::<u16>().unwrap(), out)
+        };
+        let (code, _) = sh.devices.new_code(now_ms());
+        let (st, out) = pair_status(sh.clone(), format!(r#"{{"code":"{code}","name":"Tablet"}}"#)).await;
+        assert_eq!(st, 200);
+        assert!(out.contains("credential"));
+        let (st, _) = pair_status(sh.clone(), format!(r#"{{"code":"{code}","name":"Again"}}"#)).await;
+        assert_eq!(st, 403, "a code works once");
+        let mut last = 0;
+        for _ in 0..crate::devices::MAX_FAILS {
+            last = pair_status(sh.clone(), r#"{"code":"00000000"}"#.into()).await.0;
+        }
+        assert_eq!(last, 429, "repeated wrong codes are refused");
     }
 }

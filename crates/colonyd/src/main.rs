@@ -11,6 +11,7 @@ mod approvals;
 mod budget;
 mod classifier;
 mod crews;
+mod devices;
 mod diffstat;
 mod eventlog;
 mod found;
@@ -50,6 +51,8 @@ pub struct Shared {
     /// Serialized delta messages for every connected map.
     pub deltas: broadcast::Sender<String>,
     pub token: String,
+    /// Paired remote devices and their credentials.
+    pub devices: devices::Devices,
     pub pty: Arc<PtyHost>,
     /// Installed WSL distros, for the New session dialog.
     pub distros: RwLock<Vec<String>>,
@@ -157,6 +160,7 @@ async fn main() {
         }),
         deltas,
         token: token.clone(),
+        devices: devices::Devices::load(colony_source::colony_home().join("devices.json")),
         pty: PtyHost::new(ev_tx.clone()),
         distros: RwLock::default(),
         wsl_wake: Notify::new(),
@@ -328,7 +332,7 @@ async fn main() {
                 Err(e) => log(format!("remote access not started: cannot listen on {ip}:{remote_port}: {e}")),
                 Ok(l) => {
                     shared.settings.lock().unwrap().remote_listening = Some(format!("{ip}:{remote_port}"));
-                    log(format!("remote access on http://{ip}:{remote_port} (/ws and /api/agents only, token required)"));
+                    log(format!("remote access on http://{ip}:{remote_port} (/ws, /api/agents and /api/pair only; paired devices only)"));
                     let app = api::remote_router(shared.clone());
                     tokio::spawn(async move {
                         if let Err(e) = axum::serve(l, app).await {
