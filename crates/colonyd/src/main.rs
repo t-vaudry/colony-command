@@ -20,6 +20,7 @@ mod pause;
 mod policy;
 mod pty;
 mod quality;
+mod remote;
 mod resume;
 mod roster;
 mod timelapse;
@@ -313,6 +314,31 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // Optional VPN listener: off unless configured, never a wildcard.
+    let remote_cfg = remote::configured(
+        std::env::var("COLONY_REMOTE_ADDR").ok(),
+        shared.settings.lock().unwrap().remote_listen.as_deref(),
+    );
+    if let Some(text) = remote_cfg {
+        let remote_port: u16 =
+            std::env::var("COLONY_REMOTE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(port);
+        match remote::validate_remote_addr(&text) {
+            Err(why) => log(format!("remote access not started: {why}")),
+            Ok(ip) => match tokio::net::TcpListener::bind((ip, remote_port)).await {
+                Err(e) => log(format!("remote access not started: cannot listen on {ip}:{remote_port}: {e}")),
+                Ok(l) => {
+                    shared.settings.lock().unwrap().remote_listening = Some(format!("{ip}:{remote_port}"));
+                    log(format!("remote access on http://{ip}:{remote_port} (/ws and /api/agents only, token required)"));
+                    let app = api::remote_router(shared.clone());
+                    tokio::spawn(async move {
+                        if let Err(e) = axum::serve(l, app).await {
+                            log(format!("remote listener stopped: {e}"));
+                        }
+                    });
+                }
+            },
+        }
+    }
     let info_path = colony_source::colony_home().join("daemon.json");
     let info = colony_source::daemon_info::DaemonInfo::for_this_process(port, &token).to_json();
     if let Err(e) = std::fs::create_dir_all(info_path.parent().unwrap())

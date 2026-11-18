@@ -298,7 +298,8 @@ export class Hud {
     const s = this.daemon.settings;
     return `<div class="fact"><span class="k">Unclear endings</span><span>
       <button type="button" data-classifier="${s.haiku_classifier ? "off" : "on"}" aria-pressed="${s.haiku_classifier}" title="Off by default. When on, only a bot's last message is sent to the Claude API (claude-haiku-5-5) to tell a question from a finished job, and only when the rules are unsure. Needs ANTHROPIC_API_KEY in the environment or ~/.colony/settings.json.">Haiku classifier: ${s.haiku_classifier ? "on" : "off"}</button>
-      ${s.haiku_classifier && !s.haiku_key_present ? `<span class="muted small">No API key found: the rules decide.</span>` : ""}</span></div>`;
+      ${s.haiku_classifier && !s.haiku_key_present ? `<span class="muted small">No API key found: the rules decide.</span>` : ""}</span></div>
+      <div class="fact"><span class="k">Remote access</span><span title="Set COLONY_REMOTE_ADDR or remote_listen in ~/.colony/settings.json to a VPN address (never 0.0.0.0). Off by default.">${s.remote_listening ? `on at ${esc(s.remote_listening)}` : "off"}</span></div>`;
   }
 
   private modelRows(a: Agent): string {
