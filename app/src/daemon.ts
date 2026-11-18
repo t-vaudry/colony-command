@@ -262,7 +262,7 @@ export class Daemon {
         this.hosts = m.hosts ?? this.hosts;
         this.version = m.version;
         // Paired devices aren't in the snapshot (remote clients get it too): ask for them.
-        if (m.settings?.remote_listening) this.listDevices();
+        if (m.settings?.remote_listening && !this.info?.credential) this.listDevices();
         this.crewsKnown = m.crews !== undefined;
         this.workflowsKnown = m.workflows === true;
         this.workflowDraftKnown = m.workflow_draft === true;
