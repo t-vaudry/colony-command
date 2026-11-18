@@ -54,6 +54,15 @@ export interface PairedDevice {
   scope: "view" | "control";
 }
 
+/** One remote command on the record: who, what kind, when. Never its content. */
+export interface AuditEntry {
+  ts: number;
+  device_id: string;
+  device_name: string;
+  command: string;
+  allowed: boolean;
+}
+
 /** A pairing code waiting to be typed on a new device. */
 export interface Pairing {
   code: string;
@@ -73,6 +82,7 @@ type Message =
   | { type: "workflow_draft"; req: number; workflow?: Workflow; error?: string }
   | { type: "settings"; settings: DaemonSettings }
   | { type: "devices"; devices: PairedDevice[] }
+  | { type: "audit"; entries: AuditEntry[] }
   | ({ type: "pairing" } & Pairing)
   | { type: "rules"; items: Rule[] }
   | ({ type: "permission_offer"; request_id: string } & Offer)
@@ -134,6 +144,8 @@ export class Daemon {
   offers = new Map<string, Offer>();
   /** Paired remote devices. */
   devices: PairedDevice[] = [];
+  /** The remote activity on show, or null while hidden. */
+  audit: AuditEntry[] | null = null;
   /** The pairing code on show, if any. */
   pairing: Pairing | null = null;
   private pairPoll: ReturnType<typeof setInterval> | undefined;
@@ -330,6 +342,9 @@ export class Daemon {
       case "devices":
         this.devices = m.devices;
         break;
+      case "audit":
+        this.audit = m.entries;
+        break;
       case "pairing":
         this.pairing = { code: m.code, expires_at: m.expires_at, remote: m.remote };
         // The device list changes when the code is used; look until it expires or is hidden.
@@ -431,6 +446,16 @@ export class Daemon {
   hidePairing(): void {
     clearInterval(this.pairPoll);
     this.pairing = null;
+    for (const fn of this.listeners) fn();
+  }
+
+  /** Show the log of what remote devices asked for; `hideAudit` closes it. */
+  showAudit(): boolean {
+    return this.send({ type: "list_audit" });
+  }
+
+  hideAudit(): void {
+    this.audit = null;
     for (const fn of this.listeners) fn();
   }
 

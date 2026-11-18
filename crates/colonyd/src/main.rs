@@ -7,6 +7,7 @@
 //! `~/.colony/daemon.json` for the app to read.
 
 mod api;
+mod audit;
 mod approvals;
 mod budget;
 mod classifier;
@@ -54,6 +55,8 @@ pub struct Shared {
     pub token: String,
     /// Paired remote devices and their credentials.
     pub devices: devices::Devices,
+    /// What remote devices asked for (kind of command only).
+    pub audit: audit::Audit,
     pub pty: Arc<PtyHost>,
     /// Installed WSL distros, for the New session dialog.
     pub distros: RwLock<Vec<String>>,
@@ -162,6 +165,7 @@ async fn main() {
         deltas,
         token: token.clone(),
         devices: devices::Devices::load(colony_source::colony_home().join("devices.json")),
+        audit: audit::Audit::open(audit::path()),
         pty: PtyHost::new(ev_tx.clone()),
         distros: RwLock::default(),
         wsl_wake: Notify::new(),

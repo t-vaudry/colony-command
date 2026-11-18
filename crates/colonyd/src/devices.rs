@@ -186,6 +186,10 @@ impl Devices {
         self.inner.lock().unwrap().devices.iter().find(|d| d.id == id).map(|d| d.scope)
     }
 
+    pub fn name_of(&self, id: &str) -> Option<String> {
+        self.inner.lock().unwrap().devices.iter().find(|d| d.id == id).map(|d| d.name.clone())
+    }
+
     pub fn set_scope(&self, id: &str, scope: Scope) -> bool {
         let mut inner = self.inner.lock().unwrap();
         let Some(d) = inner.devices.iter_mut().find(|d| d.id == id) else { return false };
