@@ -2,6 +2,8 @@
 // approval hook, on Windows and in each WSL distro. Talks to the app's
 // setup_* commands (crates/colony-setup); only works inside the desktop app.
 
+import { platform } from "./platform";
+
 type State = "missing" | "partial" | "outdated" | "changed" | "current";
 type Sel = { hooks: boolean; probe: boolean; approval: boolean };
 
@@ -56,11 +58,6 @@ function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
-function invoker(): Invoke | null {
-  const t = (window as unknown as { __TAURI__?: { core?: { invoke: Invoke } } }).__TAURI__;
-  return t?.core?.invoke ?? null;
-}
-
 function needsAttention(s: TargetStatus, withChanged = true): boolean {
   // Nothing to offer when the build lacks the files; the dialog explains that instead.
   return s.target.running && s.checked && s.missing_files.length === 0 && s.components.some((c) => c.state === "missing" || c.state === "partial" || c.state === "outdated" || (withChanged && c.state === "changed"));
@@ -76,7 +73,7 @@ function store(key: string, value?: string): string | null {
 }
 
 export class SetupDialog {
-  private invoke = invoker();
+  private invoke: Invoke | null = platform().invoke;
   private dlg = document.getElementById("setup") as HTMLDialogElement;
   private body = document.getElementById("setup-body")!;
   private btn = document.getElementById("setup-btn") as HTMLButtonElement;

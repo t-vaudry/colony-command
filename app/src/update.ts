@@ -1,7 +1,7 @@
 // A small "update available" notice over the map's bottom-right corner. It only
 // checks (at start and every few hours) and installs when the user clicks Install;
 // "Later" hides it until the next check. Installing never happens on its own.
-type Invoke = <T>(cmd: string, args?: object) => Promise<T>;
+import { platform } from "./platform";
 interface Available {
   version: string;
   notes: string | null;
@@ -10,7 +10,7 @@ interface Available {
 const RECHECK_MS = 6 * 3600 * 1000;
 
 export function initUpdateNotice(): void {
-  const invoke = (window as unknown as { __TAURI__?: { core?: { invoke: Invoke } } }).__TAURI__?.core?.invoke;
+  const invoke = platform().has.updater ? platform().invoke : null;
   const el = document.getElementById("update-notice");
   if (!invoke || !el) return;
   const text = el.querySelector<HTMLElement>(".msg")!;

@@ -3,6 +3,7 @@
 
 import type { Daemon } from "./daemon";
 import { costChart } from "./costchart";
+import { platform } from "./platform";
 import { modelLine } from "./modelcost";
 import { ContextWatch, contextRow, contextSettingRow, DEFAULT_PCT, showContextNotices } from "./context";
 import { latencyChart } from "./latencychart";
@@ -421,7 +422,7 @@ export class Hud {
   private gatingPaused = false;
 
   private watchGating(): void {
-    const invoke = (window as unknown as { __TAURI__?: { core?: { invoke: <T>(cmd: string, args?: object) => Promise<T> } } }).__TAURI__?.core?.invoke;
+    const invoke = platform().invoke;
     if (!invoke) return;
     const poll = () =>
       void invoke<boolean>("gating_paused")
