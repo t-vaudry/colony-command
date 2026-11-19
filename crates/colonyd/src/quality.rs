@@ -115,6 +115,7 @@ impl Settings {
             "budget_overrides": self.budget_overrides,
             "remote_listening": self.remote_listening,
             "prevent_sleep": self.prevent_sleep,
+            "remote_listen": self.remote_listen,
             "push_on": self.ntfy_url.as_deref().is_some_and(|u| !u.trim().is_empty()),
         })
     }

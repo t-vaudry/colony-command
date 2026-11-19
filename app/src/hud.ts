@@ -320,31 +320,7 @@ export class Hud {
     const s = this.daemon.settings;
     return `<div class="fact"><span class="k">Unclear endings</span><span>
       <button type="button" data-classifier="${s.haiku_classifier ? "off" : "on"}" aria-pressed="${s.haiku_classifier}" title="Off by default. When on, only a bot's last message is sent to the Claude API (claude-haiku-5-5) to tell a question from a finished job, and only when the rules are unsure. Needs ANTHROPIC_API_KEY in the environment or ~/.colony/settings.json.">Haiku classifier: ${s.haiku_classifier ? "on" : "off"}</button>
-      ${s.haiku_classifier && !s.haiku_key_present ? `<span class="muted small">No API key found: the rules decide.</span>` : ""}</span></div>
-      <div class="fact"><span class="k">Remote access</span><span title="Set COLONY_REMOTE_ADDR or remote_listen in ~/.colony/settings.json to a VPN address (never 0.0.0.0). Off by default.">${s.remote_listening ? `on at ${esc(s.remote_listening)}` : "off"}</span></div>${s.remote_listening ? `<div class="fact"><span class="k">Phone alerts</span><span title="Set ntfy_url in ~/.colony/settings.json to an ntfy topic. Alerts name the project and the kind of wait, never a prompt or command.">${s.push_on ? "on (ntfy)" : "off"}</span></div>` : ""}${s.remote_listening && !this.daemon.remote ? this.sleepRow(s.prevent_sleep === true) + this.devicesRow() : ""}`;
-  }
-
-  /** Keep the PC awake while remote access is on: a phone can't reach a sleeping PC. */
-  private sleepRow(on: boolean): string {
-    return `<div class="fact"><span class="k">Stay awake</span><span><button type="button" data-prevent-sleep="${on ? "off" : "on"}" aria-pressed="${on}" title="Stops Windows from sleeping while remote access is on, so a phone can still reach this PC. Off by default.">${on ? "On" : "Off"}</button></span></div>`;
-  }
-
-  /** Paired remote devices: pair a new one with a code, revoke one. */
-  private devicesRow(): string {
-    const p = this.daemon.pairing;
-    const list = this.daemon.devices
-      .map((d) => `<div class="row"><span>${esc(d.name)}</span><span class="muted small">paired ${new Date(d.created_ms).toLocaleDateString()}${d.last_seen_ms ? `, seen ${new Date(d.last_seen_ms).toLocaleTimeString()}` : ""}</span><button type="button" data-device-scope="${d.scope === "control" ? "view" : "control"}" data-device="${esc(d.id)}" aria-pressed="${d.scope === "control"}" title="${d.scope === "control" ? "Can answer approvals, type into and end sessions. Click to make it view-only." : "View-only: can watch, not act. Click to let it control."}">${d.scope === "control" ? "Control" : "View only"}</button><button type="button" data-revoke-device="${esc(d.id)}" title="Unpair this device. It stops working at once.">Revoke</button></div>`)
-      .join("");
-    const code = p
-      ? `<div class="choice"><p>Enter this code on the device (valid 5 minutes, once): <b class="mono">${esc(p.code.slice(0, 4))} ${esc(p.code.slice(4))}</b></p>${p.remote ? `<p class="muted small">Connect to ${esc(p.remote)}</p>` : ""}<div class="actions"><button type="button" data-hide-pairing>Done</button></div></div>`
-      : "";
-    const a = this.daemon.audit;
-    const log = a
-      ? `<div class="choice"><p><b>Remote activity</b> <span class="muted small">device, kind of command and time only; never what was typed</span></p>${
-          a.length ? a.map((e) => `<div class="row small"><span>${new Date(e.ts).toLocaleString()}</span><span>${esc(e.device_name)}</span><span>${esc(e.command.replace(/_/g, " "))}${e.allowed ? "" : " (refused)"}</span></div>`).join("") : `<p class="muted small">Nothing yet.</p>`
-        }<div class="actions"><button type="button" data-hide-audit>Close</button></div></div>`
-      : "";
-    return `<div class="fact"><span class="k">Paired devices</span><span>${list || `<span class="muted small">None yet.</span>`}<button type="button" data-pair-device>Pair a device</button><button type="button" data-show-audit>Remote activity</button></span></div>${code}${log}`;
+      ${s.haiku_classifier && !s.haiku_key_present ? `<span class="muted small">No API key found: the rules decide.</span>` : ""}</span></div>`;
   }
 
   private modelRows(a: Agent): string {
@@ -1187,13 +1163,6 @@ export class Hud {
     if (el.dataset.compact && !this.daemon.compact(el.dataset.compact)) this.toast("Not connected to colonyd.");
     if (el.dataset.contextPct && !this.daemon.setContextPct(Number(el.dataset.contextPct))) this.toast("Not connected to colonyd.");
     if (budgetClick(el, this.daemon.settings, (bot, day) => this.daemon.setBudgets(bot, day)) === false) this.toast("Not connected to colonyd.");
-    if (el.hasAttribute("data-pair-device") && !this.daemon.createPairing()) this.toast("Not connected to colonyd.");
-    if (el.hasAttribute("data-show-audit") && !this.daemon.showAudit()) this.toast("Not connected to colonyd.");
-    if (el.hasAttribute("data-hide-audit")) this.daemon.hideAudit();
-    if (el.hasAttribute("data-hide-pairing")) this.daemon.hidePairing();
-    if (el.dataset.deviceScope && el.dataset.device && !this.daemon.setDeviceScope(el.dataset.device, el.dataset.deviceScope as "view" | "control")) this.toast("Not connected to colonyd.");
-    if (el.dataset.revokeDevice && !this.daemon.revokeDevice(el.dataset.revokeDevice)) this.toast("Not connected to colonyd.");
-    if (el.dataset.preventSleep && !this.daemon.setPreventSleep(el.dataset.preventSleep === "on")) this.toast("Not connected to colonyd.");
     if (el.dataset.classifier) {
       if (!this.daemon.setClassifier(el.dataset.classifier === "on")) this.toast("Not connected to colonyd.");
     }

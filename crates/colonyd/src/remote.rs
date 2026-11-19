@@ -22,6 +22,16 @@ pub fn configured(env: Option<String>, setting: Option<&str>) -> Option<String> 
     env.or_else(|| setting.map(str::to_string)).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// The `remote_listen` setting from what the user typed: empty turns remote access off,
+/// anything else must be an address that may be bound.
+pub fn clean_setting(text: &str) -> Result<Option<String>, String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    validate_remote_addr(t).map(|ip| Some(ip.to_string()))
+}
+
 /// An address that may be bound for remote access, or why not.
 pub fn validate_remote_addr(text: &str) -> Result<IpAddr, String> {
     let ip: IpAddr = text.trim().parse().map_err(|_| format!("{text:?} is not an IP address"))?;
@@ -58,6 +68,14 @@ mod tests {
         for bad in ["0.0.0.0", "::", "127.0.0.1", "::1", "224.0.0.1", "ff02::1", "255.255.255.255", "localhost", "", "100.1.1"] {
             assert!(validate_remote_addr(bad).is_err(), "{bad:?} should be rejected");
         }
+    }
+
+    #[test]
+    fn a_typed_address_is_checked_and_blank_turns_it_off() {
+        assert_eq!(clean_setting("  100.64.0.1 ").unwrap().as_deref(), Some("100.64.0.1"));
+        assert_eq!(clean_setting("   ").unwrap(), None);
+        assert!(clean_setting("0.0.0.0").is_err());
+        assert!(clean_setting("my-pc").is_err());
     }
 
     #[test]
