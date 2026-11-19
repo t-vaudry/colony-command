@@ -18,4 +18,12 @@ describe("touch and small-screen layout", () => {
   it("keeps focused fields at 16px so the page doesn't zoom on focus", () => {
     expect(css).toMatch(/font-size:\s*16px/);
   });
+
+  it("keeps the dialogs' buttons reachable and the phase rows from overflowing on a phone", () => {
+    expect(css).toMatch(/#ns-form \.actions,\s*#wf-form \.actions\s*\{[^}]*position:\s*sticky/);
+    expect(css).toMatch(/\.wf-row-top\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\);/);
+  });
+  it("hides session actions from a view-only device", () => {
+    expect(css).toMatch(/body\.view-only \[data-pause\][\s\S]*\[data-kill\]\s*\{[^}]*display:\s*none/);
+  });
 });
