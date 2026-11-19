@@ -1,0 +1,67 @@
+# Builds a signed iOS app and uploads it to TestFlight. Run by hand (Actions, iOS TestFlight, Run workflow).
+# Not exercised yet: it needs an Apple Developer account and these repository secrets (docs/mobile.md):
+#   APPLE_TEAM_ID                  your 10-character team id
+#   IOS_CERTIFICATE_P12            base64 of the Apple Distribution certificate (.p12)
+#   IOS_CERTIFICATE_PASSWORD       its password
+#   IOS_PROVISIONING_PROFILE       base64 of the App Store provisioning profile for dev.colonycommand.app
+#   APP_STORE_CONNECT_KEY_ID, APP_STORE_CONNECT_ISSUER_ID, APP_STORE_CONNECT_KEY_P8
+#                                  an App Store Connect API key (base64 of the .p8 is not needed: paste it as is)
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  testflight:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the signing certificate and profile
+        env:
+          CERT: ${{ secrets.IOS_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+        run: |
+          keychain="$RUNNER_TEMP/build.keychain-db"
+          security create-keychain -p "" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "" "$keychain"
+          echo "$CERT" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "" "$keychain"
+          security list-keychain -d user -s "$keychain"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "$PROFILE" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/colony.mobileprovision"
+      - run: npm ci
+        working-directory: app
+      - run: npx tauri ios init --ci
+        working-directory: app
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Build the app store archive
+        run: npx tauri ios build --export-method app-store-connect
+        working-directory: app
+        env:
+          APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Upload to TestFlight
+        env:
+          KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          KEY_P8: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s' "$KEY_P8" > "$HOME/.appstoreconnect/private_keys/AuthKey_${KEY_ID}.p8"
+          ipa="$(find app/src-tauri/gen/apple/build -name '*.ipa' | head -n 1)"
+          xcrun altool --upload-app --type ios --file "$ipa" --apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID"

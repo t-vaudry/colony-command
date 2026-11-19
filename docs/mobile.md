@@ -58,3 +58,41 @@ name and narrow the file to `ts.net` with a `<domain-config>`.
   cannot read but a rooted device can. Moving it into the Android Keystore is a
   follow-up.
 - Notifications on the device are not wired up; the PC still sends its own.
+
+## iOS
+
+iOS builds need macOS, Xcode and, for a real device or TestFlight, an Apple Developer
+account (paid). They cannot be built on the Windows development machine, so CI does it.
+
+### Simulator build (no account needed)
+
+The **iOS** workflow builds the app for the iOS simulator on a macOS runner on every
+pull request that touches `app/`. To build it yourself on a Mac:
+
+    rustup target add aarch64-apple-ios-sim
+    cd app
+    npm ci
+    npx tauri ios init
+    npx tauri ios dev          # opens the simulator
+
+### TestFlight
+
+1. In App Store Connect, create the app with the bundle id `dev.colonycommand.app`.
+2. Create an **Apple Distribution** certificate and an **App Store** provisioning
+   profile for that bundle id; export the certificate as a `.p12`.
+3. Create an App Store Connect API key (Users and Access, Integrations).
+4. Add these repository secrets: `APPLE_TEAM_ID`, `IOS_CERTIFICATE_P12` (base64),
+   `IOS_CERTIFICATE_PASSWORD`, `IOS_PROVISIONING_PROFILE` (base64),
+   `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_KEY_P8`.
+5. Run the **iOS TestFlight** workflow by hand. The build appears in TestFlight after
+   Apple finishes processing it; add yourself as an internal tester.
+
+The TestFlight workflow has not been run: it needs the account above.
+
+### App Transport Security
+
+`app/src-tauri/Info.ios.plist` is merged into the generated Info.plist. It lets the
+web content open the plain `ws://` connection to your PC (see
+[remote-access.md](remote-access.md) for why that is acceptable inside the VPN), and
+excepts `*.ts.net` names. ATS does not apply to IP addresses, so pairing with a
+`100.x.y.z` address works without an exception.

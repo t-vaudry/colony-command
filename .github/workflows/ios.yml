@@ -1,0 +1,42 @@
+# Builds the iOS app for the simulator on macOS, on every pull request that touches the app.
+# iOS can only be built on macOS with Xcode. A device or TestFlight build needs an Apple
+# Developer account; see ios-testflight.yml and docs/mobile.md.
+name: iOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ios-simulator:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+        working-directory: app
+      - name: Create the Xcode project
+        run: npx tauri ios init --ci
+        working-directory: app
+      - name: Build for the simulator (no signing needed)
+        run: npx tauri ios build --debug --target aarch64-sim
+        working-directory: app

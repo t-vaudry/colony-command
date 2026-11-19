@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated iOS Info.plist by `tauri ios`.
+  Colony talks to your PC over ws:// inside your own VPN (docs/remote-access.md). App Transport
+  Security blocks cleartext for host names, so MagicDNS names (*.ts.net) are excepted and the
+  webview may open non-HTTPS connections. ATS does not apply to bare IP addresses, so a paired
+  100.x.y.z address needs no exception.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoadsInWebContent</key>
+    <true/>
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>ts.net</key>
+      <dict>
+        <key>NSIncludesSubdomains</key>
+        <true/>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key>
+        <true/>
+      </dict>
+    </dict>
+  </dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Colony Command connects to your PC over your VPN or local network.</string>
+</dict>
+</plist>
