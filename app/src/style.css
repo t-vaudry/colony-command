@@ -1777,3 +1777,107 @@ details.menu[open] > summary {
   width: 100%;
   box-sizing: border-box;
 }
+
+/* Touch and small screens (tablet, phone). The map takes touch itself: one finger pans, two pinch-zoom. */
+#map canvas {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+#term-host,
+#insp-body {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* A finger is about 44px; a mouse pointer does not need that. */
+@media (pointer: coarse) {
+  button,
+  select,
+  summary,
+  .porch-item {
+    min-height: 44px;
+  }
+  button.chip {
+    padding: 6px 12px;
+  }
+  input:not([type="checkbox"]):not([type="radio"]),
+  textarea,
+  select {
+    min-height: 44px;
+    /* Under 16px some mobile browsers zoom the page when a field is focused. */
+    font-size: 16px;
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: 24px;
+    height: 24px;
+  }
+  .hint,
+  kbd {
+    display: none;
+  }
+}
+
+/* Tablet: the side panel gets narrower so the map keeps room. */
+@media (max-width: 1100px) {
+  .stage {
+    grid-template-columns: minmax(0, 1fr) 6px min(var(--insp-w, 440px), 42vw);
+  }
+  .stage:has(#inspector.wide) {
+    grid-template-columns: minmax(0, 1fr) 6px min(max(var(--insp-w, 440px), 46vw), 60vw);
+  }
+  .bar {
+    gap: 8px 12px;
+    padding: 8px 12px;
+  }
+}
+
+/* Phone: the map above, the side panel as a sheet below; the top bar scrolls sideways rather than wrapping into four rows. */
+@media (max-width: 600px) {
+  .bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 8px;
+    padding: 6px 10px;
+    scrollbar-width: none;
+  }
+  .bar > * {
+    flex: 0 0 auto;
+  }
+  .brand {
+    display: none;
+  }
+  .counts {
+    flex-wrap: nowrap;
+    margin-right: 0;
+  }
+  .stage {
+    grid-template-rows: minmax(0, 1fr) 50%;
+  }
+  .foot {
+    flex-wrap: wrap;
+    padding-right: 10px;
+  }
+  #porch-strip {
+    padding: 6px 10px;
+    max-height: 120px;
+  }
+  #insp-body,
+  #compose {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  dialog {
+    width: 100vw;
+    max-width: 100vw;
+    max-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+  }
+  #toast {
+    left: 8px;
+    right: 8px;
+    max-width: none;
+  }
+}
