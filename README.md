@@ -323,6 +323,15 @@ crashed session; ones waiting for review are left alone. Dismissals are kept in
 `~/.colony/dismissed.json` for a day, so a daemon restart doesn't bring them
 back. The conversation stays on disk, and resuming it brings the bot back.
 
+## Remote access
+
+Off by default. Over a VPN you already run (Tailscale or WireGuard), a paired
+phone or tablet can watch your bots, and with an explicit per-device grant,
+answer approvals and reply. Each device has its own revocable credential, new
+devices are view-only, and remote commands are audited. Setup, what a paired
+device can and cannot do, the threat model and how to revoke a device are in
+[docs/remote-access.md](docs/remote-access.md).
+
 ## Run the daemon by hand
 
     wsl -d Ubuntu -- bash scripts/install-probe.sh   # once per distro
