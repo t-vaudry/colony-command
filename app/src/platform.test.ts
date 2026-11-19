@@ -25,6 +25,14 @@ describe("platform", () => {
     expect(m.has.updater).toBe(false);
   });
 
+  it("a phone has none of the desktop-only features, and a desktop has all of them", () => {
+    const tauri = { core: { invoke: vi.fn() } };
+    const none = { updater: false, gating: false, setup: false, daemonControl: false, patience: false };
+    expect(detect({ open: vi.fn(), __TAURI__: tauri, ...ua("Mozilla/5.0 (Linux; Android 14)") }).has).toEqual(none);
+    const all = { updater: true, gating: true, setup: true, daemonControl: true, patience: true };
+    expect(detect({ open: vi.fn(), __TAURI__: tauri, ...ua("Mozilla/5.0 (Windows NT 10.0)") }).has).toEqual(all);
+  });
+
   it("forwards invoke and open_link to the shell", async () => {
     const invoke = vi.fn().mockResolvedValue(undefined);
     const p = detect({ open: vi.fn(), __TAURI__: { core: { invoke } }, ...ua("Windows") });
