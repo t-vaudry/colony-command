@@ -1,0 +1,58 @@
+# Builds the Android debug APK on every pull request that touches the app, and on main.
+# The APK is attached to the run (Artifacts) so it can be sideloaded; see docs/mobile.md.
+name: Android
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "app/**"
+      - "scripts/android-prepare.sh"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      # The runner image already has the Android SDK (ANDROID_HOME); add the NDK and platform.
+      - name: Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "platforms;android-34" "build-tools;34.0.0"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      # WebKitGTK is only for the desktop shell, which this job doesn't build.
+      - run: npm ci
+        working-directory: app
+      - name: Create the Android project
+        run: npx tauri android init --ci
+        working-directory: app
+      - run: sh scripts/android-prepare.sh
+      - name: Build the debug APK
+        run: npx tauri android build --debug --apk --target aarch64
+        working-directory: app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: colony-command-android-debug
+          path: app/src-tauri/gen/android/app/build/outputs/apk/**/*.apk

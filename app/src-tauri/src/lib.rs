@@ -1,0 +1,172 @@
+//! The app shell. On the desktop it starts the daemon, owns the tray and the installer's hooks; on
+//! Android it is a webview around the same map that connects to a paired PC (see docs/mobile.md).
+
+#[cfg(desktop)]
+mod autostart;
+#[cfg(desktop)]
+mod daemon;
+#[cfg(desktop)]
+mod gating;
+mod links;
+#[cfg(desktop)]
+mod notify;
+#[cfg(desktop)]
+mod tray;
+#[cfg(desktop)]
+mod updater;
+
+#[cfg(desktop)]
+use colony_setup::{Applied, Options, Plan, Selection, TargetStatus};
+#[cfg(desktop)]
+use serde::Serialize;
+#[cfg(desktop)]
+use tauri::Manager;
+
+/// The map calls this to connect; starts colonyd if it isn't running.
+#[cfg(desktop)]
+#[tauri::command]
+async fn daemon_info() -> Result<daemon::Info, String> {
+    tauri::async_runtime::spawn_blocking(daemon::ensure).await.map_err(|e| e.to_string())?
+}
+
+/// A one-time message that the app replaced a daemon from another version.
+#[cfg(desktop)]
+#[tauri::command]
+fn daemon_notice() -> Option<String> {
+    daemon::take_notice()
+}
+
+/// Set when the colonyd file on disk is not this app's version: the update didn't finish.
+#[cfg(desktop)]
+#[tauri::command]
+fn daemon_incomplete() -> Option<String> {
+    daemon::incomplete()
+}
+
+/// The out-of-date banner's Restart button.
+#[cfg(desktop)]
+#[tauri::command]
+async fn daemon_restart() -> Result<daemon::Info, String> {
+    tauri::async_runtime::spawn_blocking(daemon::restart).await.map_err(|e| e.to_string())?
+}
+
+#[cfg(desktop)]
+fn setup_options(app: &tauri::AppHandle) -> Options {
+    let mut opts = Options::from_env();
+    if let Ok(dir) = app.path().resource_dir() {
+        opts.bundle_dirs.push(dir);
+    }
+    opts
+}
+
+#[cfg(desktop)]
+#[derive(Serialize)]
+struct SetupStatus {
+    /// The version this app installs.
+    version: &'static str,
+    /// Version plus the hook binary's hash: changes when the hook does, even in a dev build.
+    fingerprint: String,
+    targets: Vec<TargetStatus>,
+}
+
+/// Windows and every WSL distro, with what Colony has installed in each.
+/// Stopped distros are listed but not read (reading would start them).
+#[cfg(desktop)]
+#[tauri::command]
+async fn setup_status(app: tauri::AppHandle, include_stopped: Vec<String>) -> Result<SetupStatus, String> {
+    let opts = setup_options(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let targets = colony_setup::targets(&opts)
+            .into_iter()
+            .map(|mut t| {
+                // The user asked for this stopped distro; reading it starts it.
+                if include_stopped.contains(&t.id) {
+                    t.running = true;
+                }
+                colony_setup::status(&opts, &t)
+            })
+            .collect();
+        SetupStatus { version: colony_setup::VERSION, fingerprint: colony_setup::bundle_fingerprint(&opts), targets }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn setup_plan(app: tauri::AppHandle, target: String, selection: Selection) -> Result<Plan, String> {
+    let opts = setup_options(&app);
+    tauri::async_runtime::spawn_blocking(move || colony_setup::plan(&opts, &target, selection)).await.map_err(|e| e.to_string())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+async fn setup_apply(app: tauri::AppHandle, target: String, selection: Selection, token: String) -> Result<Applied, String> {
+    let opts = setup_options(&app);
+    tauri::async_runtime::spawn_blocking(move || colony_setup::apply(&opts, &target, selection, Some(&token))).await.map_err(|e| e.to_string())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn autostart_enabled() -> bool {
+    autostart::enabled()
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn autostart_set(on: bool) -> Result<bool, String> {
+    autostart::set(on)?;
+    Ok(autostart::enabled())
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn gating_paused() -> bool {
+    gating::paused()
+}
+
+#[cfg(desktop)]
+#[tauri::command]
+fn gating_set(paused: bool) -> Result<bool, String> {
+    gating::set_paused(paused)?;
+    Ok(gating::paused())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    #[cfg(desktop)]
+    let builder = builder
+        // A second launch (a login start plus a manual one) just shows the first window.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| tray::show(app)))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::Pending::default())
+        .manage(notify::Patience::default())
+        .setup(|app| {
+            // The window starts hidden (tauri.conf.json) so a login start can stay
+            // in the tray. Without a tray there'd be no way back, so show it then.
+            let window = links::main_window(app)?;
+            let handle = app.handle();
+            let tray_ok = tray::init(handle);
+            if tray_ok {
+                tray::hide_on_close(handle);
+            }
+            if !(tray_ok && std::env::args().any(|a| a == "--tray")) {
+                let _ = window.show();
+            }
+            updater::clean_old_sidecars();
+            // Start the daemon while the window loads rather than on first ask.
+            std::thread::spawn(|| {
+                if let Err(e) = daemon::ensure() {
+                    eprintln!("colony: {e}");
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![links::open_link, daemon_info, daemon_notice, daemon_incomplete, daemon_restart, setup_status, setup_plan, setup_apply, autostart_enabled, autostart_set, gating_paused, gating_set, notify::patience_tick, notify::patience_test, updater::update_check, updater::update_install]);
+    // The phone or tablet has no daemon, tray or installer of its own: only the shared bridge.
+    #[cfg(mobile)]
+    let builder = builder.invoke_handler(tauri::generate_handler![links::open_link]);
+    builder.run(tauri::generate_context!()).expect("Colony Command failed to start");
+}

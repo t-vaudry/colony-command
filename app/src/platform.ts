@@ -17,7 +17,7 @@ export interface Platform {
   /** Hand a link to the default browser. */
   openLink(uri: string): void;
   /** Which shell-only features exist here; hide the UI for the ones that don't. */
-  has: { updater: boolean; gating: boolean; setup: boolean; daemonControl: boolean };
+  has: { updater: boolean; gating: boolean; setup: boolean; daemonControl: boolean; patience: boolean };
 }
 
 const MOBILE_UA = /Android/i;
@@ -44,7 +44,7 @@ export function detect(win: Win): Platform {
       if (invoke) void invoke("open_link", { url: uri });
       else win.open(uri, "_blank", "noopener");
     },
-    has: { updater: desktop && !!invoke, gating: desktop && !!invoke, setup: desktop && !!invoke, daemonControl: desktop && !!invoke },
+    has: { updater: desktop && !!invoke, gating: desktop && !!invoke, setup: desktop && !!invoke, daemonControl: desktop && !!invoke, patience: desktop && !!invoke },
   };
 }
 

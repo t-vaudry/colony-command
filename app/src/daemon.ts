@@ -186,7 +186,7 @@ export class Daemon {
 
   /** Ask the app to replace the daemon (the banner's Restart button), then reconnect. */
   async restart(): Promise<void> {
-    await platform().invoke?.("daemon_restart");
+    await (platform().has.daemonControl ? platform().invoke : null)?.("daemon_restart");
     this.protocolError = false;
     this.ws?.close();
   }
@@ -331,9 +331,10 @@ export class Daemon {
       this.info = await readInfo();
       this.appVer ??= await appVersion();
       // The app says so when it just replaced a daemon from another version.
-      const note = await platform().invoke?.<string | null>("daemon_notice").catch(() => null);
+      const control = platform().has.daemonControl ? platform().invoke : null;
+      const note = await control?.<string | null>("daemon_notice").catch(() => null);
       if (note) for (const fn of this.noticeListeners) fn(note);
-      this.incomplete = (await platform().invoke?.<string | null>("daemon_incomplete").catch(() => null)) ?? null;
+      this.incomplete = (await control?.<string | null>("daemon_incomplete").catch(() => null)) ?? null;
     } catch (e) {
       if (e instanceof NotPaired) {
         this.status = "unpaired";

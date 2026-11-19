@@ -1,10 +1,14 @@
 // Links go to the default browser. A click, a target=_blank, and the context
 // menu's "Open link in new window" would otherwise open them inside the app.
 
+#[cfg(desktop)]
 use tauri::webview::NewWindowResponse;
-use tauri::{App, AppHandle, Url, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Url};
+#[cfg(desktop)]
+use tauri::{App, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
 
+#[cfg(desktop)]
 /// Builds the main window (tauri.conf.json has `create: false`) with link handling attached.
 pub fn main_window(app: &App) -> tauri::Result<WebviewWindow> {
     let config = app.config().app.windows.iter().find(|w| w.label == "main").expect("main window config");
@@ -25,6 +29,7 @@ pub fn main_window(app: &App) -> tauri::Result<WebviewWindow> {
         .build()
 }
 
+#[cfg(desktop)]
 /// The app's own pages: the bundled frontend, or the Vite dev server.
 fn is_app(url: &Url) -> bool {
     match url.scheme() {

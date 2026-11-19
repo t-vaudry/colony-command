@@ -442,7 +442,7 @@ export class Hud {
   private gatingPaused = false;
 
   private watchGating(): void {
-    const invoke = platform().invoke;
+    const invoke = platform().has.gating ? platform().invoke : null;
     if (!invoke) return;
     const poll = () =>
       void invoke<boolean>("gating_paused")
