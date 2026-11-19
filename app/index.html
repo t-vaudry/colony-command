@@ -39,6 +39,7 @@
       </div>
       <div class="splitter v" id="split-v" role="separator" aria-orientation="vertical" aria-label="Resize side panel" tabindex="0" title="Drag to resize · double-click to reset"></div>
       <aside id="inspector">
+        <p id="view-only-note" class="muted small" hidden>This device is view only. To approve, deny or reply from here, allow control for it under Paired devices on your PC.</p>
         <div id="insp-body"></div>
         <div id="compose" hidden>
           <div id="perm" class="perm" hidden>
@@ -47,6 +48,12 @@
               <button type="button" class="primary" id="perm-allow" title="Choose the highlighted option, normally &quot;Yes&quot; (Enter)">Allow</button>
               <button type="button" class="danger" id="perm-deny" title="Decline and let Claude try something else (Esc)">Deny</button>
             </div>
+          </div>
+          <div id="quick" class="quick" role="group" aria-label="Quick replies">
+            <button type="button" data-quick="Yes, go ahead.">Yes, go ahead</button>
+            <button type="button" data-quick="No, don't do that.">No</button>
+            <button type="button" data-quick="Continue.">Continue</button>
+            <button type="button" data-quick="Looks good, finish up.">Looks good</button>
           </div>
           <label class="k" for="reply">Message</label>
           <textarea id="reply" rows="2" placeholder="Message…"></textarea>
