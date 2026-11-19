@@ -49,6 +49,12 @@ jobs:
       - run: scripts/check-nsis.sh
       # The desktop app needs WebKitGTK to compile on Linux and only ships on Windows.
       - run: cargo test --workspace --exclude colony-app --locked
+      # A paired remote client against a real colonyd: pairing, scopes, heartbeat, revoke (needs Node 22 for WebSocket).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --locked -p colonyd -p colony-hook
+      - run: PROFILE=debug node scripts/acceptance.mjs remote
 
   # Static (musl) Linux builds that "Set up Colony" copies into WSL distros.
   linux-binaries:

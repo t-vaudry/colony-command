@@ -4,6 +4,7 @@
 //     node scripts/acceptance.mjs failopen  # hooks with no daemon: time, exit code, output
 //     node scripts/acceptance.mjs load      # colonyd CPU and memory, idle and under a 50-session load
 //     node scripts/acceptance.mjs fps       # 50 synthetic sessions in headless Chrome (needs app/node_modules)
+//     node scripts/acceptance.mjs remote    # a paired remote client: pairing, scopes, heartbeat, revoke
 //     node scripts/acceptance.mjs all
 //
 // Scale: AGENTS=200 node scripts/acceptance.mjs fps   (also SPEED=, default 1;
@@ -19,14 +20,15 @@
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, openSync, readdirSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir, cpus, homedir } from "node:os";
+import { tmpdir, cpus, homedir, networkInterfaces } from "node:os";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const exe = process.platform === "win32" ? ".exe" : "";
-const bin = (n) => join(root, "target", "release", n + exe);
+// PROFILE=debug runs against a debug build (CI does, for the remote scenario).
+const bin = (n) => join(root, "target", process.env.PROFILE ?? "release", n + exe);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const now = () => performance.now();
 
@@ -36,7 +38,10 @@ function stats(xs) {
   return { n: s.length, min: s[0], median: q(0.5), p95: q(0.95), max: s[s.length - 1] };
 }
 const fmt = (st, unit = "ms") => `n=${st.n} min ${st.min.toFixed(0)} / median ${st.median.toFixed(0)} / p95 ${st.p95.toFixed(0)} / max ${st.max.toFixed(0)} ${unit}`;
-const report = (name, ok, detail) => console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
+const report = (name, ok, detail) => {
+  console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${detail}`);
+  if (!ok) process.exitCode = 1;
+};
 
 async function freePort() {
   return new Promise((res, rej) => {
@@ -52,7 +57,7 @@ async function freePort() {
 const desktopEnv = (e) => Object.fromEntries(Object.entries(e).filter(([k]) => !/^(CLAUDECODE|CLAUDE_|MCP_|MSYS|MINGW|SHELL$|TERM$|HOME$|EXEPATH$|ORIGINAL_PATH$|SSH_|PWD$|OLDPWD$|SHLVL$|_$)/i.test(k)));
 
 /** An isolated colonyd. `env` for anything that should talk to it. */
-async function startDaemon({ real = false, wslHome = null } = {}) {
+async function startDaemon({ real = false, wslHome = null, extraEnv = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "colony-accept-"));
   const home = join(dir, ".colony");
   mkdirSync(home, { recursive: true });
@@ -68,6 +73,7 @@ async function startDaemon({ real = false, wslHome = null } = {}) {
     COLONY_HOME: home, COLONY_PORT: String(port), COLONY_PTYD_PORT: String(await freePort()),
     ...(real ? {} : { USERPROFILE: dir, HOME: dir }),
     ...(wslHome ? { HOME: wslHome, WSLENV: "HOME" } : { COLONY_INGEST: "1" }),
+    ...extraEnv,
   };
   // A fake HOME for Git Bash (which runs Claude Code's hooks): the user's `$HOME/.colony/bin/colony-hook.exe`
   // entry then finds this build's hook, and the user's installed copy is not involved.
@@ -734,19 +740,163 @@ async function realWsl() {
   reportTimes("real WSL: killed terminal shows crashed (< 5000 ms)", crash, 5000);
 }
 
+/** A non-loopback IPv4 address of this machine, which stands in for the VPN interface. */
+function lanAddress() {
+  for (const list of Object.values(networkInterfaces())) for (const i of list ?? []) if (i.family === "IPv4" && !i.internal) return i.address;
+  return null;
+}
+
+/** A WebSocket that keeps every message, with a way to wait for one. */
+async function openSocket(url, first) {
+  const ws = new WebSocket(url);
+  const got = [];
+  const waiters = [];
+  let closed = false;
+  ws.onmessage = (m) => {
+    const o = JSON.parse(m.data);
+    for (const x of o.type === "batch" ? o.msgs : [o]) {
+      got.push(x);
+      waiters.forEach((w) => w());
+    }
+  };
+  ws.onclose = () => { closed = true; waiters.forEach((w) => w()); };
+  await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error("websocket failed: " + url.replace(/token=[^&]*/, "token=…"))); });
+  if (first) ws.send(JSON.stringify(first));
+  const c = {
+    got, ws,
+    send: (o) => ws.send(JSON.stringify(o)),
+    get closed() { return closed; },
+    /** The first message (new ones only, after `from`) that `pred` accepts; rejects after `ms`. */
+    next: (pred, ms = 5000, from = 0) => new Promise((res, rej) => {
+      const t = setTimeout(() => rej(new Error("timed out; saw " + JSON.stringify(got.slice(from).map((g) => g.type + (g.code ? ":" + g.code : ""))))), ms);
+      const check = () => {
+        const hit = got.slice(from).find(pred);
+        if (!hit && !closed) return false;
+        clearTimeout(t);
+        hit ? res(hit) : rej(new Error("socket closed first"));
+        return true;
+      };
+      if (!check()) waiters.push(function w() { if (check()) waiters.splice(waiters.indexOf(w), 1); });
+    }),
+  };
+  return c;
+}
+
+/**
+ * A paired remote client (milestone 1 and 2): pairs with a code, authenticates with its credential, and is
+ * held to its scope. View-only: sees sessions but every command that changes something is refused, with a code
+ * the app acts on. After the desktop grants control it is told, and its commands go through. Heartbeats arrive.
+ * Revoking the device stops it at once. Needs a non-loopback address (a VPN address in real life).
+ */
+async function remote() {
+  const ip = lanAddress();
+  if (!ip) { console.log("SKIP  remote client: this machine has no non-loopback IPv4 address to listen on"); return; }
+  const rport = await freePort();
+  const d = await startDaemon({ extraEnv: { COLONY_REMOTE_ADDR: ip, COLONY_REMOTE_PORT: String(rport) } });
+  const base = `http://${ip}:${rport}`;
+  const desk = await openSocket(`ws://127.0.0.1:${d.port}/ws?token=${d.token}`);
+  const cwd = join(d.dir, "proj");
+  mkdirSync(cwd, { recursive: true });
+  const opened = [];
+  try {
+    // The desktop makes a pairing code.
+    desk.send({ type: "create_pairing" });
+    const code = (await desk.next((m) => m.type === "pairing")).code;
+    report("remote: the desktop shows an 8-digit pairing code", /^\d{8}$/.test(code), code.replace(/\d/g, "x"));
+
+    // A wrong code is refused; the right one pairs, once.
+    const bad = await fetch(`${base}/api/pair`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "00000000", name: "Tablet" }) });
+    report("remote: a wrong code is refused", bad.status === 403, `HTTP ${bad.status}`);
+    const paired = await fetch(`${base}/api/pair`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, name: "Tablet" }) });
+    const body = paired.ok ? await paired.json() : {};
+    report("remote: the right code pairs and starts view-only", paired.ok && !!body.credential && body.scope === "view", `HTTP ${paired.status}, scope ${body.scope}`);
+    const again = await fetch(`${base}/api/pair`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, name: "Tablet 2" }) });
+    report("remote: a code works once", again.status === 403, `HTTP ${again.status}`);
+
+    // Wrong credential: refused. The desktop token is not a credential on the VPN listener.
+    for (const [what, cred] of [["a wrong credential", "nope"], ["the desktop token", d.token]]) {
+      const w = await openSocket(`ws://${ip}:${rport}/ws`, { type: "auth", credential: cred });
+      const e = await w.next((m) => m.type === "error").catch(() => null);
+      report(`remote: ${what} is refused`, e?.code === "unauthorized", e ? e.code : "no error");
+      w.ws.close();
+    }
+
+    // A session on the PC shows up on the paired client.
+    const tab = await openSocket(`ws://${ip}:${rport}/ws`, { type: "auth", credential: body.credential });
+    opened.push(tab);
+    const snap = await tab.next((m) => m.type === "snapshot", 8000);
+    const you = await tab.next((m) => m.type === "you", 5000);
+    report("remote: connects with the credential and is told it is view-only", !!snap && you.scope === "view", `scope ${you.scope}`);
+    const p = dummyClaude();
+    const s = sid();
+    writeRegistry(d, p.pid, s, cwd);
+    await new Promise((r) => runHook(d, { session_id: s, hook_event_name: "UserPromptSubmit", cwd, prompt: "hello" }).on("close", r));
+    const seen = await tab.next((m) => (m.type === "upsert" && m.agent.session_id === s) || (m.type === "snapshot" && m.agents.some((a) => a.session_id === s)), 10000).catch(() => null);
+    report("remote: a session on the PC appears on the paired client", !!seen, seen ? "seen" : "never seen");
+    killTree(p.pid);
+
+    // View-only: anything that changes something is refused with view_only; device management with desktop_only.
+    const refused = [];
+    for (const cmd of [{ type: "input", term: "t", data: "x" }, { type: "interrupt", term: "t" }, { type: "set_classifier", enabled: true }, { type: "pause", id: "x" }]) {
+      const from = tab.got.length;
+      tab.send(cmd);
+      const e = await tab.next((m) => m.type === "error", 3000, from).catch(() => null);
+      refused.push(e?.code === "view_only");
+    }
+    report("remote: a view-only device is refused every command that changes something", refused.every(Boolean), refused.join(","));
+    const from = tab.got.length;
+    tab.send({ type: "create_pairing" });
+    const dev = await tab.next((m) => m.type === "error", 3000, from).catch(() => null);
+    report("remote: a paired device can't pair others", dev?.code === "desktop_only", dev?.code ?? "no error");
+
+    // The desktop grants control: the client is told, and its commands are accepted.
+    const id = (await (desk.send({ type: "list_devices" }), desk.next((m) => m.type === "devices"))).devices[0].id;
+    desk.send({ type: "set_device_scope", id, scope: "control" });
+    const granted = await tab.next((m) => m.type === "you" && m.scope === "control", 8000).catch(() => null);
+    report("remote: control is granted and the client is told", !!granted, granted ? "scope control" : "not told");
+    const f2 = tab.got.length;
+    tab.send({ type: "ack", id: "nothing" });
+    const e2 = await tab.next((m) => m.type === "error", 1500, f2).catch(() => null);
+    report("remote: a control device's command is accepted", e2 === null, e2 ? JSON.stringify(e2) : "no error");
+
+    // The audit holds what was done, never what was typed.
+    desk.send({ type: "list_audit" });
+    const audit = (await desk.next((m) => m.type === "audit")).entries ?? [];
+    const kinds = audit.map((e) => e.command);
+    report("remote: the audit lists the refused and the accepted commands, without content",
+      kinds.includes("input") && kinds.includes("ack") && !JSON.stringify(audit).includes("hello"), kinds.join(","));
+
+    // Heartbeats keep a quiet link alive (sent every 15 s).
+    const hb = await tab.next((m) => m.type === "hb", 20000).catch(() => null);
+    report("remote: a heartbeat arrives on a quiet link (< 20 s)", !!hb, hb ? "hb" : "none");
+
+    // Revoking cuts the device off at once.
+    desk.send({ type: "revoke_device", id });
+    await sleep(500);
+    const after = await openSocket(`ws://${ip}:${rport}/ws`, { type: "auth", credential: body.credential });
+    const e3 = await after.next((m) => m.type === "error", 3000).catch(() => null);
+    report("remote: a revoked credential stops working", e3?.code === "unauthorized", e3?.code ?? "no error");
+    after.ws.close();
+  } finally {
+    for (const t of opened) t.ws.close();
+    desk.ws.close();
+    d.stop();
+  }
+}
+
 const steps = { latency, failopen, load, fps };
-const manual = { "real-windows": realWindows, "real-colony": realColony, "real-wsl": realWsl, reap: async () => reap(), real: async () => { await realWindows(); await realColony(); await realWsl(); } };
+const manual = { remote, "real-windows": realWindows, "real-colony": realColony, "real-wsl": realWsl, reap: async () => reap(), real: async () => { await realWindows(); await realColony(); await realWsl(); } };
 const which = process.argv[2];
 if (manual[which]) {
   try { await manual[which](); } finally { reap(); }
-  process.exit(0);
+  process.exit(process.exitCode ?? 0);
 }
 if (!which || (which !== "all" && !steps[which])) {
-  console.error("usage: node scripts/acceptance.mjs latency|failopen|load|fps|all\n       node scripts/acceptance.mjs real-windows|real-colony|real-wsl|real|reap   (real Claude Code)");
+  console.error("usage: node scripts/acceptance.mjs latency|failopen|load|fps|all\n       node scripts/acceptance.mjs remote   (a paired remote client)\n       node scripts/acceptance.mjs real-windows|real-colony|real-wsl|real|reap   (real Claude Code)");
   process.exit(2);
 }
 for (const n of which === "all" ? Object.keys(steps) : [which]) {
   console.log(`\n== ${n}`);
   await steps[n]();
 }
-process.exit(0);
+process.exit(process.exitCode ?? 0);

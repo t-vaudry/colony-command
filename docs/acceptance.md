@@ -14,6 +14,20 @@ sessions, hooks or daemon were involved.
 Machine: Windows 11, i7-1280P (20 logical cores), 32 GB, Intel Iris Xe, release
 builds.
 
+## Remote client (milestones 1 and 2)
+
+`node scripts/acceptance.mjs remote` pairs a client with a throwaway `colonyd` that
+listens on this machine's own non-loopback address (a stand-in for the VPN interface), then
+checks, over a real WebSocket: a wrong code and a reused code are refused; a new device is
+view-only and is told so; the desktop token and a wrong credential are refused on the
+remote port; a session started on the PC appears on the client; a view-only device is refused
+every command that changes something and can't pair others; granting control reaches
+the client and its commands go through; the audit holds the kinds of command and no content; a
+heartbeat arrives on a quiet link; and a revoked credential stops working. It exits non-zero
+if any check fails, and CI runs it on every push (`PROFILE=debug` for a debug build). It
+skips, with a message, on a machine with no non-loopback address. The scope tables and
+pairing have their own unit tests in `scopes.rs` and `devices.rs`; this is the end-to-end run.
+
 ## Summary
 
 | Criterion | Target | Measured | Result |
