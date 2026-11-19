@@ -26,4 +26,8 @@ describe("touch and small-screen layout", () => {
   it("hides session actions from a view-only device", () => {
     expect(css).toMatch(/body\.view-only \[data-pause\][\s\S]*\[data-kill\]\s*\{[^}]*display:\s*none/);
   });
+
+  it("shows settings and budgets to a view-only device but not their controls", () => {
+    expect(css).toMatch(/body\.view-only \[data-classifier\][\s\S]*\[data-budget-day\][\s\S]*display:\s*none/);
+  });
 });

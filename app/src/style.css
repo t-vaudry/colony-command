@@ -2028,3 +2028,14 @@ body.view-only [data-kill] {
     width: 100vw;
   }
 }
+
+/* Remaining panels on a paired device (decisions in #101): the time-lapse and the spend and latency charts are
+   read-only, so every device sees them. Settings and budgets are shown, but changing them takes control. */
+body.view-only [data-classifier],
+body.view-only [data-context-pct],
+body.view-only [data-budget-bot],
+body.view-only [data-budget-day],
+body.view-only [data-compact],
+body.view-only [data-wrong-for] {
+  display: none !important;
+}
