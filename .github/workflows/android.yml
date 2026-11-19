@@ -48,7 +48,7 @@ jobs:
       - name: Create the Android project
         run: npx tauri android init --ci
         working-directory: app
-      - run: scripts/android-prepare.sh
+      - run: sh scripts/android-prepare.sh
       - name: Build the debug APK
         run: npx tauri android build --debug --apk --target aarch64
         working-directory: app
