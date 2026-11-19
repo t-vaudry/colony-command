@@ -1,6 +1,7 @@
 // DOM layer: state counts, the porch strip, the inspector panel, and the
 // reply box for sessions Colony started.
 
+import { scopeText } from "./pairscreen";
 import type { Daemon } from "./daemon";
 import { costChart } from "./costchart";
 import { platform } from "./platform";
@@ -497,7 +498,7 @@ export class Hud {
     this.conn.className = `conn ${this.daemon.status}`;
     this.conn.textContent =
       this.daemon.status === "live"
-        ? `live · ${all.filter((a) => a.kind === "main").length} sessions`
+        ? `live · ${all.filter((a) => a.kind === "main").length} sessions${this.daemon.remote && this.daemon.scope ? ` · ${scopeText(this.daemon.scope)}` : ""}`
         : this.daemon.status === "connecting"
           ? "reconnecting…"
           : this.daemon.status === "unpaired"
