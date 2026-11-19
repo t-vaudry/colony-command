@@ -39,6 +39,8 @@ export interface DaemonSettings {
   budget_overrides?: Record<string, number>;
   /** Address the VPN listener is bound to, or null when remote access is off. */
   remote_listening?: string | null;
+  /** The address saved for remote access (applies when the service restarts); null is off. */
+  remote_listen?: string | null;
   prevent_sleep?: boolean;
   push_on?: boolean;
 }
@@ -602,6 +604,16 @@ export class Daemon {
   /** Let a device control (answer approvals, send input...) or take it back to view-only. */
   setDeviceScope(id: string, scope: "view" | "control"): boolean {
     return this.send({ type: "set_device_scope", id, scope });
+  }
+
+  /** Desktop only: the VPN address to serve remote devices on; blank turns remote access off. Applies on restart. */
+  setRemoteListen(addr: string): boolean {
+    return this.send({ type: "set_remote_listen", addr });
+  }
+
+  /** Desktop only: the ntfy topic address for phone alerts; blank turns them off. */
+  setNtfyUrl(url: string): boolean {
+    return this.send({ type: "set_ntfy_url", url });
   }
 
   /** Desktop only: keep the PC awake while remote access is on. */

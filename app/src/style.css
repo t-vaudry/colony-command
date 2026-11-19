@@ -2039,3 +2039,55 @@ body.view-only [data-compact],
 body.view-only [data-wrong-for] {
   display: none !important;
 }
+
+/* Remote access panel (top bar, not tied to a session) */
+#remote-panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 0;
+  width: min(560px, calc(100vw - 32px));
+  max-height: 100dvh;
+  overflow-y: auto;
+}
+#remote-panel::backdrop {
+  background: rgba(10, 14, 12, 0.45);
+}
+#rp {
+  display: grid;
+  gap: 12px;
+  padding: 20px 22px;
+}
+#rp h2,
+#rp h3 {
+  margin: 0;
+}
+#rp h3 {
+  font-size: 14px;
+  margin-top: 6px;
+}
+#rp label {
+  display: grid;
+  gap: 4px;
+}
+#rp input[type="text"] {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+#rp [hidden] {
+  display: none !important;
+}
+@media (max-width: 600px) {
+  #remote-panel {
+    width: 100vw;
+  }
+  #rp {
+    padding: 16px;
+  }
+}

@@ -29,7 +29,8 @@ within 5 seconds is closed.
 1. **Install Tailscale** (or set up WireGuard) on the PC and on the tablet, and
    sign both into the same tailnet. Check that the tablet can reach the PC.
    With Tailscale, `tailscale ip -4` on the PC prints its address (`100.x.y.z`).
-2. **Tell Colony which address to listen on.** Add this to
+2. **Tell Colony which address to listen on.** Click **Remote** in the top bar,
+   type the address, and **Save**; the panel offers a restart. Or add this to
    `%USERPROFILE%\.colony\settings.json` (create the file if it isn't there):
 
        { "remote_listen": "100.101.102.103" }
@@ -117,7 +118,7 @@ Risks to weigh:
 
 ## Revoke a device
 
-In the side panel under **Paired devices**, click **Revoke** next to it. The
+In **Remote**, under **Paired devices**, click **Revoke** next to it. The
 credential stops working at once and any open connection from it is closed. To
 cut off everything, delete `%USERPROFILE%\.colony\devices.json` while colonyd is
 stopped, or clear `remote_listen` (and `COLONY_REMOTE_ADDR`) and restart colonyd
@@ -125,7 +126,7 @@ to turn the listener off.
 
 ## See what was done
 
-Click **Remote activity** under Paired devices. Every command a remote device
+Click **Remote activity** in the **Remote** panel. Every command a remote device
 sends is recorded in `~/.colony/audit.jsonl` with the device, the kind of
 command and the time, and whether its scope allowed it. Like `events.jsonl`, it
 never contains prompt text, command text or file paths. Presence heartbeats are
@@ -136,8 +137,7 @@ not listed.
 A phone can't reach a sleeping PC. When the app can't reach it, it shows a "PC
 offline" banner with **Try again** and **Unpair**, and keeps retrying on its own.
 
-To keep the PC reachable, turn on **Stay awake** under Remote access in the side
-panel (`prevent_sleep` in `~/.colony/settings.json`). While remote access is on,
+To keep the PC reachable, turn on **Stay awake** in the **Remote** panel (`prevent_sleep` in `~/.colony/settings.json`). While remote access is on,
 Colony then asks Windows not to sleep (the same request a video player makes). The
 screen can still turn off. It is off by default, and only the desktop can change it.
 It does not help once the PC is shut down or hibernating.

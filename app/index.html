@@ -22,6 +22,7 @@
       </button>
       <button type="button" class="chip" id="workflows-btn" title="Create and edit workflows: lists of phases a session runs, each in its own agent">Workflows</button>
       <button type="button" class="chip" id="patience-btn" title="When Colony sends an OS notification for a bot that has waited too long">Notifications</button>
+      <button type="button" class="chip" id="remote-btn" title="Use Colony from a phone or tablet: the VPN address, paired devices, alerts" hidden>Remote</button>
       <div class="conn connecting" id="conn">connecting…</div>
     </header>
     <main class="stage">
@@ -296,6 +297,40 @@
           <button type="button" id="wf-cancel">Cancel</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="remote-panel">
+      <div id="rp">
+        <h2>Remote access</h2>
+        <p class="muted small">Use Colony from a phone or tablet on the same VPN (Tailscale or WireGuard). Nothing is reachable until you give this PC's VPN address here, and only devices you pair can connect.</p>
+        <form id="rp-addr-form" autocomplete="off">
+          <label>
+            <span class="k">This PC's VPN address</span>
+            <input name="addr" type="text" placeholder="100.101.102.103" spellcheck="false" />
+          </label>
+          <div class="actions"><button type="submit" class="primary">Save</button><span id="rp-status" class="muted small"></span></div>
+        </form>
+        <div id="rp-restart" class="choice" hidden>
+          <p id="rp-restart-text"></p>
+          <div class="actions"><button type="button" id="rp-restart-btn">Restart now</button></div>
+        </div>
+        <section id="rp-on" hidden>
+          <h3>Paired devices</h3>
+          <div id="rp-devices"></div>
+          <div class="actions"><button type="button" id="rp-pair" class="primary">Pair a device</button><button type="button" id="rp-audit">Remote activity</button></div>
+          <div id="rp-code" class="choice" hidden></div>
+          <div id="rp-log" class="choice" hidden></div>
+          <h3>Keep this PC reachable</h3>
+          <div class="fact"><span class="k">Stay awake</span><span><button type="button" id="rp-sleep" title="Stops Windows from sleeping while remote access is on, so a phone can still reach this PC.">Off</button></span></div>
+          <h3>Phone alerts</h3>
+          <p class="muted small">A short message to an <a href="https://ntfy.sh" target="_blank" rel="noopener">ntfy</a> topic when a session needs approval, waits for a reply, is blocked or is done. It names the project, never a prompt or command. Use a long random topic name.</p>
+          <form id="rp-ntfy-form" autocomplete="off">
+            <label><span class="k">Topic address</span><input name="url" type="text" placeholder="https://ntfy.sh/your-long-random-topic" spellcheck="false" /></label>
+            <div class="actions"><button type="submit">Save</button><span id="rp-ntfy-status" class="muted small"></span></div>
+          </form>
+        </section>
+        <p id="rp-error" class="error" role="alert"></p>
+        <div class="actions"><button type="button" id="rp-close">Close</button></div>
+      </div>
     </dialog>
     <dialog id="found">
       <form id="found-form">

@@ -75,6 +75,20 @@ impl Tracker {
     }
 }
 
+/// The `ntfy_url` setting from what the user typed: empty turns alerts off, anything else must be
+/// an http(s) URL (a topic on your own server, or on ntfy.sh).
+pub fn clean_url(text: &str) -> Result<Option<String>, String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Ok(None);
+    }
+    let rest = t.strip_prefix("https://").or_else(|| t.strip_prefix("http://")).ok_or("The topic address must start with http:// or https://.")?;
+    if rest.is_empty() || rest.starts_with('/') || t.chars().any(|c| c.is_whitespace() || c.is_control()) || t.len() > 500 {
+        return Err("That doesn't look like a topic address, like https://ntfy.sh/my-secret-topic.".into());
+    }
+    Ok(Some(t.to_string()))
+}
+
 /// POST one notice to an ntfy topic URL.
 pub fn send(url: &str, n: &Notice) -> Result<(), String> {
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).build().into();
@@ -167,6 +181,16 @@ mod tests {
         t.changes([agent("a", AgentState::Working)].iter());
         let both = [agent("a", AgentState::Working), agent("b", AgentState::Blocked)];
         assert_eq!(t.changes(both.iter()).len(), 1);
+    }
+
+    #[test]
+    fn a_typed_topic_is_checked_and_blank_turns_alerts_off() {
+        assert_eq!(clean_url(" https://ntfy.sh/abc ").unwrap().as_deref(), Some("https://ntfy.sh/abc"));
+        assert_eq!(clean_url("http://100.64.0.1:8080/t").unwrap().as_deref(), Some("http://100.64.0.1:8080/t"));
+        assert_eq!(clean_url("").unwrap(), None);
+        for bad in ["ntfy.sh/abc", "ftp://x/y", "https://", "https:///x", "https://a b/c"] {
+            assert!(clean_url(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

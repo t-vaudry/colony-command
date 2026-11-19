@@ -324,6 +324,11 @@ enum Command {
     SetClassifier { enabled: bool },
     /// Desktop only: keep the PC awake while remote access is on.
     SetPreventSleep { enabled: bool },
+    /// Desktop only: the VPN address to serve remote devices on (blank turns remote access off).
+    /// Takes effect when colonyd restarts.
+    SetRemoteListen { addr: String },
+    /// Desktop only: the ntfy topic address for phone alerts (blank turns them off).
+    SetNtfyUrl { url: String },
     /// Where a bot's context counts as getting full, in percent of its window.
     SetContextPct { pct: u32 },
     /// Type `/compact` into a Colony-started bot that is waiting at its prompt.
@@ -608,6 +613,24 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
             let _ = shared.deltas.send(json!({ "type": "settings", "settings": saved.1 }).to_string());
             saved.0.map(|_| None).map_err(|e| format!("could not save settings: {e}"))
         }
+        Command::SetRemoteListen { addr } => crate::remote::clean_setting(&addr).and_then(|addr| {
+            let saved = {
+                let mut s = shared.settings.lock().unwrap();
+                s.remote_listen = addr;
+                (s.save(&crate::quality::settings_path()), s.public())
+            };
+            let _ = shared.deltas.send(json!({ "type": "settings", "settings": saved.1 }).to_string());
+            saved.0.map(|_| None).map_err(|e| format!("could not save settings: {e}"))
+        }),
+        Command::SetNtfyUrl { url } => crate::push::clean_url(&url).and_then(|url| {
+            let saved = {
+                let mut s = shared.settings.lock().unwrap();
+                s.ntfy_url = url;
+                (s.save(&crate::quality::settings_path()), s.public())
+            };
+            let _ = shared.deltas.send(json!({ "type": "settings", "settings": saved.1 }).to_string());
+            saved.0.map(|_| None).map_err(|e| format!("could not save settings: {e}"))
+        }),
         Command::SetPreventSleep { enabled } => {
             let saved = {
                 let mut s = shared.settings.lock().unwrap();

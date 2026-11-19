@@ -22,7 +22,7 @@ unzip it.
    device plugged in: `adb install -r app-universal-debug.apk` (the file name depends
    on the build; use the one you unzipped).
 3. Open **Colony Command**. It shows the pairing screen: enter your PC's VPN
-   address and the 8-digit code from **Paired devices, Pair a device** on the PC.
+   address and the 8-digit code from **Remote, Pair a device** on the PC (the **Remote** button in the top bar).
 
 ### Build it yourself
 

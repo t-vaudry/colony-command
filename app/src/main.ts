@@ -9,6 +9,7 @@ import { TerminalPane } from "./terminal";
 import type { Agent } from "./types";
 import { PatienceNotifier } from "./patience";
 import { PairScreen } from "./pairscreen";
+import { RemotePanel } from "./remotepanel";
 import { SetupDialog } from "./setup";
 import { initUpdateNotice } from "./update";
 import { World } from "./world";
@@ -139,6 +140,7 @@ initLayout();
 new PairScreen(daemon, (scope) =>
   hud.toast(scope === "control" ? "Paired. This device can answer approvals and send replies." : "Paired. This device is view only; allow control for it in the desktop app to act."),
 );
+new RemotePanel(daemon);
 new SetupDialog();
 initUpdateNotice();
 new PatienceNotifier(daemon, select);
