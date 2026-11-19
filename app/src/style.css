@@ -1937,12 +1937,6 @@ body.view-only #workflows-btn {
 #view-only-note[hidden] {
   display: none;
 }
-.quick {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
 /* Terminal on a touchscreen: the key bar sits under the terminal, and a session wider than the pane scrolls. */
 #term-host {
   overflow: auto;
@@ -2196,4 +2190,35 @@ html.mobile .bar {
 /* A long press on a control with a title shows the title (see touchhints.ts). */
 #toast.hint {
   white-space: pre-wrap;
+}
+
+/* Terminal scrollback by finger: up and down are the app's (terminal.ts), sideways stays the browser's. */
+#term-host,
+#term-host .xterm,
+#term-host .xterm-viewport,
+#term-host .xterm-screen {
+  touch-action: pan-x;
+}
+
+/* Android: the top bar stays on one line. Tighter gaps, and it scrolls as a last resort. */
+html.mobile .bar {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 6px 10px;
+  padding-left: max(10px, env(safe-area-inset-left, 0px));
+  padding-right: max(10px, env(safe-area-inset-right, 0px));
+  scrollbar-width: none;
+}
+html.mobile .bar > * {
+  flex: 0 0 auto;
+}
+html.mobile .brand {
+  font-size: 16px;
+}
+html.mobile .counts {
+  flex-wrap: nowrap;
+  gap: 4px 10px;
+}
+html.mobile .bar button.chip {
+  padding: 4px 10px;
 }

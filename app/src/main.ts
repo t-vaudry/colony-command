@@ -4,6 +4,7 @@ import { NewSessionDialog, repoDir, type Prefill } from "./dialog";
 import { FoundDialog } from "./found";
 import { Hud } from "./hud";
 import { prefs } from "./prefs";
+import { platform } from "./platform";
 import { initLayout } from "./layout";
 import { initTouchHints } from "./touchhints";
 import { TerminalPane } from "./terminal";
@@ -72,6 +73,8 @@ async function resumeNow(a: Agent, prompt?: string): Promise<void> {
 const hud = new Hud(daemon, { select, showTerminal, newSession, fixNeed, resumeNow });
 const dialog = new NewSessionDialog(daemon, started, () => terminal.size(), (m) => hud.toast(`Couldn't start the session: ${m}`));
 
+// The workflow editor needs a desktop's room; a phone or tablet doesn't offer it.
+if (platform().kind === "mobile") document.getElementById("workflows-btn")!.hidden = true;
 document.getElementById("workflows-btn")!.addEventListener("click", () => {
   const a = world.selected ? daemon.agents.get(world.selected) : undefined;
   void dialog.openWorkflowEditor(a?.host ?? "win", (a && repoDir(a.project_dir ?? a.cwd)) || "").then((err) => err && hud.toast(err));
