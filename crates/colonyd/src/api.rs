@@ -58,7 +58,44 @@ pub fn router(shared: Arc<Shared>) -> Router {
 /// What the VPN listener serves: the map's socket, the snapshot and pairing,
 /// nothing else. Hooks, acks and ingest stay on loopback.
 pub fn remote_router(shared: Arc<Shared>) -> Router {
-    Router::new().route("/ws", get(ws)).route("/api/agents", get(agents)).route("/api/pair", post(pair)).layer(axum::Extension(Remote)).with_state(shared)
+    Router::new()
+        .route("/ws", get(ws))
+        .route("/api/agents", get(agents))
+        .route("/api/pair", post(pair))
+        .layer(axum::middleware::from_fn(cors))
+        .layer(axum::Extension(Remote))
+        .with_state(shared)
+}
+
+/// The app's web view is a different origin from the PC's VPN address, so its `fetch` (pairing) is
+/// blocked unless the answer says it may read it. This answers only the app's own origins. It is
+/// not authentication: pairing still needs the code, and the socket the credential.
+async fn cors(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let origin = req.headers().get(header::ORIGIN).cloned().filter(|o| o.to_str().is_ok_and(app_origin));
+    let mut resp = if req.method() == axum::http::Method::OPTIONS {
+        // The preflight for a JSON POST.
+        let mut r = StatusCode::NO_CONTENT.into_response();
+        r.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST".parse().unwrap());
+        r.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_HEADERS, "content-type, authorization".parse().unwrap());
+        r.headers_mut().insert(header::ACCESS_CONTROL_MAX_AGE, "600".parse().unwrap());
+        r
+    } else {
+        next.run(req).await
+    };
+    if let Some(o) = origin {
+        resp.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
+        resp.headers_mut().append(header::VARY, "Origin".parse().unwrap());
+    }
+    resp
+}
+
+/// Origins the app's own pages come from: the desktop and Android web views, and local dev pages.
+fn app_origin(o: &str) -> bool {
+    o == "tauri://localhost"
+        || o.starts_with("http://tauri.localhost")
+        || o.starts_with("https://tauri.localhost")
+        || o.starts_with("http://localhost:")
+        || o.starts_with("http://127.0.0.1:")
 }
 
 fn authorized(shared: &Shared, params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
@@ -75,12 +112,7 @@ fn given_token<'a>(params: &'a HashMap<String, String>, headers: &'a HeaderMap) 
 
 /// Only local pages may connect from a browser context.
 fn origin_ok(headers: &HeaderMap) -> bool {
-    headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).is_none_or(|o| {
-        o == "tauri://localhost"
-            || o.starts_with("http://tauri.localhost")
-            || o.starts_with("http://localhost:")
-            || o.starts_with("http://127.0.0.1:")
-    })
+    headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).is_none_or(app_origin)
 }
 
 fn token_ok(expected: &str, params: &HashMap<String, String>, headers: &HeaderMap) -> bool {
@@ -1761,6 +1793,47 @@ mod remote_tests {
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
         out.split(' ').nth(1).unwrap().parse().unwrap()
+    }
+
+    /// The whole response text, headers included.
+    async fn raw(router: Router, method: &str, path: &str, extra_headers: &str) -> String {
+        let l = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!("{method} {path} HTTP/1.1
+Host: x
+Content-Length: 2
+Content-Type: application/json
+{extra_headers}Connection: close
+
+{{}}");
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).await.unwrap();
+        out.to_lowercase()
+    }
+
+    #[tokio::test]
+    async fn the_apps_web_view_may_pair_across_origins_and_nobody_else() {
+        let sh = shared();
+        // The preflight a browser sends before a JSON POST, from the Android and desktop web views.
+        for origin in ["http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"] {
+            let pre = raw(remote_router(sh.clone()), "OPTIONS", "/api/pair", &format!("Origin: {origin}
+Access-Control-Request-Method: POST
+")).await;
+            assert!(pre.starts_with("http/1.1 204"), "{origin}: {pre}");
+            assert!(pre.contains(&format!("access-control-allow-origin: {origin}")), "{origin}: {pre}");
+            assert!(pre.contains("content-type"), "the JSON header is allowed: {pre}");
+            // Even a refused pairing must be readable by the page, or it shows as "can't reach the PC".
+            let post = raw(remote_router(sh.clone()), "POST", "/api/pair", &format!("Origin: {origin}
+")).await;
+            assert!(post.contains(&format!("access-control-allow-origin: {origin}")), "{origin}: {post}");
+        }
+        // A web page from anywhere else gets no CORS answer (and /api/pair itself refuses its origin).
+        let other = raw(remote_router(sh.clone()), "OPTIONS", "/api/pair", "Origin: https://evil.example
+").await;
+        assert!(!other.contains("access-control-allow-origin"), "{other}");
     }
 
     #[tokio::test]

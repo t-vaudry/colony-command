@@ -813,6 +813,13 @@ async function remote() {
     const again = await fetch(`${base}/api/pair`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code, name: "Tablet 2" }) });
     report("remote: a code works once", again.status === 403, `HTTP ${again.status}`);
 
+    // The app's web view is another origin: without CORS answers its pairing fetch fails as "can't reach the PC".
+    for (const origin of ["http://tauri.localhost", "https://tauri.localhost"]) {
+      const pre = await fetch(`${base}/api/pair`, { method: "OPTIONS", headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
+      const post = await fetch(`${base}/api/pair`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ code: "00000000", name: "x" }) });
+      report(`remote: the app's web view (${origin}) may call the pair endpoint`, pre.status === 204 && pre.headers.get("access-control-allow-origin") === origin && post.headers.get("access-control-allow-origin") === origin, `preflight ${pre.status}, allow-origin ${post.headers.get("access-control-allow-origin")}`);
+    }
+
     // Wrong credential: refused. The desktop token is not a credential on the VPN listener.
     for (const [what, cred] of [["a wrong credential", "nope"], ["the desktop token", d.token]]) {
       const w = await openSocket(`ws://${ip}:${rport}/ws`, { type: "auth", credential: cred });
