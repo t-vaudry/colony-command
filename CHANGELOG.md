@@ -5,6 +5,30 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-11-19
+
+- Remote client acceptance scenario in CI (#107) (#133)
+- Android release signing and version compatibility (#105) (#132)
+- Push notifications through ntfy (#103) (#131)
+- PC availability: Stay awake setting, offline state (#104) (#130)
+- Desktop-only features hidden on mobile (#102) (#128)
+- Mobile view of the remaining panels (#101) (#127)
+- Remote session start, workflows and crews on a tablet (#100) (#126)
+- Touch terminal: key bar, interrupt, host-sized view (#99) (#125)
+- Android target: lib + bin split, mobile capability and config, network security config, CI build, docs (#92) (#122)
+- Remote approvals: presence while in the foreground, quick replies, view-only UI (#98) (#121)
+- Pairing screen: address and code, clear errors, scope shown (#96) (#120)
+- Remote connection: stored host, reconnect, offline state (#95) (#119)
+- Responsive touch layout: tablet and phone breakpoints, touch targets, pinch and two-finger pan (#97) (#118)
+- Platform module for desktop/mobile/browser (#94) (#117)
+- M1 #91: docs for remote access setup and threat model (#115)
+- M1 #90: audit log of remote commands (#114)
+- M1 #89: remote transport, credential never in a URL (#113)
+- M1 #88: view and control scopes for remote credentials (#112)
+- M1 #87: device pairing and revocable credentials (#111)
+- M1 #86: multi-client PTY size, single-answer approvals, remote presence (#110)
+- M1 #85: optional VPN-interface listener (#109)
+
 ## [0.1.21] - 2026-11-10
 
 - Stuck phases: surface the question, keep the work for review, resume from it (#84)
