@@ -104,6 +104,8 @@ export type ConnectionStatus = "connecting" | "live" | "offline" | "unpaired";
 const RETRY_MS = 2000;
 const OFFLINE_AFTER_MS = 6000;
 const CONNECT_TIMEOUT_MS = 10000;
+/** The daemon forgets a remote device's presence after 45 s; refresh well inside that. */
+const PRESENCE_EVERY_MS = 15000;
 
 class NotPaired extends Error {}
 
@@ -256,12 +258,22 @@ export class Daemon {
     (navigator as Navigator & { connection?: EventTarget }).connection?.addEventListener("change", () => this.retryNow());
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible" && this.info?.credential) this.retryNow(this.status === "live");
+      this.sendPresence();
     });
+    // While this device could answer an approval and the app is open, say so: the daemon only holds
+    // a permission request for a remote device that does. It expires on its own if these stop.
+    setInterval(() => this.sendPresence(), PRESENCE_EVERY_MS);
     // A sleeping PC or a dropped VPN can leave a socket that never reports closing. The daemon
     // sends a heartbeat to remote devices; when they stop, the link is dead.
     setInterval(() => {
       if (this.info?.credential && this.ws?.readyState === WebSocket.OPEN && isDead(this.lastHeard, Date.now())) this.lose(this.ws, "The connection went quiet");
     }, 5000);
+  }
+
+  /** Tell the PC this device is in the foreground (or not). Only a device with control counts. */
+  sendPresence(): void {
+    if (!this.remote || this.scope !== "control") return;
+    this.send({ type: "presence", foreground: document.visibilityState === "visible" });
   }
 
   /**
@@ -399,6 +411,7 @@ export class Daemon {
         return;
       case "you":
         this.scope = m.scope;
+        this.sendPresence();
         break;
       case "batch":
         this.batching = true;

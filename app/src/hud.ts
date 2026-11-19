@@ -244,6 +244,10 @@ export class Hud {
     this.compose.addEventListener("click", (e) => {
       const key = (e.target as HTMLElement).closest<HTMLElement>("[data-key]")?.dataset.key;
       if (key) this.press(KEYS[key]);
+      // Canned replies go straight to the session; a typed one waits for Send.
+      const quick = (e.target as HTMLElement).closest<HTMLElement>("[data-quick]")?.dataset.quick;
+      const a = this.composeAgent();
+      if (quick && a?.terminal && !this.daemon.reply(a.id, quick)) this.toast("Not connected to colonyd.");
     });
     document.getElementById("perm-allow")!.addEventListener("click", () => this.press(KEYS.enter));
     document.getElementById("perm-deny")!.addEventListener("click", () => this.press(KEYS.esc));
@@ -495,6 +499,10 @@ export class Hud {
       .join("") + this.gatingChip() + this.foundChip() + this.leftoverChip() + this.rulesChip() + this.spendChip());
     this.showOutdated();
     this.showOffline();
+    // A paired device that was only granted viewing sees no buttons that would be refused.
+    const viewOnly = this.daemon.remote && this.daemon.scope !== "control";
+    document.body.classList.toggle("view-only", viewOnly);
+    document.getElementById("view-only-note")!.hidden = !viewOnly;
     this.conn.className = `conn ${this.daemon.status}`;
     this.conn.textContent =
       this.daemon.status === "live"

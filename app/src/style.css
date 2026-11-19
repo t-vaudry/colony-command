@@ -1917,3 +1917,26 @@ dialog.pair form {
 dialog.pair::backdrop {
   background: var(--ground);
 }
+
+/* View-only paired device: nothing that would be refused is offered. */
+body.view-only #compose,
+body.view-only [data-decide],
+body.view-only [data-answer],
+body.view-only [data-terminal-answer],
+body.view-only #new-session-btn,
+body.view-only #workflows-btn {
+  display: none !important;
+}
+#view-only-note {
+  margin: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+}
+#view-only-note[hidden] {
+  display: none;
+}
+.quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

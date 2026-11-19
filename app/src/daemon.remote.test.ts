@@ -147,6 +147,25 @@ describe("a paired device", () => {
     expect(FakeSocket.all).toHaveLength(1);
   });
 
+  it("says it is in the foreground, and keeps saying so, only when it has control", async () => {
+    const { ws } = await live();
+    ws.say({ type: "you", scope: "view" });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(ws.sent.some((m) => m.includes("presence"))).toBe(false);
+    ws.say({ type: "you", scope: "control" });
+    const presence = () => ws.sent.filter((m) => m.includes("presence")).map((m) => JSON.parse(m));
+    expect(presence()).toEqual([{ type: "presence", foreground: true }]);
+    await vi.advanceTimersByTimeAsync(31000);
+    expect(presence().length).toBeGreaterThanOrEqual(3); // refreshed inside the daemon's 45 s expiry
+  });
+
+  it("answers a held request by sending the permission command", async () => {
+    const { d, ws } = await live();
+    ws.say({ type: "you", scope: "control" });
+    expect(d.decide("req1", "allow")).toBe(true);
+    expect(JSON.parse(ws.sent.at(-1)!)).toMatchObject({ type: "permission", request_id: "req1", choice: "allow" });
+  });
+
   it("starts unpaired on a phone with nothing stored", async () => {
     window.localStorage.clear();
     const d = new Daemon();
