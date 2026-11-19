@@ -144,6 +144,9 @@ export class Hud {
     daemon.onChange(() => this.schedule());
     daemon.onError((m) => this.toast(m));
     daemon.onNotice((m, actions) => this.toast(m, actions));
+    const offline = document.getElementById("offline")!;
+    offline.querySelector(".retry")!.addEventListener("click", () => this.daemon.retryNow());
+    offline.querySelector(".unpair")!.addEventListener("click", () => this.daemon.unpair());
     document.querySelector("#outdated button")!.addEventListener("click", (e) => {
       const b = e.currentTarget as HTMLButtonElement;
       b.disabled = true;
@@ -265,6 +268,18 @@ export class Hud {
     if (text !== null) bar.firstElementChild!.textContent = text;
     // Restart replaces the daemon with the file on disk, which is what is wrong then.
     (bar.querySelector("button") as HTMLButtonElement).hidden = this.daemon.incomplete !== null;
+  }
+
+  /** Shown while a paired PC can't be reached: it may be asleep, or the VPN may be down. */
+  private showOffline(): void {
+    const bar = document.getElementById("offline")!;
+    const down = this.daemon.remote && this.daemon.status !== "live" && this.daemon.status !== "unpaired";
+    bar.hidden = !down;
+    if (!down) return;
+    bar.firstElementChild!.textContent =
+      this.daemon.status === "offline"
+        ? `Offline. ${this.daemon.error ?? "Can't reach your PC."} Trying again automatically.`
+        : "Reconnecting to your PC…";
   }
 
   toast(message: string, actions?: NoticeAction[]): void {
@@ -478,13 +493,16 @@ export class Hud {
       .map(([c, label, n]) => `<span class="chip"><span class="dot ${c}"></span>${label} <b>${n}</b></span>`)
       .join("") + this.gatingChip() + this.foundChip() + this.leftoverChip() + this.rulesChip() + this.spendChip());
     this.showOutdated();
+    this.showOffline();
     this.conn.className = `conn ${this.daemon.status}`;
     this.conn.textContent =
       this.daemon.status === "live"
         ? `live · ${all.filter((a) => a.kind === "main").length} sessions`
         : this.daemon.status === "connecting"
           ? "reconnecting…"
-          : `offline: ${this.daemon.error ?? ""}`;
+          : this.daemon.status === "unpaired"
+            ? "not paired"
+            : `offline: ${this.daemon.error ?? ""}`;
 
     const queue = all
       .filter((a) => severity(a.state) === "critical" || severity(a.state) === "input")
