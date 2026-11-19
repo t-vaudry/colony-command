@@ -68,6 +68,10 @@ pub struct Settings {
     /// /ws and /api/agents on. Off when unset; `COLONY_REMOTE_ADDR` overrides.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_listen: Option<String>,
+    /// An ntfy topic URL to send phone notifications to (see `push.rs`). Off when unset.
+    /// The URL can contain the topic's secret name, so it is never sent to the map.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ntfy_url: Option<String>,
     /// Keep the PC from sleeping while remote access is on. Off by default.
     pub prevent_sleep: bool,
     /// Where the remote listener actually is, once bound. Runtime only.
@@ -111,6 +115,7 @@ impl Settings {
             "budget_overrides": self.budget_overrides,
             "remote_listening": self.remote_listening,
             "prevent_sleep": self.prevent_sleep,
+            "push_on": self.ntfy_url.as_deref().is_some_and(|u| !u.trim().is_empty()),
         })
     }
 }

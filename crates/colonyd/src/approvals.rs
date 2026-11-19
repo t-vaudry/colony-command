@@ -88,6 +88,12 @@ pub struct Approvals {
 }
 
 impl Approvals {
+    /// A paired device has the app open in front of it right now (it sends presence while it does).
+    pub fn remote_in_foreground(&self) -> bool {
+        let now = Instant::now();
+        self.presence.lock().unwrap().values().any(|t| now.saturating_duration_since(*t) < PRESENCE_TTL)
+    }
+
     pub fn anyone_watching(&self) -> bool {
         self.watching_at(Instant::now())
     }
