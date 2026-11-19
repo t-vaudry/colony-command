@@ -152,6 +152,8 @@ pub struct PtyHost {
     /// How each terminal was started, to restart it the same way (on another
     /// model). Not kept across colonyd restarts.
     requests: Mutex<HashMap<String, SpawnRequest>>,
+    /// The last size set on each terminal, so a remote client (which can't resize) can draw it at that size.
+    sizes: Mutex<HashMap<String, (u16, u16)>>,
 }
 
 /// A command to run in a terminal with no bot in it, spelled for each shell.
@@ -188,6 +190,7 @@ impl PtyHost {
             pending: Mutex::default(),
             unconfirmed: Mutex::default(),
             requests: Mutex::default(),
+            sizes: Mutex::default(),
         });
         let runner = host.clone();
         std::thread::spawn(move || runner.run());
@@ -396,6 +399,7 @@ impl PtyHost {
         let info = TermInfo { term: term_id.clone(), session_id: session_id.to_string(), host: host.clone(), dir: dir.to_string(), pid: 0, started_at: now_ms() };
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(term_id.clone(), (info.clone(), tx));
+        self.sizes.lock().unwrap().insert(term_id.clone(), (cols.max(40), rows.max(10)));
         let sent = self.send(&ToPtyd::Spawn { info, program, args, cwd, env, cols: cols.max(40), rows: rows.max(10) });
         if let Err(e) = sent {
             self.pending.lock().unwrap().remove(&term_id);
@@ -466,8 +470,14 @@ impl PtyHost {
         self.input(id, &bytes)
     }
 
+    /// The terminal's size as last set, if this colonyd set it.
+    pub fn size(&self, id: &str) -> Option<(u16, u16)> {
+        self.sizes.lock().unwrap().get(id).copied()
+    }
+
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
         self.require(id)?;
+        self.sizes.lock().unwrap().insert(id.into(), (cols, rows));
         self.send(&ToPtyd::Resize { term: id.into(), cols, rows })
     }
 

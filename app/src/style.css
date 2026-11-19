@@ -1940,3 +1940,33 @@ body.view-only #workflows-btn {
   flex-wrap: wrap;
   gap: 6px;
 }
+
+/* Terminal on a touchscreen: the key bar sits under the terminal, and a session wider than the pane scrolls. */
+#term-host {
+  overflow: auto;
+}
+#term-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+#term-keys[hidden] {
+  display: none;
+}
+#term-keys button {
+  flex: 1 1 auto;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+#term-keys button.armed,
+#term-keys button[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+}

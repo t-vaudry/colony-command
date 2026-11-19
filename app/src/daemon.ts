@@ -92,7 +92,7 @@ type Message =
   | { type: "upsert"; agent: Agent }
   | { type: "remove"; id: string }
   | { type: "spawned"; term: string; session_id: string }
-  | { type: "term_data"; term: string; data: string; reset: boolean }
+  | { type: "term_data"; term: string; data: string; reset: boolean; cols?: number; rows?: number }
   | { type: "notice"; message: string; actions?: NoticeAction[] }
   | { type: "error"; code?: string; message: string }
   | { type: "hb" }
@@ -198,7 +198,7 @@ export class Daemon {
   private downSince: number | null = null;
   private ws: WebSocket | null = null;
   private listeners = new Set<() => void>();
-  private termListeners = new Set<(term: string, bytes: Uint8Array, reset: boolean) => void>();
+  private termListeners = new Set<(term: string, bytes: Uint8Array, reset: boolean, size?: { cols: number; rows: number }) => void>();
   private errorListeners = new Set<(message: string) => void>();
   private noticeListeners = new Set<(message: string, actions?: NoticeAction[]) => void>();
   /** Spawn replies arrive in the order spawns were sent. */
@@ -214,7 +214,7 @@ export class Daemon {
     this.listeners.add(fn);
   }
 
-  onTermData(fn: (term: string, bytes: Uint8Array, reset: boolean) => void): void {
+  onTermData(fn: (term: string, bytes: Uint8Array, reset: boolean, size?: { cols: number; rows: number }) => void): void {
     this.termListeners.add(fn);
   }
 
@@ -502,7 +502,8 @@ export class Daemon {
         return;
       case "term_data": {
         const bytes = decode(m.data);
-        for (const fn of this.termListeners) fn(m.term, bytes, m.reset);
+        const size = m.cols && m.rows ? { cols: m.cols, rows: m.rows } : undefined;
+        for (const fn of this.termListeners) fn(m.term, bytes, m.reset, size);
         return;
       }
       case "notice":

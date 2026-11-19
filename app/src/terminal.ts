@@ -8,6 +8,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import type { Daemon } from "./daemon";
 import { platform } from "./platform";
+import { ctrlify, keyData } from "./termkeys";
 
 /** Hand a link to the default browser. xterm's own handler would confirm, then open a blank window. */
 export function openLink(uri: string): void {
@@ -28,6 +29,9 @@ export class TerminalPane {
   private host = document.getElementById("term-host")!;
   private opened = false;
   private settleGen = 0;
+  private keys = document.getElementById("term-keys");
+  /** Ctrl is armed from the key bar: the next typed character becomes a control code. */
+  private ctrl = false;
 
   constructor(
     private daemon: Daemon,
@@ -43,17 +47,20 @@ export class TerminalPane {
     });
     this.term.loadAddon(this.fit);
     this.term.loadAddon(new WebLinksAddon((_e, uri) => openLink(uri)));
-    this.term.onData((data) => {
-      if (this.attached) this.daemon.input(this.attached, data);
-    });
+    this.term.onData((data) => this.type(data));
     this.term.onResize(({ cols, rows }) => {
-      if (this.attached) this.daemon.resize(this.attached, cols, rows);
+      // On a paired device the PC owns the size: a resize from here would be ignored.
+      if (this.attached && !this.daemon.remote) this.daemon.resize(this.attached, cols, rows);
     });
-    daemon.onTermData((term, bytes, reset) => {
+    daemon.onTermData((term, bytes, reset, size) => {
       if (term !== this.attached) return;
       if (reset) this.term.reset();
+      // Draw at the session's own size, so its layout is right; the pane scrolls if it is wider.
+      this.sizeFromHost = this.daemon.remote && !!size;
+      if (this.daemon.remote && size) this.term.resize(size.cols, size.rows);
       this.term.write(bytes);
     });
+    this.bindKeys();
     new ResizeObserver(() => this.refit()).observe(this.host);
     document.getElementById("term-close")!.addEventListener("click", () => this.hide());
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
@@ -70,10 +77,54 @@ export class TerminalPane {
     };
   }
 
+  /** Send typed or key-bar input, unless this device may only watch. */
+  private type(data: string): void {
+    if (!this.attached || this.daemon.scope === "view") return;
+    if (this.ctrl) {
+      data = ctrlify(data);
+      this.setCtrl(false);
+    }
+    this.daemon.input(this.attached, data);
+  }
+
+  private setCtrl(on: boolean): void {
+    this.ctrl = on;
+    const b = document.getElementById("term-ctrl");
+    b?.setAttribute("aria-pressed", String(on));
+    b?.classList.toggle("armed", on);
+  }
+
+  /** The key bar and interrupt button, for a touchscreen or a paired device. */
+  private bindKeys(): void {
+    this.keys?.addEventListener("click", (e) => {
+      const b = (e.target as HTMLElement).closest("button");
+      if (!b || !this.attached) return;
+      if (b.id === "term-ctrl") this.setCtrl(!this.ctrl);
+      else if (b.id === "term-interrupt") this.daemon.interrupt(this.attached);
+      else {
+        const data = keyData(b.dataset.key ?? "");
+        if (data !== null) this.type(data);
+      }
+      // A tap on a button must not take the focus from the terminal, or the soft keyboard drops.
+      this.term.focus();
+    });
+    this.keys?.addEventListener("pointerdown", (e) => e.preventDefault());
+  }
+
+  /** Show the key bar when there is no physical keyboard to assume, and not at all when view-only. */
+  private syncKeys(): void {
+    if (!this.keys) return;
+    const touch = this.daemon.remote || matchMedia("(pointer: coarse)").matches;
+    this.keys.hidden = !touch || this.daemon.scope === "view";
+  }
+
   /** Columns and rows the pane will have, for starting a session at the right size. */
   size(): { cols: number; rows: number } {
     return { cols: Math.max(60, this.term.cols || 120), rows: Math.max(16, this.term.rows || 30) };
   }
+
+  /** A paired device draws at the session's own size and does not fit the pane. */
+  private sizeFromHost = false;
 
   get visible(): boolean {
     return !this.pane.hidden;
@@ -100,6 +151,7 @@ export class TerminalPane {
     } else {
       this.refit();
     }
+    this.syncKeys();
     this.term.focus();
     this.settle(term, switched);
   }
@@ -110,6 +162,7 @@ export class TerminalPane {
    * while this pane thinks nothing changed; that mismatch is the garbled view.
    */
   private syncSize(term: string): void {
+    if (this.daemon.remote) return;
     if (this.term.cols > 0 && this.term.rows > 0) this.daemon.resize(term, this.term.cols, this.term.rows);
   }
 
@@ -127,7 +180,7 @@ export class TerminalPane {
         this.term.refresh(0, this.term.rows - 1);
         if (!nudge) return;
         const { cols, rows } = this.term;
-        if (cols > 1) this.daemon.resize(term, cols - 1, rows);
+        if (cols > 1 && !this.daemon.remote) this.daemon.resize(term, cols - 1, rows);
         this.syncSize(term);
       }, delay);
     requestAnimationFrame(() => requestAnimationFrame(() => run(0, false)));
@@ -152,7 +205,7 @@ export class TerminalPane {
   }
 
   private refit(): void {
-    if (!this.opened || this.pane.hidden) return;
+    if (!this.opened || this.pane.hidden || this.sizeFromHost) return;
     try {
       this.fit.fit();
     } catch {
