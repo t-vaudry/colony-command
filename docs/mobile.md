@@ -50,6 +50,32 @@ and its configuration can name hosts but not address ranges, so
 ever connects to the one address you paired with. If that bothers you, use a MagicDNS
 name and narrow the file to `ts.net` with a `<domain-config>`.
 
+### What a phone or tablet does not get
+
+Some desktop features act on the PC itself. They are hidden on a phone or tablet, not
+offered behind a higher scope. `platform().has` is the one switch, and the desktop is
+the only place that has all of it.
+
+| Feature | On a phone or tablet | Why |
+| --- | --- | --- |
+| Setup wizard (hooks, WSL probe, autostart) | Hidden | Installs and removes things on the PC. |
+| Autostart | Hidden | A setting of the PC's own login. |
+| Approvals gating pause (tray toggle) | Hidden | It switches the PC's hook gating. No remote command exists for it; adding one would need control scope and its own entry in the command tables. |
+| Updater | Hidden | The phone app updates through its package, not the desktop updater. |
+| Desktop patience notifications | Hidden | They are the PC's own OS notifications. |
+| Restarting the daemon | Hidden | The daemon on the PC is not the app's to restart. |
+| Pairing and managing devices | Hidden on a paired device | Desktop only, whatever scope a device has. |
+
+The remaining panels follow the same rule: what only reads is shown to every device, and
+what changes something needs the control scope.
+
+| Panel | View-only device | Control device |
+| --- | --- | --- |
+| Time-lapse, spend and latency charts | Shown | Shown |
+| Settings and budgets | Values shown | Can change them |
+| Session actions (pause, resume, end, kill, compact) | Hidden | Shown |
+| Terminal | Can watch | Types, key bar, interrupt |
+
 ### What is not there yet
 
 - The app has been built and unit tested, but a run on a physical Android device is
