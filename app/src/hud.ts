@@ -272,7 +272,8 @@ export class Hud {
     bar.hidden = text === null;
     if (text !== null) bar.firstElementChild!.textContent = text;
     // Restart replaces the daemon with the file on disk, which is what is wrong then.
-    (bar.querySelector("button") as HTMLButtonElement).hidden = this.daemon.incomplete !== null;
+    // A paired phone can't restart the PC's service, so it gets the text and no button.
+    (bar.querySelector("button") as HTMLButtonElement).hidden = this.daemon.incomplete !== null || this.daemon.remote;
   }
 
   /** Shown while a paired PC can't be reached: it may be asleep, or the VPN may be down. */

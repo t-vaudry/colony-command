@@ -11,7 +11,7 @@ const WORKFLOW_SAVE_WAIT_MS = 10000;
 
 import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest, type Workflow, type WorkflowListing } from "./types";
 import type { NoticeAction } from "./budget";
-import { appVersion, isProtocolError, outdatedBanner } from "./outdated";
+import { appVersion, isProtocolError, outdatedBanner, remoteMismatch } from "./outdated";
 import { platform } from "./platform";
 import { clearRemote, loadRemote } from "./remote";
 import { isDead, retryDelay } from "./reconnect";
@@ -183,6 +183,7 @@ export class Daemon {
   /** The out-of-date banner text, or null when the daemon is the version this map expects. */
   outdated(): string | null {
     if (this.status !== "live") return null;
+    if (this.remote) return remoteMismatch(this.appVer, this.version, this.protocolError);
     return this.incomplete ?? outdatedBanner(this.appVer, this.version, this.protocolError);
   }
 
