@@ -388,9 +388,15 @@ fn error_code(code: &str, message: &str) -> Option<String> {
     Some(json!({ "type": "error", "code": code, "message": message }).to_string())
 }
 
-fn term_data(term: &str, bytes: &[u8], reset: bool) -> String {
+fn term_data(term: &str, bytes: &[u8], reset: bool, size: Option<(u16, u16)>) -> String {
     let data = base64::engine::general_purpose::STANDARD.encode(bytes);
-    json!({ "type": "term_data", "term": term, "data": data, "reset": reset }).to_string()
+    let mut m = json!({ "type": "term_data", "term": term, "data": data, "reset": reset });
+    // The session's own size: a remote client can't resize it (owner wins), so it draws at this size.
+    if let Some((cols, rows)) = size {
+        m["cols"] = cols.into();
+        m["rows"] = rows.into();
+    }
+    m.to_string()
 }
 
 /// Run one command; returns a message to send back to this map, if any.
@@ -506,7 +512,7 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
             let sb = pty.scrollback(&term);
             conn.attached = Some(term.clone());
             match sb {
-                Some(bytes) => Ok(Some(term_data(&term, &bytes, true))),
+                Some(bytes) => Ok(Some(term_data(&term, &bytes, true, pty.size(&term)))),
                 None => Err("that terminal has closed".into()),
             }
         }
@@ -787,13 +793,13 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool, device: Op
                 Err(RecvError::Closed) => return,
             },
             chunk = term_rx.recv() => match chunk {
-                Ok(c) if conn.attached.as_deref() == Some(c.term_id.as_str()) => Some(term_data(&c.term_id, &c.bytes, false)),
+                Ok(c) if conn.attached.as_deref() == Some(c.term_id.as_str()) => Some(term_data(&c.term_id, &c.bytes, false, None)),
                 Ok(_) => None,
                 // Lost some output: redraw the attached terminal from scrollback.
                 Err(RecvError::Lagged(_)) => conn
                     .attached
                     .as_ref()
-                    .and_then(|t| shared.pty.scrollback(t).map(|b| term_data(t, &b, true))),
+                    .and_then(|t| shared.pty.scrollback(t).map(|b| term_data(t, &b, true, shared.pty.size(t)))),
                 Err(RecvError::Closed) => return,
             },
             gone = revoked.recv() => match gone {
@@ -1697,6 +1703,14 @@ mod shutdown_tests {
 #[cfg(test)]
 mod remote_tests {
     use super::*;
+
+    #[test]
+    fn attach_tells_a_remote_client_the_session_size() {
+        let with: serde_json::Value = serde_json::from_str(&term_data("t1", b"hi", true, Some((132, 40)))).unwrap();
+        assert_eq!((with["cols"].as_u64(), with["rows"].as_u64()), (Some(132), Some(40)));
+        let without: serde_json::Value = serde_json::from_str(&term_data("t1", b"hi", false, None)).unwrap();
+        assert!(without.get("cols").is_none(), "live output carries no size");
+    }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn shared() -> Arc<Shared> {

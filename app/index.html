@@ -35,6 +35,18 @@
             <button type="button" id="term-close" aria-label="Hide terminal">Hide</button>
           </div>
           <div id="term-host"></div>
+          <div id="term-keys" hidden role="toolbar" aria-label="Terminal keys">
+            <button type="button" data-key="esc">Esc</button>
+            <button type="button" data-key="tab">Tab</button>
+            <button type="button" id="term-ctrl" aria-pressed="false">Ctrl</button>
+            <button type="button" data-key="ctrl-c">Ctrl-C</button>
+            <button type="button" data-key="left" aria-label="Left">←</button>
+            <button type="button" data-key="up" aria-label="Up">↑</button>
+            <button type="button" data-key="down" aria-label="Down">↓</button>
+            <button type="button" data-key="right" aria-label="Right">→</button>
+            <button type="button" data-key="enter">Enter</button>
+            <button type="button" id="term-interrupt" class="danger" title="Esc: stop what the agent is doing, keep the session">Interrupt</button>
+          </div>
         </section>
       </div>
       <div class="splitter v" id="split-v" role="separator" aria-orientation="vertical" aria-label="Resize side panel" tabindex="0" title="Drag to resize · double-click to reset"></div>
