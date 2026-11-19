@@ -59,7 +59,7 @@ function saveSettings(s: PatienceSettings): void {
 }
 
 export class PatienceNotifier {
-  private invoke: Invoke | null = platform().invoke;
+  private invoke: Invoke | null = platform().has.patience ? platform().invoke : null;
   settings = loadSettings();
   private last: { agent: string; at: number } | null = null;
   private dlg = document.getElementById("patience") as HTMLDialogElement;

@@ -14,7 +14,7 @@ describe("platform", () => {
     const p = detect({ open: vi.fn(), ...ua("Mozilla/5.0 (Windows NT 10.0)") });
     expect(p.kind).toBe("browser");
     expect(p.invoke).toBeNull();
-    expect(p.has).toEqual({ updater: false, gating: false, setup: false, daemonControl: false });
+    expect(p.has).toEqual({ updater: false, gating: false, setup: false, daemonControl: false, patience: false });
   });
 
   it("is desktop in a desktop shell and mobile on a phone", () => {
