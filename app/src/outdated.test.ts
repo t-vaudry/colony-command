@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isProtocolError, outdatedBanner } from "./outdated";
+import { isProtocolError, outdatedBanner, remoteMismatch } from "./outdated";
 
 describe("outdated service banner", () => {
   it("stays away when the versions match", () => {
@@ -23,5 +23,28 @@ describe("outdated service banner", () => {
   it("recognizes the daemon's unknown-command error", () => {
     expect(isProtocolError("unknown command (unknown variant `folder_crew`, expected one of `ack`, `spawn`)")).toBe(true);
     expect(isProtocolError("not connected to colonyd")).toBe(false);
+  });
+});
+
+describe("a phone paired with a PC", () => {
+  it("accepts a different patch release", () => {
+    expect(remoteMismatch("0.2.4", "0.2.1")).toBeNull();
+    expect(remoteMismatch("0.2.1", "0.2.9")).toBeNull();
+  });
+
+  it("says to update the app when the PC is newer, and the PC when it is older", () => {
+    expect(remoteMismatch("0.2.0", "0.3.0")).toBe("This app (0.2.0) is older than Colony on your PC (0.3.0). Install the latest app from the release page.");
+    expect(remoteMismatch("0.3.0", "0.2.5")).toBe("Colony on your PC (0.2.5) is older than this app (0.3.0). Update Colony on your PC.");
+    expect(remoteMismatch("1.0.0", "0.9.0")).toContain("older than this app");
+  });
+
+  it("flags a daemon that predates versions, and a protocol error on matching versions", () => {
+    expect(remoteMismatch("0.2.0", undefined)).toContain("too old");
+    expect(remoteMismatch("0.2.0", "0.2.0", true)).toContain("older than this app");
+  });
+
+  it("can't judge without the app's version, unless a command was refused", () => {
+    expect(remoteMismatch(null, "0.2.0")).toBeNull();
+    expect(remoteMismatch(null, "0.2.0", true)).toContain("don't match");
   });
 });

@@ -135,3 +135,68 @@ jobs:
           jq --rawfile n notes.md '.notes = $n' latest.json > latest.tmp && mv latest.tmp latest.json
           cat latest.json
           gh release create "$GITHUB_REF_NAME" "$exe" "$exe.sig" latest.json --title "Colony Command $version" --notes-file notes.md
+
+  # The signed Android APK, attached to the release. Needs the signing key in repository secrets
+  # (see docs/mobile.md); without it the job says so and the release goes out without an APK.
+  android-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - name: Is there a signing key?
+        id: key
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && [ -n "$ANDROID_KEY_ALIAS" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No Android signing key in the repository secrets: this release has no APK. See docs/mobile.md."
+            echo "have=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.have == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.have == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: actions/setup-java@v4
+        if: steps.key.outputs.have == 'true'
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Android NDK
+        if: steps.key.outputs.have == 'true'
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "platforms;android-34" "build-tools;34.0.0"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.key.outputs.have == 'true'
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        if: steps.key.outputs.have == 'true'
+      - name: Build, sign and attach the APK
+        if: steps.key.outputs.have == 'true'
+        run: |
+          set -euo pipefail
+          (cd app && npm ci && npx tauri android init --ci)
+          sh scripts/android-prepare.sh
+          (cd app && npx tauri android build --apk --target aarch64)
+          unsigned=$(find app/src-tauri/gen/android/app/build/outputs/apk -name '*unsigned*.apk' | head -1)
+          [ -n "$unsigned" ] || { echo "no unsigned release APK was built"; exit 1; }
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          version="${GITHUB_REF_NAME#v}"
+          apk="colony-command_${version}_android.apk"
+          ANDROID_KEYSTORE="$RUNNER_TEMP/release.jks" bash scripts/android-sign.sh "$unsigned" "$apk"
+          gh release upload "$GITHUB_REF_NAME" "$apk"

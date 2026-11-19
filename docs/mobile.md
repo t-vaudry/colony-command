@@ -41,6 +41,42 @@ Rust Android target, and these environment variables: `ANDROID_HOME`, `NDK_HOME`
 config and the `INTERNET` permission. `gen/android` is generated, so it is not
 committed; run `init` again on a fresh checkout.
 
+### Signing and releases
+
+A release carries a signed APK, `colony-command_<version>_android.apk`, next to the
+Windows installer. Install it on the device the same way as the debug build (sideload).
+Updates must be signed with the same key, so keep the keystore safe: lose it and
+installed copies can only be replaced by uninstalling first.
+
+Make a key once, then give the release job its parts as repository secrets:
+
+```
+keytool -genkeypair -keystore colony.jks -alias colony -keyalg RSA -keysize 4096 -validity 10000
+base64 -w0 colony.jks        # the value for ANDROID_KEYSTORE_BASE64
+```
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | the keystore file, base64 |
+| `ANDROID_KEYSTORE_PASSWORD` | its password |
+| `ANDROID_KEY_ALIAS` | `colony` (the alias above) |
+| `ANDROID_KEY_PASSWORD` | the key's password (optional; defaults to the keystore's) |
+
+When a `v*` tag is released, the `android-release` job builds the app, signs it with
+`scripts/android-sign.sh` and attaches it to the release. With no key in the secrets
+it logs a warning and the release goes out without an APK. Every pull request that
+touches the app also builds a release APK and signs it with a throwaway key through
+the same script, so the signing path is tested before a release needs it.
+
+### The app and the PC must be close in version
+
+The app and the daemon on the PC are updated separately: the PC through its own
+updater, the phone by installing a new APK. A different patch release (0.2.1 against
+0.2.4) works. A different minor or major release, or a command the PC doesn't know,
+shows a banner that says which side to update ("Install the latest app from the release
+page" or "Update Colony on your PC"). The phone has no Restart button, since it can't
+restart the PC's service.
+
 ### Why cleartext is allowed
 
 Colony connects with plain `ws://` over the VPN, which already encrypts the traffic

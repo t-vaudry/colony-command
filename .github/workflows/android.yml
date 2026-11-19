@@ -9,6 +9,7 @@ on:
     paths:
       - "app/**"
       - "scripts/android-prepare.sh"
+      - "scripts/android-sign.sh"
       - ".github/workflows/android.yml"
   workflow_dispatch:
 
@@ -51,6 +52,17 @@ jobs:
       - run: sh scripts/android-prepare.sh
       - name: Build the debug APK
         run: npx tauri android build --debug --apk --target aarch64
+        working-directory: app
+      # Prove the release path on every change: build the unsigned release APK, sign it with a throwaway
+      # key through the same script the release uses, and verify the signature.
+      - name: Build and sign a release APK (throwaway key)
+        run: |
+          set -euo pipefail
+          npx tauri android build --apk --target aarch64
+          unsigned=$(find src-tauri/gen/android/app/build/outputs/apk -name '*unsigned*.apk' | head -1)
+          [ -n "$unsigned" ] || { echo "no unsigned release APK was built"; exit 1; }
+          keytool -genkeypair -keystore "$RUNNER_TEMP/test.jks" -alias test -keyalg RSA -keysize 2048 -validity 2             -storepass testpass -keypass testpass -dname "CN=Colony CI test"
+          ANDROID_KEYSTORE="$RUNNER_TEMP/test.jks" ANDROID_KEYSTORE_PASSWORD=testpass ANDROID_KEY_ALIAS=test             bash ../scripts/android-sign.sh "$unsigned" "$RUNNER_TEMP/colony-signed.apk"
         working-directory: app
       - uses: actions/upload-artifact@v4
         with:
