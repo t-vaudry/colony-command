@@ -689,7 +689,7 @@ async fn pair(State(shared): State<Arc<Shared>>, headers: HeaderMap, Json(body):
     match shared.devices.redeem(&body.code, &body.name, now_ms()) {
         Ok((info, credential)) => {
             log(format!("paired device {} ({})", info.id, info.name));
-            Json(json!({ "device_id": info.id, "credential": credential })).into_response()
+            Json(json!({ "device_id": info.id, "credential": credential, "scope": info.scope })).into_response()
         }
         Err(PairError::BadCode) => (StatusCode::FORBIDDEN, "That code is wrong or has expired.").into_response(),
         Err(PairError::Locked) => (StatusCode::TOO_MANY_REQUESTS, "Too many wrong codes. Wait a minute and try again.").into_response(),
@@ -741,8 +741,20 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool, device: Op
     if tx.send(Message::Text(snapshot(&shared).await.into())).await.is_err() {
         return;
     }
+    // A paired device is told what it may do, and again whenever the desktop changes that.
+    let mut told: Option<crate::devices::Scope> = None;
+    let mut scope_check = tokio::time::interval(std::time::Duration::from_secs(3));
     loop {
         let out: Option<String> = tokio::select! {
+            _ = scope_check.tick(), if conn.device.is_some() => {
+                let now = conn.device.as_deref().and_then(|d| shared.devices.scope_of(d));
+                if now != told {
+                    told = now;
+                    now.map(|scope| json!({ "type": "you", "scope": scope }).to_string())
+                } else {
+                    None
+                }
+            },
             msg = rx.recv() => match msg {
                 Ok(first) => {
                     // Fold whatever is already queued into one frame: fewer sends and parses on the map.
@@ -1832,6 +1844,7 @@ Connection: close
         let (st, out) = pair_status(sh.clone(), format!(r#"{{"code":"{code}","name":"Tablet"}}"#)).await;
         assert_eq!(st, 200);
         assert!(out.contains("credential"));
+        assert!(out.contains(r#""scope":"view""#), "the device is told it starts view-only");
         let (st, _) = pair_status(sh.clone(), format!(r#"{{"code":"{code}","name":"Again"}}"#)).await;
         assert_eq!(st, 403, "a code works once");
         let mut last = 0;
