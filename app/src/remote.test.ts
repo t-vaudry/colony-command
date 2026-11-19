@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clearRemote, loadRemote, pair, parseAddress, parsePairingLink, saveRemote } from "./remote";
+import { clearRemote, loadRemote, pair, parseAddress, parsePairingLink, saveRemote, unreachableText } from "./remote";
 import { DEAD_AFTER_MS, isDead, retryDelay } from "./reconnect";
 
 function mem() {
@@ -77,5 +77,16 @@ describe("reconnect timing", () => {
   it("calls a quiet socket dead only after the limit", () => {
     expect(isDead(1000, 1000 + DEAD_AFTER_MS)).toBe(false);
     expect(isDead(1000, 1001 + DEAD_AFTER_MS)).toBe(true);
+  });
+});
+
+describe("unreachableText", () => {
+  it("blames this device's network when it has none", () => {
+    expect(unreachableText("Lost connection", false, "100.64.0.1")).toMatch(/no network connection.*VPN/);
+  });
+  it("points at the VPN and the PC when the device is online", () => {
+    const t = unreachableText("Lost connection", true, "100.64.0.1");
+    expect(t).toContain("at 100.64.0.1");
+    expect(t).toMatch(/VPN is connected on this device and on your PC/);
   });
 });

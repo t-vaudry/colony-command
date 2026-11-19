@@ -116,3 +116,14 @@ export async function pair(host: string, port: number, code: string, name: strin
   if (!body?.credential) return { ok: false, message: "Your PC's reply wasn't what Colony expected. Is it the same version?" };
   return { ok: true, scope: body.scope ?? "view", remote: { host, port, credential: body.credential, name, deviceId: body.device_id } };
 }
+
+/**
+ * What to tell someone whose paired PC can't be reached. A web view can't read the VPN's state, but it
+ * can tell whether this device has any network at all, which splits the cause into "this device" and
+ * "the PC or the VPN between".
+ */
+export function unreachableText(why: string, deviceOnline: boolean, host?: string): string {
+  if (!deviceOnline) return `${why}. This device has no network connection: turn on Wi-Fi or mobile data, then check its VPN is connected.`;
+  const at = host ? ` at ${host}` : "";
+  return `${why}. This device is online, but your PC${at} didn't answer: check the VPN is connected on this device and on your PC, and that the PC is awake.`;
+}
