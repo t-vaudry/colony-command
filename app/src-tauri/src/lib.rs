@@ -1,5 +1,5 @@
 //! The app shell. On the desktop it starts the daemon, owns the tray and the installer's hooks; on
-//! Android and iOS it is a webview around the same map that connects to a paired PC (see docs/mobile.md).
+//! Android it is a webview around the same map that connects to a paired PC (see docs/mobile.md).
 
 #[cfg(desktop)]
 mod autostart;
