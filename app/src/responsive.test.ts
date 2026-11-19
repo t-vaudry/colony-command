@@ -30,4 +30,13 @@ describe("touch and small-screen layout", () => {
   it("shows settings and budgets to a view-only device but not their controls", () => {
     expect(css).toMatch(/body\.view-only \[data-classifier\][\s\S]*\[data-budget-day\][\s\S]*display:\s*none/);
   });
+
+  it("lets a finger drag the dividers and leaves room for the system bars", () => {
+    expect(css).toMatch(/\.splitter\s*\{[^}]*touch-action:\s*none/);
+    expect(css).toMatch(/\.bar\s*\{[^}]*env\(safe-area-inset-top/);
+  });
+  it("asks for the full screen so safe-area insets are reported", () => {
+    const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+    expect(html).toContain("viewport-fit=cover");
+  });
 });

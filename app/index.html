@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>Colony Command</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -39,6 +39,7 @@
           <div id="term-keys" hidden role="toolbar" aria-label="Terminal keys">
             <button type="button" data-key="esc">Esc</button>
             <button type="button" data-key="tab">Tab</button>
+            <button type="button" data-key="shift-tab" title="Shift+Tab: switch Claude Code's mode">⇧Tab</button>
             <button type="button" id="term-ctrl" aria-pressed="false">Ctrl</button>
             <button type="button" data-key="ctrl-c">Ctrl-C</button>
             <button type="button" data-key="left" aria-label="Left">←</button>
@@ -46,6 +47,17 @@
             <button type="button" data-key="down" aria-label="Down">↓</button>
             <button type="button" data-key="right" aria-label="Right">→</button>
             <button type="button" data-key="enter">Enter</button>
+            <button type="button" data-key="home">Home</button>
+            <button type="button" data-key="end">End</button>
+            <button type="button" data-key="pgup">PgUp</button>
+            <button type="button" data-key="pgdn">PgDn</button>
+            <button type="button" data-key="slash">/</button>
+            <button type="button" data-key="pipe">|</button>
+            <button type="button" data-key="tilde">~</button>
+            <button type="button" id="term-copy">Copy</button>
+            <button type="button" id="term-paste">Paste</button>
+            <button type="button" id="term-smaller" aria-label="Smaller text">A−</button>
+            <button type="button" id="term-larger" aria-label="Larger text">A+</button>
             <button type="button" id="term-interrupt" class="danger" title="Esc: stop what the agent is doing, keep the session">Interrupt</button>
           </div>
         </section>

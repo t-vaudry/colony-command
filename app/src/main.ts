@@ -5,6 +5,7 @@ import { FoundDialog } from "./found";
 import { Hud } from "./hud";
 import { prefs } from "./prefs";
 import { initLayout } from "./layout";
+import { initTouchHints } from "./touchhints";
 import { TerminalPane } from "./terminal";
 import type { Agent } from "./types";
 import { PatienceNotifier } from "./patience";
@@ -137,6 +138,7 @@ prefs.onChange(syncPrefs);
 syncPrefs();
 
 initLayout();
+initTouchHints((t) => hud.toast(t));
 new PairScreen(daemon, (scope) =>
   hud.toast(scope === "control" ? "Paired. This device can answer approvals and send replies." : "Paired. This device is view only; allow control for it in the desktop app to act."),
 );
