@@ -903,7 +903,7 @@ input.other {
   color: var(--ink);
   padding: 0;
   width: min(720px, calc(100vw - 32px));
-  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
 }
 #setup::backdrop {
   background: rgba(10, 14, 12, 0.45);
@@ -1488,7 +1488,7 @@ details.menu[open] > summary {
   color: var(--ink);
   padding: 0;
   width: min(860px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
 }
 #popout::backdrop {
   background: rgba(10, 14, 12, 0.45);
@@ -1509,7 +1509,7 @@ details.menu[open] > summary {
   font-size: 15px;
 }
 #popout-body {
-  max-height: calc(100vh - 140px);
+  max-height: calc(100dvh - 140px);
   overflow: auto;
   overflow-wrap: anywhere;
   line-height: 1.55;
@@ -1534,7 +1534,7 @@ details.menu[open] > summary {
 }
 .wf-big {
   overflow: auto;
-  max-height: calc(100vh - 220px);
+  max-height: calc(100dvh - 220px);
 }
 .wf-big .wf-graph {
   width: calc(var(--nat, 400px) * 1.4);
@@ -2180,4 +2180,20 @@ html.mobile .bar {
   #inspector {
     min-height: 0;
   }
+}
+
+/* Touch: the terminal key bar is one row that scrolls sideways, so it leaves the terminal its height. */
+@media (pointer: coarse) {
+  #term-keys {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  #term-keys button {
+    flex: 0 0 auto;
+  }
+}
+/* A long press on a control with a title shows the title (see touchhints.ts). */
+#toast.hint {
+  white-space: pre-wrap;
 }

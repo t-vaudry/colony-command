@@ -10,6 +10,14 @@ export const KEYS: Record<string, string> = {
   down: "\x1b[B",
   right: "\x1b[C",
   left: "\x1b[D",
+  "shift-tab": "\x1b[Z",
+  home: "\x1b[H",
+  end: "\x1b[F",
+  pgup: "\x1b[5~",
+  pgdn: "\x1b[6~",
+  slash: "/",
+  pipe: "|",
+  tilde: "~",
 };
 
 /** Bytes for a key-bar key, or null for a name it does not know. */

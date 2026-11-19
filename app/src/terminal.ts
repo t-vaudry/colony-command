@@ -39,7 +39,7 @@ export class TerminalPane {
   ) {
     this.term = new Terminal({
       fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, monospace',
-      fontSize: 12.5,
+      fontSize: Number(localStorage.getItem("colony.termFont")) || 12.5,
       cursorBlink: true,
       scrollback: 5000,
       linkHandler: { activate: (_e, uri) => openLink(uri) },
@@ -100,6 +100,9 @@ export class TerminalPane {
       const b = (e.target as HTMLElement).closest("button");
       if (!b || !this.attached) return;
       if (b.id === "term-ctrl") this.setCtrl(!this.ctrl);
+      else if (b.id === "term-copy") void navigator.clipboard?.writeText(this.term.getSelection()).catch(() => {});
+      else if (b.id === "term-paste") void navigator.clipboard?.readText().then((t) => t && this.term.paste(t)).catch(() => {});
+      else if (b.id === "term-smaller" || b.id === "term-larger") this.zoom(b.id === "term-larger" ? 1 : -1);
       else if (b.id === "term-interrupt") this.daemon.interrupt(this.attached);
       else {
         const data = keyData(b.dataset.key ?? "");
@@ -109,6 +112,18 @@ export class TerminalPane {
       this.term.focus();
     });
     this.keys?.addEventListener("pointerdown", (e) => e.preventDefault());
+  }
+
+  /** Text size from the key bar, remembered; the pane refits to the new cell size. */
+  private zoom(dir: number): void {
+    const size = Math.max(9, Math.min(24, (this.term.options.fontSize ?? 12.5) + dir));
+    this.term.options.fontSize = size;
+    try {
+      localStorage.setItem("colony.termFont", String(size));
+    } catch {
+      // Not remembered.
+    }
+    this.refit();
   }
 
   /** Show the key bar when there is no physical keyboard to assume, and not at all when view-only. */
