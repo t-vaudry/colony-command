@@ -1904,3 +1904,16 @@ details.menu[open] > summary {
 #offline[hidden] {
   display: none;
 }
+
+/* The pairing screen: first thing on a phone with nothing paired. */
+dialog.pair {
+  max-width: min(420px, 100vw);
+}
+dialog.pair form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+dialog.pair::backdrop {
+  background: var(--ground);
+}

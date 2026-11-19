@@ -85,6 +85,27 @@
     </div>
     <div id="outdated" role="alert" hidden><span></span><button type="button">Restart</button></div>
 
+    <dialog id="pair-screen" class="pair">
+      <form id="pair-form" autocomplete="off">
+        <h2>Pair with your PC</h2>
+        <p class="muted small">On your PC, open Colony Command, then Paired devices, then <b>Pair a device</b>. Your PC and this device must be on the same VPN (Tailscale or WireGuard).</p>
+        <label>
+          <span class="k">PC address</span>
+          <input name="address" type="text" inputmode="url" autocapitalize="off" spellcheck="false" placeholder="100.101.102.103" required />
+        </label>
+        <label>
+          <span class="k">Code</span>
+          <input name="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="1234 5678" maxlength="12" required />
+        </label>
+        <label>
+          <span class="k">Name this device</span>
+          <input name="name" type="text" maxlength="40" />
+        </label>
+        <p id="pair-error" class="error" role="alert"></p>
+        <div class="actions"><button type="submit" class="primary">Pair</button></div>
+      </form>
+    </dialog>
+
     <dialog id="setup">
       <div id="setup-body"></div>
     </dialog>
