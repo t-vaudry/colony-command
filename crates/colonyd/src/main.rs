@@ -8,6 +8,7 @@
 
 mod api;
 mod audit;
+mod awake;
 mod approvals;
 mod budget;
 mod classifier;
@@ -58,6 +59,8 @@ pub struct Shared {
     /// What remote devices asked for (kind of command only).
     pub audit: audit::Audit,
     pub pty: Arc<PtyHost>,
+    /// Holds the PC awake while remote access is on and the user asked for that.
+    pub awake: awake::Awake,
     /// Installed WSL distros, for the New session dialog.
     pub distros: RwLock<Vec<String>>,
     /// Wakes the WSL supervisor, e.g. right after starting a session in a
@@ -169,6 +172,7 @@ async fn main() {
         pty: PtyHost::new(ev_tx.clone()),
         distros: RwLock::default(),
         wsl_wake: Notify::new(),
+        awake: awake::Awake::new(),
         events: ev_tx.clone(),
         approvals: Arc::default(),
         settings: std::sync::Mutex::new(quality::Settings::load(&quality::settings_path())),
@@ -336,7 +340,11 @@ async fn main() {
             Ok(ip) => match tokio::net::TcpListener::bind((ip, remote_port)).await {
                 Err(e) => log(format!("remote access not started: cannot listen on {ip}:{remote_port}: {e}")),
                 Ok(l) => {
-                    shared.settings.lock().unwrap().remote_listening = Some(format!("{ip}:{remote_port}"));
+                    {
+                        let mut s = shared.settings.lock().unwrap();
+                        s.remote_listening = Some(format!("{ip}:{remote_port}"));
+                        shared.awake.set(awake::wanted(s.prevent_sleep, true));
+                    }
                     log(format!("remote access on http://{ip}:{remote_port} (/ws, /api/agents and /api/pair only; paired devices only)"));
                     let app = api::remote_router(shared.clone());
                     tokio::spawn(async move {

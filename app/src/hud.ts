@@ -320,7 +320,12 @@ export class Hud {
     return `<div class="fact"><span class="k">Unclear endings</span><span>
       <button type="button" data-classifier="${s.haiku_classifier ? "off" : "on"}" aria-pressed="${s.haiku_classifier}" title="Off by default. When on, only a bot's last message is sent to the Claude API (claude-haiku-5-5) to tell a question from a finished job, and only when the rules are unsure. Needs ANTHROPIC_API_KEY in the environment or ~/.colony/settings.json.">Haiku classifier: ${s.haiku_classifier ? "on" : "off"}</button>
       ${s.haiku_classifier && !s.haiku_key_present ? `<span class="muted small">No API key found: the rules decide.</span>` : ""}</span></div>
-      <div class="fact"><span class="k">Remote access</span><span title="Set COLONY_REMOTE_ADDR or remote_listen in ~/.colony/settings.json to a VPN address (never 0.0.0.0). Off by default.">${s.remote_listening ? `on at ${esc(s.remote_listening)}` : "off"}</span></div>${s.remote_listening && !this.daemon.remote ? this.devicesRow() : ""}`;
+      <div class="fact"><span class="k">Remote access</span><span title="Set COLONY_REMOTE_ADDR or remote_listen in ~/.colony/settings.json to a VPN address (never 0.0.0.0). Off by default.">${s.remote_listening ? `on at ${esc(s.remote_listening)}` : "off"}</span></div>${s.remote_listening && !this.daemon.remote ? this.sleepRow(s.prevent_sleep === true) + this.devicesRow() : ""}`;
+  }
+
+  /** Keep the PC awake while remote access is on: a phone can't reach a sleeping PC. */
+  private sleepRow(on: boolean): string {
+    return `<div class="fact"><span class="k">Stay awake</span><span><button type="button" data-prevent-sleep="${on ? "off" : "on"}" aria-pressed="${on}" title="Stops Windows from sleeping while remote access is on, so a phone can still reach this PC. Off by default.">${on ? "On" : "Off"}</button></span></div>`;
   }
 
   /** Paired remote devices: pair a new one with a code, revoke one. */
@@ -1187,6 +1192,7 @@ export class Hud {
     if (el.hasAttribute("data-hide-pairing")) this.daemon.hidePairing();
     if (el.dataset.deviceScope && el.dataset.device && !this.daemon.setDeviceScope(el.dataset.device, el.dataset.deviceScope as "view" | "control")) this.toast("Not connected to colonyd.");
     if (el.dataset.revokeDevice && !this.daemon.revokeDevice(el.dataset.revokeDevice)) this.toast("Not connected to colonyd.");
+    if (el.dataset.preventSleep && !this.daemon.setPreventSleep(el.dataset.preventSleep === "on")) this.toast("Not connected to colonyd.");
     if (el.dataset.classifier) {
       if (!this.daemon.setClassifier(el.dataset.classifier === "on")) this.toast("Not connected to colonyd.");
     }

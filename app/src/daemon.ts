@@ -39,6 +39,7 @@ export interface DaemonSettings {
   budget_overrides?: Record<string, number>;
   /** Address the VPN listener is bound to, or null when remote access is off. */
   remote_listening?: string | null;
+  prevent_sleep?: boolean;
 }
 
 /** A paired remote device, as the desktop lists it. */
@@ -599,6 +600,11 @@ export class Daemon {
   /** Let a device control (answer approvals, send input...) or take it back to view-only. */
   setDeviceScope(id: string, scope: "view" | "control"): boolean {
     return this.send({ type: "set_device_scope", id, scope });
+  }
+
+  /** Desktop only: keep the PC awake while remote access is on. */
+  setPreventSleep(enabled: boolean): boolean {
+    return this.send({ type: "set_prevent_sleep", enabled });
   }
 
   /** Turn the opt-in Haiku classifier for unclear endings on or off. */

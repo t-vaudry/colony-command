@@ -9,8 +9,8 @@ use crate::devices::Scope;
 /// Read-only, or harmless for a remote client (its resize is ignored, see `api`).
 pub const VIEW: &[&str] = &["attach", "detach", "presence", "resize", "list_workflows", "folder_crew", "check_crew", "replay"];
 
-/// Managing devices: the desktop only, whatever a device was granted.
-pub const DESKTOP_ONLY: &[&str] = &["create_pairing", "list_devices", "revoke_device", "set_device_scope", "list_audit"];
+/// Managing devices and the PC's own power setting: the desktop only, whatever a device was granted.
+pub const DESKTOP_ONLY: &[&str] = &["create_pairing", "list_devices", "revoke_device", "set_device_scope", "list_audit", "set_prevent_sleep"];
 
 /// Everything that changes state or acts for the user: answering approvals,
 /// typing into or ending sessions, starting work, editing crews and workflows,
