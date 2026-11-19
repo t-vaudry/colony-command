@@ -5,6 +5,10 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.25] - 2026-11-19
+
+- Tablet polish: scroll the terminal, no quick replies, one-line top bar (#138)
+
 ## [0.1.24] - 2026-11-19
 
 - Mobile-friendly: touch resize, status-bar inset, no empty menus (#137)
