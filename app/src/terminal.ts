@@ -61,6 +61,7 @@ export class TerminalPane {
       this.term.write(bytes);
     });
     this.bindKeys();
+    this.bindTouchScroll();
     new ResizeObserver(() => this.refit()).observe(this.host);
     document.getElementById("term-close")!.addEventListener("click", () => this.hide());
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
@@ -109,9 +110,44 @@ export class TerminalPane {
         if (data !== null) this.type(data);
       }
       // A tap on a button must not take the focus from the terminal, or the soft keyboard drops.
-      this.term.focus();
+      // On a touchscreen it must not give it focus either: that raises the keyboard over the output.
+      if (!this.touch()) this.term.focus();
     });
     this.keys?.addEventListener("pointerdown", (e) => e.preventDefault());
+  }
+
+  private touch(): boolean {
+    return matchMedia("(pointer: coarse)").matches;
+  }
+
+  /**
+   * One finger drags the scrollback. xterm has no touch scrolling of its own, and the pane's
+   * sideways scroll swallows the gesture; the pane keeps sideways (touch-action: pan-x) and this takes up and down.
+   */
+  private bindTouchScroll(): void {
+    let y = 0;
+    let rest = 0;
+    let id = -1;
+    this.host.addEventListener("pointerdown", (e) => {
+      if (e.pointerType !== "touch") return;
+      id = e.pointerId;
+      y = e.clientY;
+      rest = 0;
+    });
+    this.host.addEventListener("pointermove", (e) => {
+      if (e.pointerType !== "touch" || e.pointerId !== id) return;
+      const line = this.host.clientHeight / Math.max(1, this.term.rows);
+      rest += y - e.clientY;
+      y = e.clientY;
+      const lines = Math.trunc(rest / line);
+      if (lines) {
+        this.term.scrollLines(lines);
+        rest -= lines * line;
+      }
+    });
+    const end = () => (id = -1);
+    this.host.addEventListener("pointerup", end);
+    this.host.addEventListener("pointercancel", end);
   }
 
   /** Text size from the key bar, remembered; the pane refits to the new cell size. */
@@ -167,7 +203,7 @@ export class TerminalPane {
       this.refit();
     }
     this.syncKeys();
-    this.term.focus();
+    if (!this.touch()) this.term.focus();
     this.settle(term, switched);
   }
 

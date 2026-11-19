@@ -13,7 +13,7 @@ import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostO
 import type { NoticeAction } from "./budget";
 import { appVersion, isProtocolError, outdatedBanner, remoteMismatch } from "./outdated";
 import { platform } from "./platform";
-import { clearRemote, loadRemote } from "./remote";
+import { clearRemote, loadRemote, unreachableText } from "./remote";
 import { isDead, retryDelay } from "./reconnect";
 
 
@@ -327,7 +327,7 @@ export class Daemon {
     this.ws = null;
     ws.close();
     for (const p of this.pendingSpawns.splice(0)) p.reject(new Error("lost connection to colonyd"));
-    this.setOffline(this.info?.credential ? `${why}. Your PC may be asleep, or the VPN may be off.` : why);
+    this.setOffline(this.info?.credential ? unreachableText(why, navigator.onLine, this.info.host) : why);
   }
 
   private async connect(): Promise<void> {
