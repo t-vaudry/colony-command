@@ -7,12 +7,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 import type { Daemon } from "./daemon";
+import { platform } from "./platform";
 
 /** Hand a link to the default browser. xterm's own handler would confirm, then open a blank window. */
 export function openLink(uri: string): void {
-  const invoke = (window as unknown as { __TAURI__?: { core?: { invoke: (cmd: string, args: object) => Promise<void> } } }).__TAURI__?.core?.invoke;
-  if (invoke) void invoke("open_link", { url: uri });
-  else window.open(uri, "_blank", "noopener");
+  platform().openLink(uri);
 }
 
 function cssVar(name: string): string {

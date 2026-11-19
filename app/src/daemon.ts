@@ -12,13 +12,8 @@ const WORKFLOW_SAVE_WAIT_MS = 10000;
 import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostOption, type Leftover, type Offer, type PermissionChoice, type ProjectLatency, type ProjectSpend, type Replay, type Rule, type SpawnRequest, type Workflow, type WorkflowListing } from "./types";
 import type { NoticeAction } from "./budget";
 import { appVersion, isProtocolError, outdatedBanner } from "./outdated";
+import { platform } from "./platform";
 
-interface TauriCore {
-  invoke: <T>(cmd: string) => Promise<T>;
-}
-function tauriCore(): TauriCore | undefined {
-  return (window as unknown as { __TAURI__?: { core?: TauriCore } }).__TAURI__?.core;
-}
 
 interface DaemonInfo {
   port: number;
@@ -106,9 +101,8 @@ const OFFLINE_AFTER_MS = 6000;
 
 async function readInfo(): Promise<DaemonInfo> {
   // Inside Tauri the shell reads ~/.colony/daemon.json for us.
-  const tauri = (window as unknown as { __TAURI__?: { core?: { invoke: (cmd: string) => Promise<DaemonInfo> } } })
-    .__TAURI__;
-  if (tauri?.core?.invoke) return tauri.core.invoke("daemon_info");
+  const invoke = platform().invoke;
+  if (invoke) return invoke<DaemonInfo>("daemon_info");
   const r = await fetch("/__colony/daemon.json", { cache: "no-store" });
   if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `daemon info: HTTP ${r.status}`);
   return r.json();
@@ -175,7 +169,7 @@ export class Daemon {
 
   /** Ask the app to replace the daemon (the banner's Restart button), then reconnect. */
   async restart(): Promise<void> {
-    await tauriCore()?.invoke("daemon_restart");
+    await platform().invoke?.("daemon_restart");
     this.protocolError = false;
     this.ws?.close();
   }
@@ -237,9 +231,9 @@ export class Daemon {
       this.info = await readInfo();
       this.appVer ??= await appVersion();
       // The app says so when it just replaced a daemon from another version.
-      const note = await tauriCore()?.invoke<string | null>("daemon_notice").catch(() => null);
+      const note = await platform().invoke?.<string | null>("daemon_notice").catch(() => null);
       if (note) for (const fn of this.noticeListeners) fn(note);
-      this.incomplete = (await tauriCore()?.invoke<string | null>("daemon_incomplete").catch(() => null)) ?? null;
+      this.incomplete = (await platform().invoke?.<string | null>("daemon_incomplete").catch(() => null)) ?? null;
     } catch (e) {
       this.setOffline(e instanceof Error ? e.message : String(e));
       return;
