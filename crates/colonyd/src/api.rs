@@ -744,8 +744,11 @@ async fn stream(shared: Arc<Shared>, socket: WebSocket, remote: bool, device: Op
     // A paired device is told what it may do, and again whenever the desktop changes that.
     let mut told: Option<crate::devices::Scope> = None;
     let mut scope_check = tokio::time::interval(std::time::Duration::from_secs(3));
+    // A remote client can't tell a quiet daemon from a dead link (PC asleep, VPN down) without this.
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
     loop {
         let out: Option<String> = tokio::select! {
+            _ = heartbeat.tick(), if remote => Some(r#"{"type":"hb"}"#.to_string()),
             _ = scope_check.tick(), if conn.device.is_some() => {
                 let now = conn.device.as_deref().and_then(|d| shared.devices.scope_of(d));
                 if now != told {

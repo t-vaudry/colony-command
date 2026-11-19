@@ -13,6 +13,8 @@ import { severity, type Agent, type Crew, type CrewCheck, type Found, type HostO
 import type { NoticeAction } from "./budget";
 import { appVersion, isProtocolError, outdatedBanner } from "./outdated";
 import { platform } from "./platform";
+import { clearRemote, loadRemote } from "./remote";
+import { isDead, retryDelay } from "./reconnect";
 
 
 interface DaemonInfo {
@@ -92,16 +94,29 @@ type Message =
   | { type: "spawned"; term: string; session_id: string }
   | { type: "term_data"; term: string; data: string; reset: boolean }
   | { type: "notice"; message: string; actions?: NoticeAction[] }
-  | { type: "error"; message: string };
+  | { type: "error"; code?: string; message: string }
+  | { type: "hb" }
+  | { type: "you"; scope: "view" | "control" };
 
-export type ConnectionStatus = "connecting" | "live" | "offline";
+/** `unpaired`: a phone or tablet with no daemon to connect to yet (or one that was unpaired on the PC). */
+export type ConnectionStatus = "connecting" | "live" | "offline" | "unpaired";
 
 const RETRY_MS = 2000;
 const OFFLINE_AFTER_MS = 6000;
+const CONNECT_TIMEOUT_MS = 10000;
+
+class NotPaired extends Error {}
 
 async function readInfo(): Promise<DaemonInfo> {
+  const p = platform();
+  // A phone, a tablet or a browser that has been paired talks to that PC, not to a local daemon.
+  if (p.kind !== "desktop") {
+    const r = loadRemote();
+    if (r) return { port: r.port, token: "", host: r.host, credential: r.credential };
+    if (p.kind === "mobile") throw new NotPaired();
+  }
   // Inside Tauri the shell reads ~/.colony/daemon.json for us.
-  const invoke = platform().invoke;
+  const invoke = p.invoke;
   if (invoke) return invoke<DaemonInfo>("daemon_info");
   const r = await fetch("/__colony/daemon.json", { cache: "no-store" });
   if (!r.ok) throw new Error((await r.json().catch(() => null))?.error ?? `daemon info: HTTP ${r.status}`);
@@ -222,11 +237,84 @@ export class Daemon {
     for (const fn of this.listeners) fn();
   }
 
+  /** Connected, or trying to, to a paired PC rather than the daemon on this machine. */
+  get remote(): boolean {
+    return !!this.info?.credential;
+  }
+
+  /** What the paired PC lets this device do; null until it says (and always null on the desktop). */
+  scope: "view" | "control" | null = null;
+  private attempt = 0;
+  private lastHeard = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+
   start(): void {
+    void this.connect();
+    if (typeof window === "undefined") return;
+    // The PC woke, the VPN came back, or the phone changed network: don't wait out the backoff.
+    window.addEventListener("online", () => this.retryNow());
+    (navigator as Navigator & { connection?: EventTarget }).connection?.addEventListener("change", () => this.retryNow());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && this.info?.credential) this.retryNow(this.status === "live");
+    });
+    // A sleeping PC or a dropped VPN can leave a socket that never reports closing. The daemon
+    // sends a heartbeat to remote devices; when they stop, the link is dead.
+    setInterval(() => {
+      if (this.info?.credential && this.ws?.readyState === WebSocket.OPEN && isDead(this.lastHeard, Date.now())) this.lose(this.ws, "The connection went quiet");
+    }, 5000);
+  }
+
+  /**
+   * Reconnect now instead of waiting. With `onlyIfStale`, a live connection is left alone
+   * unless it has been quiet for a while (coming back to the app after a nap).
+   */
+  retryNow(onlyIfStale = false): void {
+    if (this.status === "unpaired") return;
+    if (onlyIfStale && !isDead(this.lastHeard, Date.now(), 20000)) return;
+    clearTimeout(this.retryTimer);
+    const old = this.ws;
+    this.ws = null;
+    old?.close();
+    this.attempt = 0;
+    if (this.status === "live") {
+      this.status = "connecting";
+      this.emit();
+    }
     void this.connect();
   }
 
+  /** Forget the paired PC (on this device only) and go back to the pairing screen. */
+  unpair(): void {
+    clearRemote();
+    clearTimeout(this.retryTimer);
+    const old = this.ws;
+    this.ws = null;
+    old?.close();
+    this.info = null;
+    this.scope = null;
+    this.agents = new Map();
+    this.status = "unpaired";
+    this.error = null;
+    this.emit();
+  }
+
+  /** Called after pairing succeeds (the remote is already stored): connect to it. */
+  connectNow(): void {
+    this.status = "connecting";
+    this.retryNow();
+    this.emit();
+  }
+
+  private lose(ws: WebSocket, why: string): void {
+    if (this.ws !== ws) return;
+    this.ws = null;
+    ws.close();
+    for (const p of this.pendingSpawns.splice(0)) p.reject(new Error("lost connection to colonyd"));
+    this.setOffline(this.info?.credential ? `${why}. Your PC may be asleep, or the VPN may be off.` : why);
+  }
+
   private async connect(): Promise<void> {
+    if (this.ws && this.ws.readyState <= WebSocket.OPEN) return;
     try {
       this.info = await readInfo();
       this.appVer ??= await appVersion();
@@ -235,6 +323,12 @@ export class Daemon {
       if (note) for (const fn of this.noticeListeners) fn(note);
       this.incomplete = (await platform().invoke?.<string | null>("daemon_incomplete").catch(() => null)) ?? null;
     } catch (e) {
+      if (e instanceof NotPaired) {
+        this.status = "unpaired";
+        this.error = null;
+        this.emit();
+        return;
+      }
       this.setOffline(e instanceof Error ? e.message : String(e));
       return;
     }
@@ -242,13 +336,22 @@ export class Daemon {
     // Remote: the credential is the first message, so it never appears in a URL. (Over the
     // VPN tunnel the traffic is already encrypted; see docs/remote-access.md for why this is ws://.)
     const ws = credential ? new WebSocket(`ws://${host}:${port}/ws`) : new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`);
-    if (credential) ws.onopen = () => ws.send(JSON.stringify({ type: "auth", credential }));
-    ws.onmessage = (ev) => this.handle(JSON.parse(ev.data as string) as Message);
-    ws.onclose = () => {
-      this.ws = null;
-      for (const p of this.pendingSpawns.splice(0)) p.reject(new Error("lost connection to colonyd"));
-      this.setOffline("lost connection to colonyd");
+    this.lastHeard = Date.now();
+    // An unreachable PC can leave a connection attempt hanging for minutes: give up sooner than that.
+    const giveUp = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) this.lose(ws, "Can't reach colonyd");
+    }, CONNECT_TIMEOUT_MS);
+    ws.onopen = () => {
+      clearTimeout(giveUp);
+      this.lastHeard = Date.now();
+      if (credential) ws.send(JSON.stringify({ type: "auth", credential }));
     };
+    ws.onmessage = (ev) => {
+      this.lastHeard = Date.now();
+      this.handle(JSON.parse(ev.data as string) as Message);
+    };
+    // A refused socket reports closing too, so this one path covers "can't connect" as well.
+    ws.onclose = () => this.lose(ws, "Lost connection to colonyd");
     this.ws = ws;
   }
 
@@ -258,7 +361,10 @@ export class Daemon {
     this.status = Date.now() - this.downSince > OFFLINE_AFTER_MS ? "offline" : "connecting";
     this.error = error;
     this.emit();
-    setTimeout(() => void this.connect(), RETRY_MS);
+    clearTimeout(this.retryTimer);
+    // The local daemon restarts in a moment: retry briskly. A remote one may be asleep: back off.
+    const wait = this.info?.credential ? retryDelay(this.attempt++) : RETRY_MS;
+    this.retryTimer = setTimeout(() => void this.connect(), wait);
   }
 
   private handle(m: Message): void {
@@ -287,6 +393,12 @@ export class Daemon {
         this.status = "live";
         this.error = null;
         this.downSince = null;
+        this.attempt = 0;
+        break;
+      case "hb":
+        return;
+      case "you":
+        this.scope = m.scope;
         break;
       case "batch":
         this.batching = true;
@@ -383,6 +495,13 @@ export class Daemon {
         for (const fn of this.noticeListeners) fn(m.message, m.actions);
         return;
       case "error": {
+        if (m.code === "unauthorized" && this.info?.credential) {
+          // Unpaired on the PC (or the credential is gone): trying again can't help.
+          this.unpair();
+          this.error = "This device was unpaired on your PC. Pair it again.";
+          this.emit();
+          return;
+        }
         // A failed spawn reports here too; otherwise it's about some other command.
         const pending = this.pendingSpawns.shift();
         if (isProtocolError(m.message)) {
