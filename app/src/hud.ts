@@ -283,7 +283,7 @@ export class Hud {
     if (!down) return;
     bar.firstElementChild!.textContent =
       this.daemon.status === "offline"
-        ? `Offline. ${this.daemon.error ?? "Can't reach your PC."} Trying again automatically.`
+        ? `PC offline. ${this.daemon.error ?? "Can't reach your PC."} Trying again automatically.`
         : "Reconnecting to your PC…";
   }
 
