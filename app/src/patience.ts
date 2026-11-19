@@ -4,6 +4,7 @@
 // the settings, and brings the bot into view when you come back to the window.
 
 import type { Daemon } from "./daemon";
+import { platform } from "./platform";
 import { severity, type Agent } from "./types";
 
 type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
@@ -27,11 +28,6 @@ interface Notice {
   title: string;
   body: string;
   agent: string | null;
-}
-
-function invoker(): Invoke | null {
-  const t = (window as unknown as { __TAURI__?: { core?: { invoke: Invoke } } }).__TAURI__;
-  return t?.core?.invoke ?? null;
 }
 
 /** A budget as the settings allow it: whole minutes, 0 to 10080 (a week). */
@@ -63,7 +59,7 @@ function saveSettings(s: PatienceSettings): void {
 }
 
 export class PatienceNotifier {
-  private invoke = invoker();
+  private invoke: Invoke | null = platform().invoke;
   settings = loadSettings();
   private last: { agent: string; at: number } | null = null;
   private dlg = document.getElementById("patience") as HTMLDialogElement;
