@@ -147,3 +147,30 @@ broadcast, which a VPN (Tailscale included) does not carry, so it needs a second
 always-on device on the PC's own network to send it, plus BIOS and adapter settings
 that differ per machine. If you want it, run a Wake-on-LAN relay on a router or a
 Raspberry Pi; Colony only needs the PC to come back.
+
+## Phone notifications
+
+A phone with the app closed hears about a session through [ntfy](https://ntfy.sh).
+Colony sends one short message to a topic you choose, and the ntfy app on the phone
+shows it. Set the topic URL in `~/.colony/settings.json` and restart colonyd:
+
+```json
+{ "ntfy_url": "http://100.64.0.1:8080/colony-7f3k2q" }
+```
+
+Use a self-hosted ntfy server that is reachable over your VPN, or the public
+`https://ntfy.sh/<a long random topic>`. With the public server, anyone who knows the
+topic name can read the messages, so make it unguessable.
+
+You are told when a session needs approval, is waiting for a reply, is blocked, or is
+ready to review. Nothing is sent while a paired device has the app in front of it, and a
+restart does not announce sessions that were already waiting.
+
+**What a notification says.** Only the project's folder name and the kind of wait, for
+example `billing-api: needs your approval`. It never contains a prompt, a command, a
+reply, a file path or a session title, because it passes through the topic's server and
+shows on a lock screen. The daemon's tests check that.
+
+**Other options considered.** An FCM or APNs relay needs a Google or Apple account and a
+server run by the project, and a local notification needs the app to stay connected,
+which Android stops in the background. ntfy needs neither.

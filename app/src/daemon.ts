@@ -40,6 +40,7 @@ export interface DaemonSettings {
   /** Address the VPN listener is bound to, or null when remote access is off. */
   remote_listening?: string | null;
   prevent_sleep?: boolean;
+  push_on?: boolean;
 }
 
 /** A paired remote device, as the desktop lists it. */

@@ -21,6 +21,7 @@ mod latency_store;
 mod needs;
 mod pause;
 mod policy;
+mod push;
 mod pty;
 mod quality;
 mod remote;
@@ -281,6 +282,8 @@ async fn main() {
     });
     // Spend caps: warnings, and stepping bots down when one is reached.
     tokio::spawn(budget::run(shared.clone()));
+    // Phone notifications when a bot needs you, if a topic is configured.
+    tokio::spawn(push::run(shared.clone()));
     // Files and lines changed, for work ready to review.
     tokio::spawn(diffstat::run(shared.clone()));
     // A long tool call whose processes are still computing is not a stall.
