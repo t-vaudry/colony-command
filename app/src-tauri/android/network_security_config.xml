@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Colony talks to your PC over ws:// inside your own VPN (Tailscale or WireGuard); see
+  docs/remote-access.md for why that is plain ws:// and not wss://. Android blocks cleartext by
+  default, and its config can name hosts but not address ranges, so it can't be limited to the
+  VPN's 100.64.0.0/10. The app only ever connects to the one address you paired with, and the
+  bundled page is loaded from the app itself, not the network.
+-->
+<network-security-config>
+  <base-config cleartextTrafficPermitted="true">
+    <trust-anchors>
+      <certificates src="system" />
+    </trust-anchors>
+  </base-config>
+</network-security-config>

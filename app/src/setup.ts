@@ -73,7 +73,7 @@ function store(key: string, value?: string): string | null {
 }
 
 export class SetupDialog {
-  private invoke: Invoke | null = platform().invoke;
+  private invoke: Invoke | null = platform().has.setup ? platform().invoke : null;
   private dlg = document.getElementById("setup") as HTMLDialogElement;
   private body = document.getElementById("setup-body")!;
   private btn = document.getElementById("setup-btn") as HTMLButtonElement;

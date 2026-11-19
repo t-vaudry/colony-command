@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "The map on a phone or tablet: no updater, notifications or daemon control, only the core bridge",
+  "windows": ["main"],
+  "platforms": ["android", "iOS"],
+  "permissions": ["core:default"]
+}
