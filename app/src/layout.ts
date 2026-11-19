@@ -1,11 +1,13 @@
-// Draggable dividers: map | inspector (width) and map / terminal (height).
+// Draggable dividers: map | inspector (width, or height on a phone) and map / terminal (height).
 // Sizes live in CSS variables and are remembered between runs. Double-click
 // a divider to go back to the default; arrow keys nudge it when focused.
+import { platform } from "./platform";
 
 const KEY = "colony.layout";
 
 interface Saved {
   inspector?: number;
+  inspectorH?: number;
   terminal?: number;
 }
 
@@ -25,12 +27,16 @@ function save(patch: Saved): void {
   }
 }
 
+/** One way a divider can resize things; a divider may have more than one (the side panel is a column, or a sheet on a phone). */
 interface Axis {
-  handle: HTMLElement;
   /** CSS variable the size lives in. */
   prop: string;
   /** The element whose size is being set, for clamping against its container. */
   container: HTMLElement;
+  /** The panel being sized. */
+  target: HTMLElement;
+  /** True when the size is a width. */
+  horizontal: boolean;
   min: number;
   /** Largest share of the container. */
   maxShare: number;
@@ -41,93 +47,132 @@ interface Axis {
   key: keyof Saved;
 }
 
-function wire(a: Axis, saved: Saved): void {
+/** Phone layout: the side panel sits under the map, so its divider is a horizontal bar. */
+const PHONE = "(max-width: 760px)";
+
+function wire(handle: HTMLElement, pick: () => Axis, saved: Saved): void {
   const root = document.documentElement;
-  const apply = (px: number | null) => {
+  const apply = (a: Axis, px: number | null) => {
     if (px == null) root.style.removeProperty(a.prop);
     else root.style.setProperty(a.prop, `${Math.round(px)}px`);
   };
-  const limit = (px: number) => {
+  const limit = (a: Axis, px: number) => {
     const box = a.container.getBoundingClientRect();
-    const total = a.prop === "--insp-w" ? box.width : box.height;
+    const total = a.horizontal ? box.width : box.height;
     return Math.max(a.min, Math.min(px, Math.max(a.min, total * a.maxShare)));
   };
-  const current = () => {
+  const current = (a: Axis) => {
     const v = parseFloat(root.style.getPropertyValue(a.prop));
     if (Number.isFinite(v)) return v;
-    const target = a.prop === "--insp-w" ? document.getElementById("inspector")! : document.getElementById("term-pane")!;
-    const r = target.getBoundingClientRect();
-    return a.prop === "--insp-w" ? r.width : r.height;
+    const r = a.target.getBoundingClientRect();
+    return a.horizontal ? r.width : r.height;
   };
 
-  const start = saved[a.key];
-  if (start) apply(start);
+  // Restore every size this divider can set; only the one in use takes effect.
+  for (const a of axes(pick)) {
+    const s = saved[a.key];
+    if (s) apply(a, s);
+  }
 
-  a.handle.addEventListener("pointerdown", (e) => {
+  // The axis is fixed for the length of a drag, even if the window turns while it runs.
+  let active: Axis | null = null;
+  handle.addEventListener("pointerdown", (e) => {
     e.preventDefault();
-    a.handle.setPointerCapture(e.pointerId);
-    a.handle.classList.add("dragging");
+    active = pick();
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add("dragging");
     document.body.classList.add("resizing");
   });
-  a.handle.addEventListener("pointermove", (e) => {
-    if (!a.handle.hasPointerCapture(e.pointerId)) return;
-    apply(limit(a.size(e, a.container.getBoundingClientRect())));
+  handle.addEventListener("pointermove", (e) => {
+    if (!active || !handle.hasPointerCapture(e.pointerId)) return;
+    apply(active, limit(active, active.size(e, active.container.getBoundingClientRect())));
   });
   const end = (e: PointerEvent) => {
-    if (!a.handle.hasPointerCapture(e.pointerId)) return;
-    a.handle.releasePointerCapture(e.pointerId);
-    a.handle.classList.remove("dragging");
+    if (!active || !handle.hasPointerCapture(e.pointerId)) return;
+    handle.releasePointerCapture(e.pointerId);
+    handle.classList.remove("dragging");
     document.body.classList.remove("resizing");
-    save({ [a.key]: Math.round(current()) });
+    save({ [active.key]: Math.round(current(active)) });
+    active = null;
   };
-  a.handle.addEventListener("pointerup", end);
-  a.handle.addEventListener("pointercancel", end);
-  a.handle.addEventListener("dblclick", () => {
-    apply(null);
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+  // A double tap on a phone counts too.
+  handle.addEventListener("dblclick", () => {
+    const a = pick();
+    apply(a, null);
     save({ [a.key]: undefined });
   });
-  a.handle.addEventListener("keydown", (e) => {
+  handle.addEventListener("keydown", (e) => {
+    const a = pick();
     const dir = e.key === a.keys[0] ? -1 : e.key === a.keys[1] ? 1 : 0;
     if (!dir) return;
     e.preventDefault();
-    apply(limit(current() + dir * (e.shiftKey ? 96 : 24)));
-    save({ [a.key]: Math.round(current()) });
+    apply(a, limit(a, current(a) + dir * (e.shiftKey ? 96 : 24)));
+    save({ [a.key]: Math.round(current(a)) });
   });
   // A smaller window can leave a remembered size too big: keep it in bounds.
   window.addEventListener("resize", () => {
-    if (root.style.getPropertyValue(a.prop)) apply(limit(current()));
+    const a = pick();
+    if (root.style.getPropertyValue(a.prop)) apply(a, limit(a, current(a)));
   });
 }
 
+/** Both axes a divider can have, by asking `pick` under each layout. */
+function axes(pick: () => Axis): Axis[] {
+  return [pick()];
+}
+
 export function initLayout(): void {
+  // Android's status bar can sit on top of the page; the stylesheet leaves room for it under html.mobile.
+  if (platform().kind === "mobile") document.documentElement.classList.add("mobile");
   const saved = load();
   const stage = document.querySelector<HTMLElement>(".stage")!;
   const mapCol = document.querySelector<HTMLElement>(".map-col")!;
+  const inspector = document.getElementById("inspector")!;
+  const termPane = document.getElementById("term-pane")!;
+  const phone = window.matchMedia(PHONE);
+  const column: Axis = {
+    prop: "--insp-w",
+    container: stage,
+    target: inspector,
+    horizontal: true,
+    min: 320,
+    maxShare: 0.7,
+    // The inspector is on the right: its width is what is left of the pointer.
+    size: (e, box) => box.right - e.clientX,
+    keys: ["ArrowRight", "ArrowLeft"],
+    key: "inspector",
+  };
+  const sheet: Axis = {
+    prop: "--insp-h",
+    container: stage,
+    target: inspector,
+    horizontal: false,
+    min: 120,
+    maxShare: 0.8,
+    // The inspector is below the map: its height is what is left under the pointer.
+    size: (e, box) => box.bottom - e.clientY,
+    keys: ["ArrowDown", "ArrowUp"],
+    key: "inspectorH",
+  };
+  wire(document.getElementById("split-v")!, () => (phone.matches ? sheet : column), saved);
+  // The phone's saved height has to be restored too: wire() only restores the axis in use.
+  if (saved.inspectorH) document.documentElement.style.setProperty(sheet.prop, `${saved.inspectorH}px`);
+  if (saved.inspector) document.documentElement.style.setProperty(column.prop, `${saved.inspector}px`);
   wire(
-    {
-      handle: document.getElementById("split-v")!,
-      prop: "--insp-w",
-      container: stage,
-      min: 320,
-      maxShare: 0.7,
-      // The inspector is on the right: its width is what is left of the pointer.
-      size: (e, box) => box.right - e.clientX,
-      keys: ["ArrowRight", "ArrowLeft"],
-      key: "inspector",
-    },
-    saved,
-  );
-  wire(
-    {
-      handle: document.getElementById("split-h")!,
+    document.getElementById("split-h")!,
+    () => ({
       prop: "--term-h",
       container: mapCol,
+      target: termPane,
+      horizontal: false,
       min: 140,
       maxShare: 0.8,
       size: (e, box) => box.bottom - e.clientY,
       keys: ["ArrowDown", "ArrowUp"],
       key: "terminal",
-    },
+    }),
     saved,
   );
 }

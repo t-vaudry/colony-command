@@ -1187,6 +1187,8 @@ html[data-motion="reduce"] *::after {
 .splitter {
   position: relative;
   z-index: 4;
+  /* Without this the browser takes a touch drag for a scroll and cancels the pointer. */
+  touch-action: none;
   background: var(--line);
   transition: background 0.12s;
 }
@@ -1982,6 +1984,11 @@ body.view-only [data-end-other],
 body.view-only [data-kill] {
   display: none !important;
 }
+body.view-only [data-rename],
+body.view-only [data-new-here],
+body.view-only [data-dismiss] {
+  display: none !important;
+}
 
 /* Start-a-session and workflow dialogs on a touchscreen: the buttons stay in reach above the soft keyboard. */
 #ns-form .actions,
@@ -2089,5 +2096,88 @@ body.view-only [data-wrong-for] {
   }
   #rp {
     padding: 16px;
+  }
+}
+
+/* ---- Mobile polish (kept last so it wins over the breakpoints above) ---- */
+[hidden] {
+  display: none !important;
+}
+html,
+body {
+  overscroll-behavior-y: none;
+}
+button,
+summary,
+.chip {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Room for the Android status bar and the gesture bar. env() is 0 where the page isn't drawn under them;
+   html.mobile (the Android app) keeps a minimum so the bar never lands on the buttons. */
+.bar {
+  padding-top: max(10px, env(safe-area-inset-top, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+html.mobile .bar {
+  padding-top: max(10px, env(safe-area-inset-top, 0px), 28px);
+}
+.foot {
+  padding-bottom: max(0px, env(safe-area-inset-bottom, 0px));
+}
+#compose {
+  padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+}
+
+/* A finger needs more than 6px to grab a divider: the visible bar stays thin, the touch area grows. */
+.splitter::after {
+  content: "";
+  position: absolute;
+}
+.splitter.v::after {
+  inset: 0 -12px;
+}
+.splitter.h::after {
+  inset: -12px 0;
+}
+@media (pointer: coarse) {
+  .splitter.v {
+    width: 10px;
+  }
+  .splitter.h {
+    height: 10px;
+    flex: 0 0 10px;
+  }
+  .splitter.v::after {
+    inset: 0 -16px;
+  }
+  .splitter.h::after {
+    inset: -16px 0;
+  }
+}
+
+/* Phone: the side panel is a sheet under the map, and its divider is a horizontal bar you drag up or down. */
+@media (max-width: 760px) {
+  .stage,
+  .stage:has(#inspector.wide) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 10px var(--insp-h, 45%);
+  }
+  .stage:has(#inspector.wide) {
+    grid-template-rows: minmax(0, 1fr) 10px var(--insp-h, 65%);
+  }
+  #split-v {
+    display: block;
+    cursor: row-resize;
+    width: auto;
+    height: 10px;
+  }
+  #split-v::after {
+    inset: -16px 0;
+  }
+  #inspector {
+    min-height: 0;
   }
 }

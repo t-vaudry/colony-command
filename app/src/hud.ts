@@ -620,6 +620,21 @@ export class Hud {
   }
 
   private renderPanel(): void {
+    this.paintPanel();
+    this.pruneEmpty();
+  }
+
+  /** On a view-only device CSS hides the buttons that would be refused; a menu or row left with none
+   *  of them would open to nothing, so drop it. */
+  private pruneEmpty(): void {
+    if (!document.body.classList.contains("view-only")) return;
+    this.panel.querySelectorAll<HTMLElement>("details.menu, .fact").forEach((el) => {
+      const buttons = [...el.querySelectorAll<HTMLElement>("button")];
+      if (buttons.length && buttons.every((b) => getComputedStyle(b).display === "none")) el.style.display = "none";
+    });
+  }
+
+  private paintPanel(): void {
     // A rename left open on another bot doesn't come back with the selection.
     if (this.renaming && this.renaming.id !== this.selected) this.renaming = null;
     // A new time-lapse arrived: start it from the beginning.
