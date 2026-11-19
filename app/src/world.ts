@@ -4,6 +4,7 @@
 
 import { Application, Container, Graphics, Particle, ParticleContainer, Text, type Texture } from "pixi.js";
 import type { Daemon } from "./daemon";
+import { dragSlop, pinch, zoomAt, type Cam, type Pt } from "./gestures";
 import { prefs } from "./prefs";
 import { toolProp, type Prop } from "./props";
 import { modelLabel, money, spentToday, type Agent, type AgentState } from "./types";
@@ -1289,9 +1290,9 @@ export class World {
     return { x: (ev.clientX - r.left - this.cam.x) / this.cam.s, y: (ev.clientY - r.top - this.cam.y) / this.cam.s };
   }
 
-  private pick(w: { x: number; y: number }): string | null {
+  private pick(w: { x: number; y: number }, reach = 18): string | null {
     let best: string | null = null;
-    let bd = 18;
+    let bd = reach;
     for (const [id, b] of this.bodies) {
       if (b.alpha < 0.1) continue;
       const d = Math.hypot(b.x - w.x, b.y - 4 - w.y);
@@ -1304,28 +1305,66 @@ export class World {
   }
 
   private bindInput(el: HTMLCanvasElement): void {
-    let drag: { x: number; y: number; cx: number; cy: number; moved: boolean } | null = null;
+    // One finger or the mouse drags the map; two fingers pan and pinch-zoom it.
+    const down = new Map<number, { x: number; y: number }>();
+    let drag: { x: number; y: number; cx: number; cy: number; moved: boolean; slop: number } | null = null;
+    let two: { cam: Cam; a0: Pt; b0: Pt; ids: [number, number] } | null = null;
+    const local = (e: PointerEvent): Pt => {
+      const r = el.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    };
     el.addEventListener("pointerdown", (e) => {
-      drag = { x: e.clientX, y: e.clientY, cx: this.cam.x, cy: this.cam.y, moved: false };
+      down.set(e.pointerId, local(e));
       el.setPointerCapture(e.pointerId);
+      if (down.size === 2) {
+        const [i0, i1] = [...down.keys()] as [number, number];
+        two = { cam: { ...this.cam }, a0: { ...down.get(i0)! }, b0: { ...down.get(i1)! }, ids: [i0, i1] };
+        // A second finger makes it a gesture, never a tap on a bot.
+        if (drag) drag.moved = true;
+        return;
+      }
+      drag = { x: e.clientX, y: e.clientY, cx: this.cam.x, cy: this.cam.y, moved: false, slop: dragSlop(e.pointerType) };
     });
     el.addEventListener("pointermove", (e) => {
+      if (!down.has(e.pointerId)) return;
+      down.set(e.pointerId, local(e));
+      if (two) {
+        const a = down.get(two.ids[0]);
+        const b = down.get(two.ids[1]);
+        if (!a || !b) return;
+        const c = pinch(two.cam, two.a0, two.b0, a, b);
+        this.cam.user = true;
+        this.cam.x = c.x;
+        this.cam.y = c.y;
+        this.cam.s = c.s;
+        return;
+      }
       if (!drag) return;
       const dx = e.clientX - drag.x;
       const dy = e.clientY - drag.y;
-      if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+      if (!drag.moved && Math.hypot(dx, dy) < drag.slop) return;
       drag.moved = true;
       this.cam.user = true;
       this.cam.x = drag.cx + dx;
       this.cam.y = drag.cy + dy;
     });
-    el.addEventListener("pointerup", (e) => {
+    const end = (e: PointerEvent, cancelled: boolean) => {
+      down.delete(e.pointerId);
+      if (two) {
+        // Leaving a pinch: the finger that stays does not start a drag or a tap.
+        if (down.size < 2) two = null;
+        if (down.size === 0) drag = null;
+        else if (drag) drag.moved = true;
+        return;
+      }
       const wasDrag = drag?.moved;
       drag = null;
-      if (wasDrag) return;
-      const id = this.pick(this.toWorld(e, el));
+      if (cancelled || wasDrag) return;
+      const id = this.pick(this.toWorld(e, el), e.pointerType === "touch" ? 30 : 18);
       this.onSelect(id);
-    });
+    };
+    el.addEventListener("pointerup", (e) => end(e, false));
+    el.addEventListener("pointercancel", (e) => end(e, true));
     el.addEventListener("dblclick", (e) => {
       const id = this.pick(this.toWorld(e, el));
       const a = id ? this.daemon.agents.get(id) : undefined;
@@ -1344,10 +1383,10 @@ export class World {
         const r = el.getBoundingClientRect();
         const mx = e.clientX - r.left;
         const my = e.clientY - r.top;
-        const s = Math.max(0.25, Math.min(3, this.cam.s * Math.exp(-e.deltaY * 0.0015)));
-        this.cam.x = mx - ((mx - this.cam.x) * s) / this.cam.s;
-        this.cam.y = my - ((my - this.cam.y) * s) / this.cam.s;
-        this.cam.s = s;
+        const c = zoomAt(this.cam, mx, my, Math.exp(-e.deltaY * 0.0015));
+        this.cam.x = c.x;
+        this.cam.y = c.y;
+        this.cam.s = c.s;
         this.cam.user = true;
       },
       { passive: false },
