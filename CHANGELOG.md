@@ -5,6 +5,11 @@ notes, and `scripts/check-release-version.sh vX.Y.Z` refuses a tag with no secti
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-11-19
+
+- Fix pairing from the app: answer CORS on the remote listener (#136)
+- Remote panel in the top bar: address, pairing, alerts, stay-awake (#135)
+
 ## [0.1.22] - 2026-11-19
 
 - Remote client acceptance scenario in CI (#107) (#133)
