@@ -322,6 +322,8 @@ enum Command {
     StateFeedback { id: String, should_be: String },
     /// Turn the optional Haiku question-or-done classifier on or off.
     SetClassifier { enabled: bool },
+    /// Desktop only: keep the PC awake while remote access is on.
+    SetPreventSleep { enabled: bool },
     /// Where a bot's context counts as getting full, in percent of its window.
     SetContextPct { pct: u32 },
     /// Type `/compact` into a Colony-started bot that is waiting at its prompt.
@@ -601,6 +603,16 @@ async fn handle_command(shared: &Arc<Shared>, conn: &mut Conn, text: &str) -> Op
             let saved = {
                 let mut s = shared.settings.lock().unwrap();
                 s.haiku_classifier = enabled;
+                (s.save(&crate::quality::settings_path()), s.public())
+            };
+            let _ = shared.deltas.send(json!({ "type": "settings", "settings": saved.1 }).to_string());
+            saved.0.map(|_| None).map_err(|e| format!("could not save settings: {e}"))
+        }
+        Command::SetPreventSleep { enabled } => {
+            let saved = {
+                let mut s = shared.settings.lock().unwrap();
+                s.prevent_sleep = enabled;
+                shared.awake.set(crate::awake::wanted(enabled, s.remote_listening.is_some()));
                 (s.save(&crate::quality::settings_path()), s.public())
             };
             let _ = shared.deltas.send(json!({ "type": "settings", "settings": saved.1 }).to_string());
@@ -1728,6 +1740,7 @@ mod remote_tests {
             pty: crate::pty::PtyHost::new(ev_tx.clone()),
             distros: Default::default(),
             wsl_wake: Default::default(),
+            awake: crate::awake::Awake::new(),
             events: ev_tx,
             approvals: Arc::default(),
             settings: Default::default(),

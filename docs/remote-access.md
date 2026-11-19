@@ -130,3 +130,20 @@ sends is recorded in `~/.colony/audit.jsonl` with the device, the kind of
 command and the time, and whether its scope allowed it. Like `events.jsonl`, it
 never contains prompt text, command text or file paths. Presence heartbeats are
 not listed.
+
+## When the PC is asleep or off
+
+A phone can't reach a sleeping PC. When the app can't reach it, it shows a "PC
+offline" banner with **Try again** and **Unpair**, and keeps retrying on its own.
+
+To keep the PC reachable, turn on **Stay awake** under Remote access in the side
+panel (`prevent_sleep` in `~/.colony/settings.json`). While remote access is on,
+Colony then asks Windows not to sleep (the same request a video player makes). The
+screen can still turn off. It is off by default, and only the desktop can change it.
+It does not help once the PC is shut down or hibernating.
+
+**Wake-on-LAN** was evaluated and is not built in. A magic packet is a layer-2
+broadcast, which a VPN (Tailscale included) does not carry, so it needs a second
+always-on device on the PC's own network to send it, plus BIOS and adapter settings
+that differ per machine. If you want it, run a Wake-on-LAN relay on a router or a
+Raspberry Pi; Colony only needs the PC to come back.
